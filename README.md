@@ -220,12 +220,11 @@ failure."*
 
 ## Roadmap
 
-- More models: FIFO queues, multi-key transactions (Elle-style cycle
-  detection for serializability and snapshot isolation)
-- More clients: Redis/Valkey, PostgreSQL, Kafka, CockroachDB
-- `faketime`-based clock skew for containers
-- Counterexample minimisation (shrinking the schedule and history)
-- Signed reports (Sigstore) for audit pipelines
+Next up: automatic schedule shrinking, JUnit output with a GitHub Action, a
+Redis/Valkey client, then a per-node `strife-agent` with netlink injection and
+transactional (Elle-style) models. See [docs/ROADMAP.md](docs/ROADMAP.md) for
+the phased plan, the reasoning behind it, and the claims we will and won't
+make.
 
 ## Development
 
