@@ -24,6 +24,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/report"
 	"github.com/kemalhafizh/strife/pkg/runner"
+	"github.com/kemalhafizh/strife/pkg/shrink"
 	"github.com/kemalhafizh/strife/pkg/transport"
 )
 
@@ -40,6 +41,7 @@ const usage = `Strife — deterministic chaos testing & linearizability checking
 
 Usage:
   strife sim     [flags]   run systems in the deterministic simulator
+  strife shrink  [flags]   minimise a failing simulation to its essential faults
   strife check   [flags]   check a recorded history (JSONL) for linearizability
   strife plan    [flags]   print a seeded fault schedule and its shell commands
   strife run     [flags]   run a live test against a real cluster
@@ -64,6 +66,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch cmd {
 	case "sim":
 		code, err = cmdSim(rest, stdout, stderr)
+	case "shrink":
+		code, err = cmdShrink(rest, stdout, stderr)
 	case "check":
 		code, err = cmdCheck(rest, stdout, stderr)
 	case "plan":
@@ -113,13 +117,12 @@ func verdictCode(v checker.Verdict) int {
 
 // ---------------------------------------------------------------------------
 
-func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
+// scenarioFlags binds the flags describing one simulated scenario and returns
+// a function that builds the config once the flags are parsed.
+func scenarioFlags(fs *flag.FlagSet) func() (explore.Config, error) {
 	d := explore.DefaultConfig()
-	fs := flag.NewFlagSet("sim", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	system := fs.String("system", d.System, "system under test (see `strife systems`)")
 	seed := fs.Uint64("seed", d.Seed, "seed for a single run")
-	seeds := fs.String("seeds", "", "explore many seeds: \"1..1000\" or \"3,7,9\"")
 	nodes := fs.Int("nodes", d.Nodes, "cluster size")
 	clients := fs.Int("clients", d.Clients, "concurrent client processes")
 	keys := fs.Int("keys", d.Keys, "independent keys")
@@ -132,52 +135,68 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 	interval := fs.Duration("fault-interval", d.FaultInterval, "mean time between faults")
 	length := fs.Duration("fault-length", d.FaultLength, "mean fault length")
 	planPath := fs.String("plan", "", "replay this schedule.json instead of generating one")
+	maxSteps := fs.Uint64("max-steps", 0, "checker search budget per key (0 = default)")
+	return func() (explore.Config, error) {
+		kinds, err := nemesis.ParseKinds(*faults)
+		if err != nil {
+			return explore.Config{}, err
+		}
+		cfg := d
+		cfg.System, cfg.Seed, cfg.Nodes, cfg.Clients, cfg.Keys, cfg.Values = *system, *seed, *nodes, *clients, *keys, *values
+		cfg.Duration, cfg.ReadRatio, cfg.CasRatio, cfg.OpTimeout = *duration, *readRatio, *casRatio, *opTimeout
+		cfg.Faults, cfg.FaultInterval, cfg.FaultLength, cfg.MaxSteps = kinds, *interval, *length, *maxSteps
+		if *planPath != "" {
+			data, err := os.ReadFile(*planPath)
+			if err != nil {
+				return explore.Config{}, err
+			}
+			var plan nemesis.Schedule
+			if err := json.Unmarshal(data, &plan); err != nil {
+				return explore.Config{}, fmt.Errorf("%s: %w", *planPath, err)
+			}
+			cfg.Plan = &plan
+		}
+		return cfg, cfg.Validate()
+	}
+}
+
+func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("sim", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	scenario := scenarioFlags(fs)
+	seeds := fs.String("seeds", "", "explore many seeds: \"1..1000\" or \"3,7,9\"")
 	out := fs.String("out", "strife-out", "directory for reports (\"\" to disable)")
 	keep := fs.Int("keep", 3, "when exploring, write reports for this many failing seeds")
 	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
 	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the outcome matches (for CI)")
-	maxSteps := fs.Uint64("max-steps", 0, "checker search budget per key (0 = default)")
+	shrinkIt := fs.Bool("shrink", false, "minimise the (first) violating scenario and report it")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
-	kinds, err := nemesis.ParseKinds(*faults)
+	cfg, err := scenario()
 	if err != nil {
-		return exitUsage, err
-	}
-	cfg := d
-	cfg.System, cfg.Seed, cfg.Nodes, cfg.Clients, cfg.Keys, cfg.Values = *system, *seed, *nodes, *clients, *keys, *values
-	cfg.Duration, cfg.ReadRatio, cfg.CasRatio, cfg.OpTimeout = *duration, *readRatio, *casRatio, *opTimeout
-	cfg.Faults, cfg.FaultInterval, cfg.FaultLength, cfg.MaxSteps = kinds, *interval, *length, *maxSteps
-	if *planPath != "" {
-		data, err := os.ReadFile(*planPath)
-		if err != nil {
-			return exitUsage, err
-		}
-		var plan nemesis.Schedule
-		if err := json.Unmarshal(data, &plan); err != nil {
-			return exitUsage, fmt.Errorf("%s: %w", *planPath, err)
-		}
-		cfg.Plan = &plan
-	}
-	if err := cfg.Validate(); err != nil {
 		return exitUsage, err
 	}
 	if *expect != "" && *expect != string(checker.Linearizable) && *expect != string(checker.Violation) {
 		return exitUsage, fmt.Errorf("--expect must be linearizable or violation")
 	}
 
+	var shrinkOpts *shrink.Options
+	if *shrinkIt {
+		shrinkOpts = &shrink.Options{Workers: *workers}
+	}
 	if *seeds == "" {
-		return simOne(cfg, *out, *determinism, *expect, stdout)
+		return simOne(cfg, *out, *determinism, *expect, shrinkOpts, stdout)
 	}
 	list, err := explore.ParseSeeds(*seeds)
 	if err != nil {
 		return exitUsage, err
 	}
-	return simMany(cfg, list, *workers, *out, *keep, *determinism, *expect, stdout)
+	return simMany(cfg, list, *workers, *out, *keep, *determinism, *expect, shrinkOpts, stdout)
 }
 
-func reproduce(c explore.Config) string {
+func reproduce(c explore.Config, planPath string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "strife sim --system %s --seed %d --nodes %d --clients %d --keys %d --values %d --duration %v --op-timeout %v",
 		c.System, c.Seed, c.Nodes, c.Clients, c.Keys, c.Values, c.Duration, c.OpTimeout)
@@ -192,24 +211,30 @@ func reproduce(c explore.Config) string {
 	}
 	fmt.Fprintf(&b, " --faults %s", f)
 	if c.Plan != nil {
-		b.WriteString(" --plan schedule.json")
+		if planPath == "" {
+			planPath = "schedule.json"
+		}
+		if strings.ContainsAny(planPath, " \t'\"$`\\;&|<>()*?[]{}!#~") {
+			planPath = transport.Quote(planPath)
+		}
+		fmt.Fprintf(&b, " --plan %s", planPath)
 	}
 	return b.String()
 }
 
-func simReport(res *explore.Result) (*report.Report, error) {
+func simReport(res *explore.Result, dir string) (*report.Report, error) {
 	r, err := report.New(report.KindSimulation, res.Config.System, res.Config.Seed, res.Config, res.Schedule, res.History, res.Check, res.TraceHash)
 	if err != nil {
 		return nil, err
 	}
 	r.Events = res.Events
-	r.Reproduce = reproduce(res.Config)
+	r.Reproduce = reproduce(res.Config, filepath.Join(dir, "schedule.json"))
 	r.Fingerprint = report.Fingerprint(r)
 	return r, nil
 }
 
 func writeSimReport(res *explore.Result, dir string) (string, error) {
-	r, err := simReport(res)
+	r, err := simReport(res, dir)
 	if err != nil {
 		return "", err
 	}
@@ -219,7 +244,7 @@ func writeSimReport(res *explore.Result, dir string) (string, error) {
 	return filepath.Join(dir, "report.html"), nil
 }
 
-func simOne(cfg explore.Config, out string, determinism bool, expect string, stdout io.Writer) (int, error) {
+func simOne(cfg explore.Config, out string, determinism bool, expect string, shrinkOpts *shrink.Options, stdout io.Writer) (int, error) {
 	var res *explore.Result
 	if determinism {
 		a, b, ok, err := explore.Determinism(cfg)
@@ -246,6 +271,11 @@ func simOne(cfg explore.Config, out string, determinism bool, expect string, std
 			return exitError, err
 		}
 		fmt.Fprintf(stdout, "report:  %s\n", p)
+	}
+	if shrinkOpts != nil && res.Check.Verdict == checker.Violation {
+		if err := runShrink(cfg, *shrinkOpts, out, stdout); err != nil {
+			return exitError, err
+		}
 	}
 	if expect != "" {
 		if string(res.Check.Verdict) == expect {
@@ -281,7 +311,7 @@ func printResult(w io.Writer, res *explore.Result) {
 	}
 }
 
-func simMany(base explore.Config, seeds []uint64, workers int, out string, keep int, determinism bool, expect string, stdout io.Writer) (int, error) {
+func simMany(base explore.Config, seeds []uint64, workers int, out string, keep int, determinism bool, expect string, shrinkOpts *shrink.Options, stdout io.Writer) (int, error) {
 	start := time.Now()
 	sys, _ := explore.LookupSystem(base.System)
 	fmt.Fprintf(stdout, "exploring %d seeds of %s (%s) with faults %v\n", len(seeds), base.System, sys.Description, base.Faults)
@@ -335,10 +365,17 @@ func simMany(base explore.Config, seeds []uint64, workers int, out string, keep 
 		fmt.Fprintln(stdout)
 		c := base
 		c.Seed = failing[0]
-		fmt.Fprintf(stdout, "reproduce: %s\n", reproduce(c))
+		fmt.Fprintf(stdout, "reproduce: %s\n", reproduce(c, ""))
 	}
 	for _, p := range kept {
 		fmt.Fprintf(stdout, "report:  %s\n", p)
+	}
+	if shrinkOpts != nil && len(failing) > 0 {
+		c := base
+		c.Seed = failing[0]
+		if err := runShrink(c, *shrinkOpts, out, stdout); err != nil {
+			return exitError, err
+		}
 	}
 	if len(errs) > 0 {
 		return exitError, fmt.Errorf("%d seeds failed to run", len(errs))
@@ -362,6 +399,120 @@ func simMany(base explore.Config, seeds []uint64, workers int, out string, keep 
 		return exitUnknown, nil
 	}
 	return exitOK, nil
+}
+
+// ---------------------------------------------------------------------------
+
+func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("shrink", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	scenario := scenarioFlags(fs)
+	from := fs.String("report", "", "shrink the scenario recorded in this simulation report.json (overrides scenario flags)")
+	out := fs.String("out", "strife-out", "directory for the minimal report (\"\" to disable)")
+	maxRuns := fs.Int("max-runs", 600, "simulation budget")
+	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
+	keepWorkload := fs.Bool("keep-workload", false, "only shrink the fault schedule, not duration or clients")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	var cfg explore.Config
+	if *from != "" {
+		data, err := os.ReadFile(*from)
+		if err != nil {
+			return exitUsage, err
+		}
+		var rep report.Report
+		if err := json.Unmarshal(data, &rep); err != nil {
+			return exitUsage, fmt.Errorf("%s: %w", *from, err)
+		}
+		if rep.Kind != report.KindSimulation {
+			return exitUsage, fmt.Errorf("%s: only simulation reports can be shrunk (this one is %q)", *from, rep.Kind)
+		}
+		if err := json.Unmarshal(rep.Config, &cfg); err != nil {
+			return exitUsage, fmt.Errorf("%s: config: %w", *from, err)
+		}
+		if err := cfg.Validate(); err != nil {
+			return exitUsage, err
+		}
+	} else {
+		var err error
+		if cfg, err = scenario(); err != nil {
+			return exitUsage, err
+		}
+	}
+	err := runShrink(cfg, shrink.Options{MaxRuns: *maxRuns, Workers: *workers, KeepWorkload: *keepWorkload}, *out, stdout)
+	if errors.Is(err, shrink.ErrNotViolating) {
+		return exitUsage, err
+	}
+	if err != nil {
+		return exitError, err
+	}
+	return exitViolation, nil
+}
+
+// runShrink minimises cfg, prints the outcome and writes the minimal report.
+func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Writer) error {
+	fmt.Fprintf(stdout, "\nshrinking %s seed %d…\n", cfg.System, cfg.Seed)
+	opts.Progress = func(s shrink.Step) {
+		fmt.Fprintf(stdout, "  %-9s %3d runs  faults %-3d %-9v clients %-3d %s\n",
+			s.Phase, s.Runs, s.Faults, s.Duration.Round(time.Millisecond), s.Clients, s.Note)
+	}
+	res, err := shrink.Shrink(context.Background(), cfg, opts)
+	if err != nil {
+		return err
+	}
+	min := res.Minimal
+	fmt.Fprintf(stdout, "minimal: %d → %d faults, %v → %v, %d → %d clients, %d → %d ops (%d runs, %v)\n",
+		len(res.OriginalSchedule.Faults), len(res.Faults()), res.Original.Duration, min.Duration,
+		res.Original.Clients, min.Clients, res.OriginalOps, res.Final.Check.Operations, res.Runs, res.Elapsed.Round(time.Millisecond))
+	for _, f := range res.Faults() {
+		fmt.Fprintf(stdout, "         #%-3d %-13v → %-13v %s\n", f.ID, f.Start, f.End, f.Describe(min.Nodes))
+	}
+	for _, k := range res.Final.Check.Failures() {
+		if ce := k.Counterexample; ce != nil {
+			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
+			break
+		}
+	}
+	if out == "" {
+		fmt.Fprintln(stdout, "(pass --out to save the minimal schedule and a reproduction command)")
+		return nil
+	}
+	dir := filepath.Join(out, fmt.Sprintf("%s-seed%d-min", min.System, min.Seed))
+	rep, err := simReport(res.Final, dir)
+	if err != nil {
+		return err
+	}
+	info := &report.ShrinkInfo{
+		OriginalFaults: len(res.OriginalSchedule.Faults), MinimalFaults: len(res.Faults()),
+		OriginalOps: res.OriginalOps, MinimalOps: res.Final.Check.Operations,
+		OriginalDuration: res.Original.Duration, MinimalDuration: min.Duration,
+		OriginalClients: res.Original.Clients, MinimalClients: min.Clients,
+		OriginalScheduleHash: res.OriginalSchedule.Hash(),
+		Runs:                 res.Runs, Elapsed: res.Elapsed, BudgetExhausted: res.BudgetExhausted,
+	}
+	for _, s := range res.Steps {
+		info.Steps = append(info.Steps, fmt.Sprintf("%s: %s", s.Phase, s.Note))
+	}
+	rep.Shrink = info
+	if _, err := report.WriteDir(dir, rep, res.Final.History); err != nil {
+		return err
+	}
+	f, err := os.Create(filepath.Join(dir, "shrink.json"))
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(res); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "reproduce: %s\nreport:  %s\n", rep.Reproduce, filepath.Join(dir, "report.html"))
+	return nil
 }
 
 // ---------------------------------------------------------------------------

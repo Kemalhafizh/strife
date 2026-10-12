@@ -65,7 +65,25 @@ type Report struct {
 	Check        checker.Report   `json:"check"`
 	Reproduce    string           `json:"reproduce,omitempty"`
 	GeneratedAt  string           `json:"generated_at,omitempty"`
+	Shrink       *ShrinkInfo      `json:"shrink,omitempty"`
 	Notes        []string         `json:"notes,omitempty"`
+}
+
+// ShrinkInfo describes how a minimal scenario was derived from a failing one.
+type ShrinkInfo struct {
+	OriginalFaults       int           `json:"original_faults"`
+	MinimalFaults        int           `json:"minimal_faults"`
+	OriginalOps          int           `json:"original_ops"`
+	MinimalOps           int           `json:"minimal_ops"`
+	OriginalDuration     time.Duration `json:"original_duration"`
+	MinimalDuration      time.Duration `json:"minimal_duration"`
+	OriginalClients      int           `json:"original_clients"`
+	MinimalClients       int           `json:"minimal_clients"`
+	OriginalScheduleHash string        `json:"original_schedule_hash"`
+	Runs                 int           `json:"runs"`
+	Elapsed              time.Duration `json:"elapsed"`
+	Steps                []string      `json:"steps"`
+	BudgetExhausted      bool          `json:"budget_exhausted,omitempty"`
 }
 
 // New assembles a report and computes its fingerprint.

@@ -99,3 +99,56 @@ func TestLiveDryRun(t *testing.T) {
 		t.Fatalf("expected one commands.log, got %v", matches)
 	}
 }
+
+func TestShrinkCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the simulator dozens of times")
+	}
+	dir := t.TempDir()
+	// Find the violation, then shrink straight from its report.
+	code, out := runCLI(t, "sim", "--system", "raft-stale-reads", "--faults", "partition", "--seed", "2", "--out", dir)
+	if code != exitViolation {
+		t.Fatalf("seed 2 should violate (exit %d):\n%s", code, out)
+	}
+	code, out = runCLI(t, "shrink", "--report", filepath.Join(dir, "raft-stale-reads-seed2", "report.json"), "--out", dir)
+	if code != exitViolation {
+		t.Fatalf("shrink: exit %d\n%s", code, out)
+	}
+	min := filepath.Join(dir, "raft-stale-reads-seed2-min")
+	data, err := os.ReadFile(filepath.Join(min, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep report.Report
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Shrink == nil || rep.Shrink.MinimalFaults > 3 || rep.Shrink.MinimalFaults >= rep.Shrink.OriginalFaults {
+		t.Fatalf("bad shrink info: %+v", rep.Shrink)
+	}
+	if rep.Verdict != "violation" {
+		t.Fatalf("minimal report verdict %s", rep.Verdict)
+	}
+	for _, f := range []string{"shrink.json", "schedule.json", "report.html"} {
+		if _, err := os.Stat(filepath.Join(min, f)); err != nil {
+			t.Fatalf("missing %s", f)
+		}
+	}
+	md, _ := os.ReadFile(filepath.Join(min, "report.md"))
+	if !strings.Contains(string(md), "## Shrinking") {
+		t.Fatal("markdown report lacks the shrinking section")
+	}
+
+	// The printed reproduction command replays the minimal run exactly.
+	args := strings.Fields(strings.TrimPrefix(rep.Reproduce, "strife "))
+	code, out = runCLI(t, append(args, "--out", "")...)
+	if code != exitViolation || !strings.Contains(out, rep.TraceHash[:16]) {
+		t.Fatalf("reproduce diverged (exit %d), want trace %s:\n%s", code, rep.TraceHash[:16], out)
+	}
+
+	// A passing scenario is a usage error, not a crash.
+	code, _ = runCLI(t, "shrink", "--system", "raft", "--seed", "1", "--duration", "2s", "--out", "")
+	if code != exitUsage {
+		t.Fatalf("shrinking a passing run should exit %d, got %d", exitUsage, code)
+	}
+}

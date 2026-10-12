@@ -19,6 +19,7 @@ chaos: build
 	./bin/strife sim --system raft-stale-reads --faults partition --seeds 1..50 --expect violation --out ""
 	./bin/strife sim --system raft-lease --faults clock-skew,partition --seeds 1..200 --expect violation --out ""
 	./bin/strife sim --system raft-unsafe-fsync --faults kill,io-stall --seeds 1..200 --expect violation --out ""
+	./bin/strife shrink --system raft-stale-reads --faults partition --seed 2 --out "" ; test $$? -eq 1
 
 clean:
 	rm -rf bin strife-out
