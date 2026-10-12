@@ -30,7 +30,7 @@ back up.
 | WGL linearizability checker | ✅ Done: memoization, per-key parallelism, symmetry reduction, brute-force cross-check |
 | Register / KV spec model | ✅ Done (`kv`, `set`) |
 | HTML violation reporter | ✅ Done (HTML, Markdown, JSON, fingerprint) |
-| JUnit reporter | ⏳ Phase 1 |
+| JUnit reporter | ✅ Done in Phase 1.2: `--junit`, `--summary` and a GitHub Action |
 | Standalone CLI | ✅ Done (`sim`, `check`, `plan`, `run`, `systems`) |
 | etcd target | ✅ Client and example. ⏳ Not yet validated on a real Docker host |
 | Redis target | ⏳ Phase 1 |
@@ -98,12 +98,42 @@ Next for shrinking:
 - **History shrinking:** cut the counterexample down to the handful of
   operations that conflict, not just the schedule.
 
-### 1.2 JUnit output and a GitHub Action
+### 1.2 JUnit output and a GitHub Action ✅ done
 
-- `--junit report.xml` for `sim`, `check` and `run`: one test case per key or
-  seed, with the counterexample as the failure message.
-- A reusable `action.yml` (download the binary, run the gauntlet, upload the
-  report as an artifact).
+- `--junit FILE` and `--summary FILE` on `sim`, `shrink`, `check` and `run`.
+  Both come from one suite model, so the XML and the Markdown never disagree.
+- Test cases:
+  - one per key for a single run,
+  - one per seed for an exploration,
+  - a single `finds a violation` case for bug hunts with
+    `--expect violation`.
+- Failures carry the counterexample and a reproduction command.
+- Inconclusive checks and runs that cannot complete are JUnit `error`s, never
+  passes.
+- Live runs add a `fault injection` case. It is an error when fault commands
+  failed, and `strife run` then exits non-zero: a clean verdict means little
+  if the planned faults never happened.
+- Suite properties carry the audit trail: the seed, the verdict, the
+  fingerprint, the SHA-256 of the schedule, history and trace, and the
+  reproduction command.
+- `action.yml` is a composite action that builds Strife from the pinned
+  source. It then does the following:
+  - runs the given command,
+  - appends the digest to `$GITHUB_STEP_SUMMARY`,
+  - uploads the reports and JUnit as an artifact, even on failure,
+  - annotates the run,
+  - exposes `exit-code` and `outcome` outputs,
+  - fails the job unless `fail: false`.
+- The runner logic lives in `scripts/github-action.sh`, so it can be linted
+  with shellcheck and tested outside GitHub. Arguments are split, never
+  evaluated.
+- Dogfooded: this repository's CI uses the action itself (`uses: ./`) and
+  asserts on its outputs and its JUnit file. CI also lints the action and the
+  workflows with actionlint and shellcheck.
+- Docs: [github-action.md](github-action.md), which includes recipes for
+  GitLab, Jenkins, CircleCI and Azure.
+- Next: publish prebuilt release binaries so the action skips the build
+  (~15s), and add a Marketplace listing once tags are cut.
 
 ### 1.3 Redis / Valkey client and real validation
 

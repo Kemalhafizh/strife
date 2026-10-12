@@ -288,6 +288,9 @@ type Summary struct {
 	Faults    int             `json:"faults"`
 	TraceHash string          `json:"trace_hash"`
 	Error     string          `json:"error,omitempty"`
+	// Explanation is the first counterexample's explanation, if any.
+	Explanation string        `json:"explanation,omitempty"`
+	Elapsed     time.Duration `json:"-"`
 }
 
 // Explore runs base with every seed in seeds using up to workers goroutines.
@@ -315,6 +318,13 @@ func Explore(base Config, seeds []uint64, workers int, onResult func(*Result)) [
 					s.Error = err.Error()
 				} else {
 					s.Verdict, s.Ops, s.Faults, s.TraceHash = res.Check.Verdict, res.Check.Operations, len(res.Schedule.Faults), res.TraceHash
+					s.Elapsed = res.Elapsed
+					for _, k := range res.Check.Failures() {
+						if k.Counterexample != nil {
+							s.Explanation = fmt.Sprintf("key %s: %s", k.Key, k.Counterexample.Explanation)
+							break
+						}
+					}
 				}
 				mu.Lock()
 				out[j] = s

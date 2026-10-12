@@ -171,6 +171,7 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
 	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the outcome matches (for CI)")
 	shrinkIt := fs.Bool("shrink", false, "minimise the (first) violating scenario and report it")
+	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
@@ -182,18 +183,54 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitUsage, fmt.Errorf("--expect must be linearizable or violation")
 	}
 
-	var shrinkOpts *shrink.Options
+	o := simOptions{out: *out, keep: *keep, workers: *workers, determinism: *determinism, expect: *expect, ci: *ci}
 	if *shrinkIt {
-		shrinkOpts = &shrink.Options{Workers: *workers}
+		o.shrink = &shrink.Options{Workers: *workers}
 	}
 	if *seeds == "" {
-		return simOne(cfg, *out, *determinism, *expect, shrinkOpts, stdout)
+		return simOne(cfg, o, stdout)
 	}
 	list, err := explore.ParseSeeds(*seeds)
 	if err != nil {
 		return exitUsage, err
 	}
-	return simMany(cfg, list, *workers, *out, *keep, *determinism, *expect, shrinkOpts, stdout)
+	return simMany(cfg, list, o, stdout)
+}
+
+// simOptions are the sim command's behaviour switches.
+type simOptions struct {
+	out         string
+	keep        int
+	workers     int
+	determinism bool
+	expect      string
+	shrink      *shrink.Options
+	ci          report.Outputs
+}
+
+// ciFlags binds --junit and --summary, shared by every command that reaches
+// a verdict.
+func ciFlags(fs *flag.FlagSet) *report.Outputs {
+	o := &report.Outputs{}
+	fs.StringVar(&o.JUnit, "junit", "", "write a JUnit XML report here (for CI test reporting)")
+	fs.StringVar(&o.Summary, "summary", "", "append a Markdown summary here (e.g. \"$GITHUB_STEP_SUMMARY\")")
+	return o
+}
+
+// emitCI writes CI artifacts and folds a write failure into the command's
+// error, without masking an earlier one.
+func emitCI(ci report.Outputs, code int, err error, suites ...report.Suite) (int, error) {
+	if !ci.Enabled() {
+		return code, err
+	}
+	if werr := ci.Write(suites); werr != nil {
+		werr = fmt.Errorf("writing CI outputs: %w", werr)
+		if err == nil {
+			return exitError, werr
+		}
+		return code, errors.Join(err, werr)
+	}
+	return code, err
 }
 
 func reproduce(c explore.Config, planPath string) string {
@@ -244,46 +281,64 @@ func writeSimReport(res *explore.Result, dir string) (string, error) {
 	return filepath.Join(dir, "report.html"), nil
 }
 
-func simOne(cfg explore.Config, out string, determinism bool, expect string, shrinkOpts *shrink.Options, stdout io.Writer) (int, error) {
+func simOne(cfg explore.Config, o simOptions, stdout io.Writer) (int, error) {
+	start := time.Now()
+	suiteName := fmt.Sprintf("simulation · %s", cfg.System)
 	var res *explore.Result
-	if determinism {
+	if o.determinism {
 		a, b, ok, err := explore.Determinism(cfg)
 		if err != nil {
-			return exitError, err
+			return emitCI(o.ci, exitError, err, report.ErrorSuite(suiteName, err))
 		}
 		fmt.Fprintf(stdout, "determinism: run 1 trace %s\n             run 2 trace %s\n", short(a.TraceHash), short(b.TraceHash))
 		if !ok {
-			return exitError, fmt.Errorf("NONDETERMINISM: identical seeds produced different executions")
+			err := fmt.Errorf("NONDETERMINISM: identical seeds produced different executions (trace %s vs %s)", short(a.TraceHash), short(b.TraceHash))
+			return emitCI(o.ci, exitError, err, report.ErrorSuite(suiteName, err))
 		}
 		fmt.Fprintln(stdout, "determinism: ✓ identical executions")
 		res = a
 	} else {
 		var err error
 		if res, err = explore.Run(cfg); err != nil {
-			return exitError, err
+			return emitCI(o.ci, exitError, err, report.ErrorSuite(suiteName, err))
 		}
 	}
 	printResult(stdout, res)
-	if out != "" {
-		dir := filepath.Join(out, fmt.Sprintf("%s-seed%d", cfg.System, cfg.Seed))
-		p, err := writeSimReport(res, dir)
-		if err != nil {
+	dir := ""
+	if o.out != "" {
+		dir = filepath.Join(o.out, fmt.Sprintf("%s-seed%d", cfg.System, cfg.Seed))
+	}
+	rep, err := simReport(res, dir)
+	if err != nil {
+		return exitError, err
+	}
+	if dir != "" {
+		if _, err := report.WriteDir(dir, rep, res.History); err != nil {
 			return exitError, err
 		}
-		fmt.Fprintf(stdout, "report:  %s\n", p)
+		fmt.Fprintf(stdout, "report:  %s\n", filepath.Join(dir, "report.html"))
 	}
-	if shrinkOpts != nil && res.Check.Verdict == checker.Violation {
-		if err := runShrink(cfg, *shrinkOpts, out, stdout); err != nil {
+	if o.shrink != nil && res.Check.Verdict == checker.Violation {
+		if _, err := runShrink(cfg, *o.shrink, o.out, stdout); err != nil {
 			return exitError, err
 		}
 	}
-	if expect != "" {
-		if string(res.Check.Verdict) == expect {
-			return exitOK, nil
+
+	suite := report.SuiteFromReport(rep, time.Since(start))
+	code, verr := verdictCode(res.Check.Verdict), error(nil)
+	if o.expect != "" {
+		// The expectation is the test: a violation that was expected passes.
+		c := report.Case{Name: "expect " + o.expect, Class: suite.Cases[0].Class, Time: time.Since(start), Status: report.Passed}
+		if string(res.Check.Verdict) == o.expect {
+			code = exitOK
+		} else {
+			code, verr = exitViolation, fmt.Errorf("expected %s, got %s", o.expect, res.Check.Verdict)
+			c.Status, c.Message = report.Failed, verr.Error()
 		}
-		return exitViolation, fmt.Errorf("expected %s, got %s", expect, res.Check.Verdict)
+		c.Output = fmt.Sprintf("verdict: %s", res.Check.Verdict)
+		suite.Cases = []report.Case{c}
 	}
-	return verdictCode(res.Check.Verdict), nil
+	return emitCI(o.ci, code, verr, suite)
 }
 
 func short(h string) string {
@@ -311,16 +366,18 @@ func printResult(w io.Writer, res *explore.Result) {
 	}
 }
 
-func simMany(base explore.Config, seeds []uint64, workers int, out string, keep int, determinism bool, expect string, shrinkOpts *shrink.Options, stdout io.Writer) (int, error) {
+func simMany(base explore.Config, seeds []uint64, o simOptions, stdout io.Writer) (int, error) {
 	start := time.Now()
 	sys, _ := explore.LookupSystem(base.System)
-	fmt.Fprintf(stdout, "exploring %d seeds of %s (%s) with faults %v\n", len(seeds), base.System, sys.Description, base.Faults)
+	faults := faultList(base)
+	suiteName := fmt.Sprintf("simulation · %s", base.System)
+	fmt.Fprintf(stdout, "exploring %d seeds of %s (%s) with faults %s\n", len(seeds), base.System, sys.Description, faults)
 	var kept []string
-	sums := explore.Explore(base, seeds, workers, func(res *explore.Result) {
-		if res.Check.Verdict == checker.Linearizable || out == "" || len(kept) >= keep {
+	sums := explore.Explore(base, seeds, o.workers, func(res *explore.Result) {
+		if res.Check.Verdict == checker.Linearizable || o.out == "" || len(kept) >= o.keep {
 			return
 		}
-		dir := filepath.Join(out, fmt.Sprintf("%s-seed%d", res.Config.System, res.Config.Seed))
+		dir := filepath.Join(o.out, fmt.Sprintf("%s-seed%d", res.Config.System, res.Config.Seed))
 		if p, err := writeSimReport(res, dir); err == nil {
 			kept = append(kept, p)
 		}
@@ -338,12 +395,13 @@ func simMany(base explore.Config, seeds []uint64, workers int, out string, keep 
 			failing = append(failing, s.Seed)
 		}
 	}
-	if determinism {
+	if o.determinism {
 		fmt.Fprintln(stdout, "determinism: re-running every seed...")
-		again := explore.Explore(base, seeds, workers, nil)
+		again := explore.Explore(base, seeds, o.workers, nil)
 		for i := range sums {
 			if sums[i].TraceHash != again[i].TraceHash {
-				return exitError, fmt.Errorf("NONDETERMINISM at seed %d: trace %s vs %s", sums[i].Seed, short(sums[i].TraceHash), short(again[i].TraceHash))
+				err := fmt.Errorf("NONDETERMINISM at seed %d: trace %s vs %s", sums[i].Seed, short(sums[i].TraceHash), short(again[i].TraceHash))
+				return emitCI(o.ci, exitError, err, report.ErrorSuite(suiteName, err))
 			}
 		}
 		fmt.Fprintf(stdout, "determinism: ✓ %d seeds replayed identically\n", len(seeds))
@@ -370,35 +428,56 @@ func simMany(base explore.Config, seeds []uint64, workers int, out string, keep 
 	for _, p := range kept {
 		fmt.Fprintf(stdout, "report:  %s\n", p)
 	}
-	if shrinkOpts != nil && len(failing) > 0 {
+	if o.shrink != nil && len(failing) > 0 {
 		c := base
 		c.Seed = failing[0]
-		if err := runShrink(c, *shrinkOpts, out, stdout); err != nil {
+		if _, err := runShrink(c, *o.shrink, o.out, stdout); err != nil {
 			return exitError, err
 		}
 	}
-	if len(errs) > 0 {
-		return exitError, fmt.Errorf("%d seeds failed to run", len(errs))
+
+	results := make([]report.SeedResult, len(sums))
+	for i, s := range sums {
+		c := base
+		c.Seed = s.Seed
+		results[i] = report.SeedResult{Seed: s.Seed, Verdict: s.Verdict, Ops: s.Ops, Faults: s.Faults,
+			Explanation: s.Explanation, Reproduce: reproduce(c, ""), Error: s.Error, Elapsed: s.Elapsed}
 	}
-	switch expect {
-	case string(checker.Violation):
+	suite := report.ExplorationSuite(base.System, faults, results, o.expect == string(checker.Violation), time.Since(start))
+
+	var code int
+	var err error
+	switch {
+	case len(errs) > 0:
+		code, err = exitError, fmt.Errorf("%d seeds failed to run", len(errs))
+	case o.expect == string(checker.Violation):
 		if len(failing) == 0 {
-			return exitViolation, fmt.Errorf("expected a violation, none found")
+			code, err = exitViolation, fmt.Errorf("expected a violation, none found")
 		}
-		return exitOK, nil
-	case string(checker.Linearizable):
+	case o.expect == string(checker.Linearizable):
 		if len(failing) > 0 || counts[checker.Unknown] > 0 {
-			return exitViolation, fmt.Errorf("expected every seed to be linearizable")
+			code, err = exitViolation, fmt.Errorf("expected every seed to be linearizable")
 		}
-		return exitOK, nil
+	case len(failing) > 0:
+		code = exitViolation
+	case counts[checker.Unknown] > 0:
+		code = exitUnknown
 	}
-	if len(failing) > 0 {
-		return exitViolation, nil
+	return emitCI(o.ci, code, err, suite)
+}
+
+func faultList(c explore.Config) string {
+	if c.Plan != nil {
+		return "plan"
 	}
-	if counts[checker.Unknown] > 0 {
-		return exitUnknown, nil
+	ks := make([]string, len(c.Faults))
+	for i, k := range c.Faults {
+		ks[i] = string(k)
 	}
-	return exitOK, nil
+	if len(ks) == 0 {
+		return "none"
+	}
+	return strings.Join(ks, ",")
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +491,7 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	maxRuns := fs.Int("max-runs", 600, "simulation budget")
 	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
 	keepWorkload := fs.Bool("keep-workload", false, "only shrink the fault schedule, not duration or clients")
+	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
@@ -440,18 +520,23 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 			return exitUsage, err
 		}
 	}
-	err := runShrink(cfg, shrink.Options{MaxRuns: *maxRuns, Workers: *workers, KeepWorkload: *keepWorkload}, *out, stdout)
+	start := time.Now()
+	rep, err := runShrink(cfg, shrink.Options{MaxRuns: *maxRuns, Workers: *workers, KeepWorkload: *keepWorkload}, *out, stdout)
+	name := fmt.Sprintf("shrink · %s", cfg.System)
 	if errors.Is(err, shrink.ErrNotViolating) {
-		return exitUsage, err
+		return emitCI(*ci, exitUsage, err, report.ErrorSuite(name, err))
 	}
 	if err != nil {
-		return exitError, err
+		return emitCI(*ci, exitError, err, report.ErrorSuite(name, err))
 	}
-	return exitViolation, nil
+	// The minimal scenario is a reproducer of a failure, so its keys fail.
+	suite := report.SuiteFromReport(rep, time.Since(start))
+	suite.Name = name
+	return emitCI(*ci, exitViolation, nil, suite)
 }
 
 // runShrink minimises cfg, prints the outcome and writes the minimal report.
-func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Writer) error {
+func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Writer) (*report.Report, error) {
 	fmt.Fprintf(stdout, "\nshrinking %s seed %d…\n", cfg.System, cfg.Seed)
 	opts.Progress = func(s shrink.Step) {
 		fmt.Fprintf(stdout, "  %-9s %3d runs  faults %-3d %-9v clients %-3d %s\n",
@@ -459,7 +544,7 @@ func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Wr
 	}
 	res, err := shrink.Shrink(context.Background(), cfg, opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	min := res.Minimal
 	fmt.Fprintf(stdout, "minimal: %d → %d faults, %v → %v, %d → %d clients, %d → %d ops (%d runs, %v)\n",
@@ -474,14 +559,13 @@ func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Wr
 			break
 		}
 	}
-	if out == "" {
-		fmt.Fprintln(stdout, "(pass --out to save the minimal schedule and a reproduction command)")
-		return nil
+	dir := ""
+	if out != "" {
+		dir = filepath.Join(out, fmt.Sprintf("%s-seed%d-min", min.System, min.Seed))
 	}
-	dir := filepath.Join(out, fmt.Sprintf("%s-seed%d-min", min.System, min.Seed))
 	rep, err := simReport(res.Final, dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	info := &report.ShrinkInfo{
 		OriginalFaults: len(res.OriginalSchedule.Faults), MinimalFaults: len(res.Faults()),
@@ -495,24 +579,30 @@ func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Wr
 		info.Steps = append(info.Steps, fmt.Sprintf("%s: %s", s.Phase, s.Note))
 	}
 	rep.Shrink = info
+	if dir == "" {
+		// Nothing is saved, so there is no schedule file to replay from.
+		rep.Reproduce = ""
+		fmt.Fprintln(stdout, "(pass --out to save the minimal schedule and a reproduction command)")
+		return rep, nil
+	}
 	if _, err := report.WriteDir(dir, rep, res.Final.History); err != nil {
-		return err
+		return nil, err
 	}
 	f, err := os.Create(filepath.Join(dir, "shrink.json"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(res); err != nil {
 		f.Close()
-		return err
+		return nil, err
 	}
 	if err := f.Close(); err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Fprintf(stdout, "reproduce: %s\nreport:  %s\n", rep.Reproduce, filepath.Join(dir, "report.html"))
-	return nil
+	return rep, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +614,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
 	out := fs.String("out", "", "write a report directory here")
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
+	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
@@ -562,17 +653,17 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
 		}
 	}
+	rr, err := report.New(report.KindCheck, filepath.Base(*path), 0, map[string]string{"model": m.Name()}, nemesis.Schedule{}, ops, rep, "")
+	if err != nil {
+		return exitError, err
+	}
 	if *out != "" {
-		rr, err := report.New(report.KindCheck, filepath.Base(*path), 0, map[string]string{"model": m.Name()}, nemesis.Schedule{}, ops, rep, "")
-		if err != nil {
-			return exitError, err
-		}
 		if _, err := report.WriteDir(*out, rr, ops); err != nil {
 			return exitError, err
 		}
 		fmt.Fprintf(stdout, "report:  %s\n", filepath.Join(*out, "report.html"))
 	}
-	return verdictCode(rep.Verdict), nil
+	return emitCI(*ci, verdictCode(rep.Verdict), nil, report.SuiteFromReport(rr, time.Since(start)))
 }
 
 // ---------------------------------------------------------------------------
@@ -655,6 +746,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	seed := fs.Int64("seed", -1, "override the config seed")
 	duration := fs.Duration("duration", 0, "override the config duration")
 	quiet := fs.Bool("quiet", false, "less progress output")
+	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
@@ -680,9 +772,10 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	fmt.Fprintf(stdout, "strife run %q: seed %d, %d nodes, %v, faults %v\n", cfg.Name, cfg.Seed, len(cfg.Nodes), time.Duration(cfg.Duration), cfg.Nemesis.Faults)
+	start := time.Now()
 	res, err := runner.Run(ctx, cfg, opts)
 	if err != nil {
-		return exitError, err
+		return emitCI(*ci, exitError, err, report.ErrorSuite("live · "+cfg.Name, err))
 	}
 	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg, res.Schedule, res.History, res.Check, "")
 	if err != nil {
@@ -713,5 +806,18 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
 		}
 	}
-	return verdictCode(c.Verdict), nil
+	code, rerr := verdictCode(c.Verdict), error(nil)
+	if failed := injectionErrors(res.Applied); failed > 0 && code == exitOK {
+		// A clean verdict means little if the planned faults never happened.
+		code, rerr = exitError, fmt.Errorf("%d fault commands failed: the cluster did not see the planned schedule (see report)", failed)
+	}
+	return emitCI(*ci, code, rerr, report.SuiteFromReport(rep, time.Since(start)))
+}
+
+func injectionErrors(applied []report.Applied) int {
+	n := 0
+	for _, a := range applied {
+		n += len(a.Errors)
+	}
+	return n
 }

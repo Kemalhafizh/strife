@@ -16,6 +16,10 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
         run: go vet ./...
+      - name: lint the GitHub Action and workflows
+        run: |
+          shellcheck scripts/*.sh
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck "$(command -v shellcheck)"
       - name: unit tests (race)
         run: go test -race -short ./...
       - name: full tests (bug-finding regression)
@@ -47,3 +51,43 @@ jobs:
           python3 -c "import json,sys; r=json.load(open('shrunk/raft-stale-reads-seed2-min/report.json')); sys.exit(0 if r['shrink']['minimal_faults'] <= 3 else 1)"
       - name: live runner end to end (in-memory store, dry-run nemesis)
         run: ./strife run --config testdata/memory.json --duration 5s --dry-run --quiet
+
+  # Dogfood the GitHub Action exactly as users consume it.
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: correct Raft passes through the action
+        id: pass
+        uses: ./
+        with:
+          command: sim --system raft --seeds 1..50 --determinism --expect linearizable
+          artifact-name: strife-raft
+      - name: a violation is reported (without failing this job)
+        id: bug
+        uses: ./
+        with:
+          command: sim --system raft-stale-reads --faults partition --seed 2 --shrink
+          junit: junit/stale-reads.xml
+          artifact-name: strife-stale-reads
+          fail: "false"
+      - name: outputs and JUnit are what users rely on
+        shell: bash
+        env:
+          PASS_OUTCOME: ${{ steps.pass.outputs.outcome }}
+          BUG_OUTCOME: ${{ steps.bug.outputs.outcome }}
+          BUG_CODE: ${{ steps.bug.outputs.exit-code }}
+          BUG_JUNIT: ${{ steps.bug.outputs.junit }}
+        run: |
+          test "$PASS_OUTCOME" = passed
+          test "$BUG_OUTCOME" = violation
+          test "$BUG_CODE" = 1
+          python3 - "$BUG_JUNIT" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          assert int(root.get("failures")) > 0, "violation missing from JUnit"
+          body = root.find(".//failure").text
+          assert "Reproduce:" in body and "strife sim" in body, body
+          print("JUnit ok:", root.get("tests"), "tests,", root.get("failures"), "failures")
+          PY
+          test -f strife-out/raft-stale-reads-seed2-min/report.html

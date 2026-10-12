@@ -12,6 +12,8 @@ test-short:
 lint:
 	test -z "$$(gofmt -l .)"
 	go vet ./...
+	shellcheck scripts/*.sh
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
 
 # The same gauntlet CI runs.
 chaos: build

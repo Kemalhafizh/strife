@@ -1,0 +1,104 @@
+name: Strife
+description: Deterministic chaos testing and linearizability checking for distributed systems, with JUnit and job-summary reporting.
+author: Muhammad Kemal Hafizh
+branding:
+  icon: zap
+  color: red
+
+inputs:
+  command:
+    description: >
+      The strife command line without the leading "strife", e.g.
+      "sim --system raft --seeds 1..200 --determinism --expect linearizable".
+      Split on whitespace; quoting is not interpreted.
+    required: true
+  out:
+    description: Directory for HTML/Markdown/JSON reports ("" to disable).
+    required: false
+    default: strife-out
+  junit:
+    description: Path of the JUnit XML report ("" to disable).
+    required: false
+    default: strife-junit.xml
+  summary:
+    description: Append a Markdown digest to the job summary page.
+    required: false
+    default: "true"
+  upload:
+    description: Upload the reports and the JUnit file as a workflow artifact.
+    required: false
+    default: "true"
+  artifact-name:
+    description: Name of the uploaded artifact (must be unique within the workflow run).
+    required: false
+    default: strife-reports
+  fail:
+    description: Fail the step when strife exits non-zero (violation, inconclusive or error).
+    required: false
+    default: "true"
+  go-version:
+    description: Go version used to build Strife. Defaults to the version in Strife's go.mod.
+    required: false
+    default: ""
+
+outputs:
+  exit-code:
+    description: "strife's exit code: 0 passed, 1 violation, 2 usage error, 3 inconclusive, 4 error."
+    value: ${{ steps.strife.outputs.exit-code }}
+  outcome:
+    description: "passed, violation, inconclusive, usage-error or error."
+    value: ${{ steps.strife.outputs.outcome }}
+  junit:
+    description: Path of the JUnit XML report.
+    value: ${{ steps.strife.outputs.junit }}
+  report-dir:
+    description: Directory holding the reports.
+    value: ${{ steps.strife.outputs.report-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: false
+
+    - name: Build strife
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/strife-bin"
+        cd "$GITHUB_ACTION_PATH"
+        go build -trimpath -o "$RUNNER_TEMP/strife-bin/strife" ./cmd/strife
+        "$RUNNER_TEMP/strife-bin/strife" version
+
+    - name: Run strife
+      id: strife
+      shell: bash
+      env:
+        STRIFE_ARGS: ${{ inputs.command }}
+        STRIFE_OUT: ${{ inputs.out }}
+        STRIFE_JUNIT: ${{ inputs.junit }}
+        STRIFE_SUMMARY: ${{ inputs.summary }}
+      run: STRIFE_BIN="$RUNNER_TEMP/strife-bin/strife" "$GITHUB_ACTION_PATH/scripts/github-action.sh"
+
+    - name: Upload reports
+      if: ${{ always() && inputs.upload == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ inputs.out }}
+          ${{ inputs.junit }}
+        if-no-files-found: ignore
+
+    - name: Verdict
+      if: ${{ inputs.fail == 'true' && steps.strife.outputs.exit-code != '0' }}
+      shell: bash
+      env:
+        CODE: ${{ steps.strife.outputs.exit-code }}
+        OUTCOME: ${{ steps.strife.outputs.outcome }}
+      run: |
+        echo "strife finished with outcome '$OUTCOME' (exit code $CODE)"
+        exit "$CODE"
