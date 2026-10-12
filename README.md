@@ -58,6 +58,7 @@ turns this into an engineering loop:
 | **Linearizability checker** | Wing & Gong / Lowe search with memoization, per-key P-compositionality run in parallel, and symmetry reduction for indeterminate ops. It is cross-checked against brute force on 3,000 random histories in the test suite. |
 | **Live fault injection** | `iptables` partitions in a dedicated `STRIFE` chain, `tc netem` latency and loss, `SIGKILL` with restart, `SIGSTOP`/`SIGCONT`, the cgroup v2 freezer, `io.max` disk stalls, and clock steps. It runs over Docker or SSH. `--dry-run` and `strife plan` show every command before anything is touched. |
 | **Automatic shrinking** | `strife shrink` reduces a failing run to its essential faults with delta debugging (ddmin). It then narrows targets, windows, magnitudes, duration and clients, and verifies that every remaining fault is necessary. The result replays bit for bit. |
+| **CI native** | `--junit` and `--summary` on every command that reaches a verdict, plus a GitHub Action that builds Strife, posts the digest to the job summary, uploads the reports and fails the job on a violation. |
 | **Audit reports** | `report.html`, `report.md`, `report.json`, `history.jsonl` and `schedule.json`, plus a SHA-256 fingerprint over config, schedule, history and trace. |
 | **Zero dependencies** | Pure Go standard library. One static binary. |
 
@@ -119,6 +120,27 @@ minimal scenario, whatever the worker count.
 
 Exit codes: `0` linearizable (or matches `--expect`), `1` violation, `2` usage,
 `3` unknown (search budget exhausted), `4` error.
+
+### In CI
+
+```yaml
+- uses: kemalhafizh/strife@main
+  with:
+    command: sim --system raft --seeds 1..500 --determinism --expect linearizable
+```
+
+The action builds Strife, runs the command, and does the following:
+
+- writes a JUnit report, with one test case per seed or key and the
+  counterexample plus a reproduction command in each failure,
+- appends a digest to the job summary,
+- uploads every report as an artifact,
+- fails the job on a violation.
+
+Outside GitHub, `--junit` and `--summary` work with any CI system. See
+[docs/github-action.md](docs/github-action.md) for the inputs, the outputs and
+recipes such as bug hunts that must succeed, checking your own histories, and
+the Checks tab.
 
 ### Checking your own histories
 
@@ -254,15 +276,17 @@ failure."*
 - **Tamper-evident artifacts:** the fingerprint covers the config, schedule,
   history and trace. Anyone can recompute it and re-run `strife check` on the
   shipped history to confirm the verdict without trusting the tester.
-- **Regression gates:** `--expect linearizable` over a fixed seed range turns
-  a chaos campaign into a CI check that fails the build on the first
-  violation.
+- **Regression gates:** `--expect linearizable` over a fixed seed range,
+  through the GitHub Action or `--junit` on any CI system, turns a chaos
+  campaign into a check that fails the build on the first violation. Each
+  JUnit suite carries the fingerprint and hashes as properties.
 
 ## Roadmap
 
-Done: automatic shrinking (Phase 1.1). Next up: JUnit output with a GitHub
-Action, a Redis/Valkey client, then a per-node `strife-agent` with netlink
-injection and transactional (Elle-style) models. See [docs/ROADMAP.md](docs/ROADMAP.md) for
+Done: automatic shrinking (Phase 1.1), and JUnit/summary output with a GitHub
+Action (Phase 1.2). Next up: a Redis/Valkey client, checker hardening, then a
+per-node `strife-agent` with netlink injection and transactional (Elle-style)
+models. See [docs/ROADMAP.md](docs/ROADMAP.md) for
 the phased plan, the reasoning behind it, and the claims we will and won't
 make.
 
