@@ -1,0 +1,566 @@
+// Command strife is a deterministic chaos testing engine and linearizability
+// checker for distributed systems.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"text/tabwriter"
+	"time"
+
+	"github.com/kemalhafizh/strife/pkg/checker"
+	"github.com/kemalhafizh/strife/pkg/explore"
+	"github.com/kemalhafizh/strife/pkg/history"
+	"github.com/kemalhafizh/strife/pkg/model"
+	"github.com/kemalhafizh/strife/pkg/nemesis"
+	"github.com/kemalhafizh/strife/pkg/report"
+	"github.com/kemalhafizh/strife/pkg/runner"
+	"github.com/kemalhafizh/strife/pkg/transport"
+)
+
+// Exit codes.
+const (
+	exitOK        = 0
+	exitViolation = 1
+	exitUsage     = 2
+	exitUnknown   = 3
+	exitError     = 4
+)
+
+const usage = `Strife — deterministic chaos testing & linearizability checking
+
+Usage:
+  strife sim     [flags]   run systems in the deterministic simulator
+  strife check   [flags]   check a recorded history (JSONL) for linearizability
+  strife plan    [flags]   print a seeded fault schedule and its shell commands
+  strife run     [flags]   run a live test against a real cluster
+  strife systems           list the built-in simulated systems
+  strife version
+
+Run "strife <command> -h" for flags.
+`
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprint(stderr, usage)
+		return exitUsage
+	}
+	cmd, rest := args[0], args[1:]
+	var err error
+	code := exitOK
+	switch cmd {
+	case "sim":
+		code, err = cmdSim(rest, stdout, stderr)
+	case "check":
+		code, err = cmdCheck(rest, stdout, stderr)
+	case "plan":
+		code, err = cmdPlan(rest, stdout, stderr)
+	case "run":
+		code, err = cmdRun(rest, stdout, stderr)
+	case "systems":
+		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "SYSTEM\tEXPECTED\tEXPOSED BY\tDESCRIPTION")
+		for _, s := range explore.Systems() {
+			hint := s.Hint
+			if hint == "" {
+				hint = "-"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Name, s.Expect, hint, s.Description)
+		}
+		tw.Flush()
+	case "version", "-v", "--version":
+		fmt.Fprintf(stdout, "strife %s\n", report.Version)
+	case "help", "-h", "--help":
+		fmt.Fprint(stdout, usage)
+	default:
+		fmt.Fprintf(stderr, "strife: unknown command %q\n\n%s", cmd, usage)
+		return exitUsage
+	}
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
+		fmt.Fprintf(stderr, "strife %s: %v\n", cmd, err)
+		if code == exitOK {
+			code = exitError
+		}
+	}
+	return code
+}
+
+func verdictCode(v checker.Verdict) int {
+	switch v {
+	case checker.Linearizable:
+		return exitOK
+	case checker.Violation:
+		return exitViolation
+	}
+	return exitUnknown
+}
+
+// ---------------------------------------------------------------------------
+
+func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
+	d := explore.DefaultConfig()
+	fs := flag.NewFlagSet("sim", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	system := fs.String("system", d.System, "system under test (see `strife systems`)")
+	seed := fs.Uint64("seed", d.Seed, "seed for a single run")
+	seeds := fs.String("seeds", "", "explore many seeds: \"1..1000\" or \"3,7,9\"")
+	nodes := fs.Int("nodes", d.Nodes, "cluster size")
+	clients := fs.Int("clients", d.Clients, "concurrent client processes")
+	keys := fs.Int("keys", d.Keys, "independent keys")
+	values := fs.Int("values", d.Values, "values are drawn from [0, values)")
+	duration := fs.Duration("duration", d.Duration, "simulated test length")
+	readRatio := fs.Float64("read-ratio", d.ReadRatio, "fraction of reads")
+	casRatio := fs.Float64("cas-ratio", d.CasRatio, "fraction of compare-and-sets")
+	opTimeout := fs.Duration("op-timeout", d.OpTimeout, "client operation timeout (simulated)")
+	faults := fs.String("faults", "all", "comma separated fault kinds, \"all\" or \"none\"")
+	interval := fs.Duration("fault-interval", d.FaultInterval, "mean time between faults")
+	length := fs.Duration("fault-length", d.FaultLength, "mean fault length")
+	planPath := fs.String("plan", "", "replay this schedule.json instead of generating one")
+	out := fs.String("out", "strife-out", "directory for reports (\"\" to disable)")
+	keep := fs.Int("keep", 3, "when exploring, write reports for this many failing seeds")
+	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
+	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
+	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the outcome matches (for CI)")
+	maxSteps := fs.Uint64("max-steps", 0, "checker search budget per key (0 = default)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	kinds, err := nemesis.ParseKinds(*faults)
+	if err != nil {
+		return exitUsage, err
+	}
+	cfg := d
+	cfg.System, cfg.Seed, cfg.Nodes, cfg.Clients, cfg.Keys, cfg.Values = *system, *seed, *nodes, *clients, *keys, *values
+	cfg.Duration, cfg.ReadRatio, cfg.CasRatio, cfg.OpTimeout = *duration, *readRatio, *casRatio, *opTimeout
+	cfg.Faults, cfg.FaultInterval, cfg.FaultLength, cfg.MaxSteps = kinds, *interval, *length, *maxSteps
+	if *planPath != "" {
+		data, err := os.ReadFile(*planPath)
+		if err != nil {
+			return exitUsage, err
+		}
+		var plan nemesis.Schedule
+		if err := json.Unmarshal(data, &plan); err != nil {
+			return exitUsage, fmt.Errorf("%s: %w", *planPath, err)
+		}
+		cfg.Plan = &plan
+	}
+	if err := cfg.Validate(); err != nil {
+		return exitUsage, err
+	}
+	if *expect != "" && *expect != string(checker.Linearizable) && *expect != string(checker.Violation) {
+		return exitUsage, fmt.Errorf("--expect must be linearizable or violation")
+	}
+
+	if *seeds == "" {
+		return simOne(cfg, *out, *determinism, *expect, stdout)
+	}
+	list, err := explore.ParseSeeds(*seeds)
+	if err != nil {
+		return exitUsage, err
+	}
+	return simMany(cfg, list, *workers, *out, *keep, *determinism, *expect, stdout)
+}
+
+func reproduce(c explore.Config) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "strife sim --system %s --seed %d --nodes %d --clients %d --keys %d --values %d --duration %v --op-timeout %v",
+		c.System, c.Seed, c.Nodes, c.Clients, c.Keys, c.Values, c.Duration, c.OpTimeout)
+	fmt.Fprintf(&b, " --read-ratio %g --cas-ratio %g --fault-interval %v --fault-length %v", c.ReadRatio, c.CasRatio, c.FaultInterval, c.FaultLength)
+	ks := make([]string, len(c.Faults))
+	for i, k := range c.Faults {
+		ks[i] = string(k)
+	}
+	f := strings.Join(ks, ",")
+	if f == "" {
+		f = "none"
+	}
+	fmt.Fprintf(&b, " --faults %s", f)
+	if c.Plan != nil {
+		b.WriteString(" --plan schedule.json")
+	}
+	return b.String()
+}
+
+func simReport(res *explore.Result) (*report.Report, error) {
+	r, err := report.New(report.KindSimulation, res.Config.System, res.Config.Seed, res.Config, res.Schedule, res.History, res.Check, res.TraceHash)
+	if err != nil {
+		return nil, err
+	}
+	r.Events = res.Events
+	r.Reproduce = reproduce(res.Config)
+	r.Fingerprint = report.Fingerprint(r)
+	return r, nil
+}
+
+func writeSimReport(res *explore.Result, dir string) (string, error) {
+	r, err := simReport(res)
+	if err != nil {
+		return "", err
+	}
+	if _, err := report.WriteDir(dir, r, res.History); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "report.html"), nil
+}
+
+func simOne(cfg explore.Config, out string, determinism bool, expect string, stdout io.Writer) (int, error) {
+	var res *explore.Result
+	if determinism {
+		a, b, ok, err := explore.Determinism(cfg)
+		if err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "determinism: run 1 trace %s\n             run 2 trace %s\n", short(a.TraceHash), short(b.TraceHash))
+		if !ok {
+			return exitError, fmt.Errorf("NONDETERMINISM: identical seeds produced different executions")
+		}
+		fmt.Fprintln(stdout, "determinism: ✓ identical executions")
+		res = a
+	} else {
+		var err error
+		if res, err = explore.Run(cfg); err != nil {
+			return exitError, err
+		}
+	}
+	printResult(stdout, res)
+	if out != "" {
+		dir := filepath.Join(out, fmt.Sprintf("%s-seed%d", cfg.System, cfg.Seed))
+		p, err := writeSimReport(res, dir)
+		if err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "report:  %s\n", p)
+	}
+	if expect != "" {
+		if string(res.Check.Verdict) == expect {
+			return exitOK, nil
+		}
+		return exitViolation, fmt.Errorf("expected %s, got %s", expect, res.Check.Verdict)
+	}
+	return verdictCode(res.Check.Verdict), nil
+}
+
+func short(h string) string {
+	if len(h) > 16 {
+		return h[:16]
+	}
+	return h
+}
+
+func printResult(w io.Writer, res *explore.Result) {
+	c := res.Check
+	fmt.Fprintf(w, "system:  %s   seed: %d   nodes: %d   simulated: %v   events: %d   wall: %v\n",
+		res.Config.System, res.Config.Seed, res.Config.Nodes, res.Config.Duration, res.Events, res.Elapsed.Round(time.Millisecond))
+	fmt.Fprintf(w, "faults:  %d scheduled (schedule %s)\n", len(res.Schedule.Faults), short(res.ScheduleHash))
+	for _, f := range res.Schedule.Faults {
+		fmt.Fprintf(w, "         %7.3fs → %7.3fs  %s\n", f.Start.Seconds(), f.End.Seconds(), f.Describe(res.Config.Nodes))
+	}
+	fmt.Fprintf(w, "ops:     %d (%d ok, %d fail, %d info)   history %s   trace %s\n",
+		c.Stats.Invocations, c.Stats.OK, c.Stats.Fail, c.Stats.Info, short(res.HistoryHash), short(res.TraceHash))
+	fmt.Fprintf(w, "verdict: %s\n", strings.ToUpper(string(c.Verdict)))
+	for _, k := range c.Failures() {
+		if ce := k.Counterexample; ce != nil {
+			fmt.Fprintf(w, "  key %s: %s\n", k.Key, ce.Explanation)
+		}
+	}
+}
+
+func simMany(base explore.Config, seeds []uint64, workers int, out string, keep int, determinism bool, expect string, stdout io.Writer) (int, error) {
+	start := time.Now()
+	sys, _ := explore.LookupSystem(base.System)
+	fmt.Fprintf(stdout, "exploring %d seeds of %s (%s) with faults %v\n", len(seeds), base.System, sys.Description, base.Faults)
+	var kept []string
+	sums := explore.Explore(base, seeds, workers, func(res *explore.Result) {
+		if res.Check.Verdict == checker.Linearizable || out == "" || len(kept) >= keep {
+			return
+		}
+		dir := filepath.Join(out, fmt.Sprintf("%s-seed%d", res.Config.System, res.Config.Seed))
+		if p, err := writeSimReport(res, dir); err == nil {
+			kept = append(kept, p)
+		}
+	})
+	counts := map[checker.Verdict]int{}
+	var failing []uint64
+	var errs []string
+	for _, s := range sums {
+		if s.Error != "" {
+			errs = append(errs, fmt.Sprintf("seed %d: %s", s.Seed, s.Error))
+			continue
+		}
+		counts[s.Verdict]++
+		if s.Verdict == checker.Violation {
+			failing = append(failing, s.Seed)
+		}
+	}
+	if determinism {
+		fmt.Fprintln(stdout, "determinism: re-running every seed...")
+		again := explore.Explore(base, seeds, workers, nil)
+		for i := range sums {
+			if sums[i].TraceHash != again[i].TraceHash {
+				return exitError, fmt.Errorf("NONDETERMINISM at seed %d: trace %s vs %s", sums[i].Seed, short(sums[i].TraceHash), short(again[i].TraceHash))
+			}
+		}
+		fmt.Fprintf(stdout, "determinism: ✓ %d seeds replayed identically\n", len(seeds))
+	}
+	fmt.Fprintf(stdout, "done in %v: %d linearizable, %d violations, %d unknown, %d errors\n",
+		time.Since(start).Round(time.Millisecond), counts[checker.Linearizable], counts[checker.Violation], counts[checker.Unknown], len(errs))
+	for _, e := range errs {
+		fmt.Fprintln(stdout, "  error:", e)
+	}
+	if len(failing) > 0 {
+		show := failing
+		if len(show) > 20 {
+			show = show[:20]
+		}
+		fmt.Fprintf(stdout, "violating seeds: %v", show)
+		if len(failing) > len(show) {
+			fmt.Fprintf(stdout, " … (+%d)", len(failing)-len(show))
+		}
+		fmt.Fprintln(stdout)
+		c := base
+		c.Seed = failing[0]
+		fmt.Fprintf(stdout, "reproduce: %s\n", reproduce(c))
+	}
+	for _, p := range kept {
+		fmt.Fprintf(stdout, "report:  %s\n", p)
+	}
+	if len(errs) > 0 {
+		return exitError, fmt.Errorf("%d seeds failed to run", len(errs))
+	}
+	switch expect {
+	case string(checker.Violation):
+		if len(failing) == 0 {
+			return exitViolation, fmt.Errorf("expected a violation, none found")
+		}
+		return exitOK, nil
+	case string(checker.Linearizable):
+		if len(failing) > 0 || counts[checker.Unknown] > 0 {
+			return exitViolation, fmt.Errorf("expected every seed to be linearizable")
+		}
+		return exitOK, nil
+	}
+	if len(failing) > 0 {
+		return exitViolation, nil
+	}
+	if counts[checker.Unknown] > 0 {
+		return exitUnknown, nil
+	}
+	return exitOK, nil
+}
+
+// ---------------------------------------------------------------------------
+
+func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("history", "", "history file (JSONL, one op per line; - for stdin)")
+	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
+	out := fs.String("out", "", "write a report directory here")
+	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if *path == "" && fs.NArg() > 0 {
+		*path = fs.Arg(0)
+	}
+	if *path == "" {
+		return exitUsage, fmt.Errorf("--history is required")
+	}
+	m, err := model.ByName(*modelName)
+	if err != nil {
+		return exitUsage, err
+	}
+	var r io.Reader = os.Stdin
+	if *path != "-" {
+		f, err := os.Open(*path)
+		if err != nil {
+			return exitError, err
+		}
+		defer f.Close()
+		r = f
+	}
+	ops, err := history.ReadJSONL(r)
+	if err != nil {
+		return exitError, err
+	}
+	start := time.Now()
+	rep, err := checker.Check(m, ops, checker.Options{MaxSteps: *maxSteps})
+	if err != nil {
+		return exitError, err
+	}
+	fmt.Fprintf(stdout, "checked %d operations (%d relevant) across %d keys in %v\n", rep.Operations, rep.Checked, len(rep.Keys), time.Since(start).Round(time.Millisecond))
+	fmt.Fprintf(stdout, "verdict: %s\n", strings.ToUpper(string(rep.Verdict)))
+	for _, k := range rep.Failures() {
+		if ce := k.Counterexample; ce != nil {
+			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
+		}
+	}
+	if *out != "" {
+		rr, err := report.New(report.KindCheck, filepath.Base(*path), 0, map[string]string{"model": m.Name()}, nemesis.Schedule{}, ops, rep, "")
+		if err != nil {
+			return exitError, err
+		}
+		if _, err := report.WriteDir(*out, rr, ops); err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "report:  %s\n", filepath.Join(*out, "report.html"))
+	}
+	return verdictCode(rep.Verdict), nil
+}
+
+// ---------------------------------------------------------------------------
+
+func cmdPlan(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "live config (strife.json); prints the exact commands that would run")
+	seed := fs.Uint64("seed", 1, "seed (without --config)")
+	nodes := fs.Int("nodes", 5, "cluster size (without --config)")
+	duration := fs.Duration("duration", 60*time.Second, "test length (without --config)")
+	faults := fs.String("faults", "all", "fault kinds (without --config)")
+	interval := fs.Duration("fault-interval", 6*time.Second, "mean time between faults (without --config)")
+	length := fs.Duration("fault-length", 6*time.Second, "mean fault length (without --config)")
+	asJSON := fs.Bool("json", false, "print the schedule as JSON")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	var sched nemesis.Schedule
+	var cfg *runner.Config
+	if *cfgPath != "" {
+		var err error
+		if cfg, err = runner.Load(*cfgPath); err != nil {
+			return exitUsage, err
+		}
+		sched = cfg.Schedule()
+	} else {
+		kinds, err := nemesis.ParseKinds(*faults)
+		if err != nil {
+			return exitUsage, err
+		}
+		sched = nemesis.Generate(*seed, nemesis.Options{Nodes: *nodes, Duration: *duration, Kinds: kinds, Interval: *interval, Length: *length})
+	}
+	if *asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return exitOK, enc.Encode(sched)
+	}
+	fmt.Fprintf(stdout, "seed %d · %d nodes · %v · %d faults · schedule sha256 %s\n\n", sched.Seed, sched.Nodes, sched.Duration, len(sched.Faults), sched.Hash())
+	var env nemesis.Env
+	if cfg != nil {
+		env = cfg.Env()
+		for _, c := range env.Setup() {
+			fmt.Fprintf(stdout, "  setup  [%s] %s\n", cfg.Nodes[c.Node].Name, c.Script)
+		}
+		fmt.Fprintln(stdout)
+	}
+	for _, a := range sched.Timeline() {
+		verb := "inject"
+		if !a.Start {
+			verb = "heal  "
+		}
+		fmt.Fprintf(stdout, "%8.2fs %s #%d %s\n", a.At.Seconds(), verb, a.Fault.ID, a.Fault.Describe(sched.Nodes))
+		if cfg == nil {
+			continue
+		}
+		cmds := env.Inject(a.Fault)
+		if !a.Start {
+			cmds = env.Heal(a.Fault)
+		}
+		for _, c := range cmds {
+			where := cfg.Nodes[c.Node].Name
+			if c.Host {
+				where = "host of " + where
+			}
+			fmt.Fprintf(stdout, "            [%s] %s\n", where, c.Script)
+		}
+	}
+	return exitOK, nil
+}
+
+// ---------------------------------------------------------------------------
+
+func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "strife.json", "live test config")
+	out := fs.String("out", "strife-out", "directory for reports")
+	dry := fs.Bool("dry-run", false, "log fault commands instead of executing them")
+	seed := fs.Int64("seed", -1, "override the config seed")
+	duration := fs.Duration("duration", 0, "override the config duration")
+	quiet := fs.Bool("quiet", false, "less progress output")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	cfg, err := runner.Load(*cfgPath)
+	if err != nil {
+		return exitUsage, err
+	}
+	if *seed >= 0 {
+		cfg.Seed = uint64(*seed)
+	}
+	if *duration > 0 {
+		cfg.Duration = runner.Duration(*duration)
+	}
+	opts := runner.Options{}
+	if !*quiet {
+		opts.Logf = func(format string, a ...any) { fmt.Fprintf(stdout, format+"\n", a...) }
+	}
+	var dryLog *transport.DryRun
+	if *dry {
+		dryLog = &transport.DryRun{}
+		opts.Transport = dryLog
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Fprintf(stdout, "strife run %q: seed %d, %d nodes, %v, faults %v\n", cfg.Name, cfg.Seed, len(cfg.Nodes), time.Duration(cfg.Duration), cfg.Nemesis.Faults)
+	res, err := runner.Run(ctx, cfg, opts)
+	if err != nil {
+		return exitError, err
+	}
+	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg, res.Schedule, res.History, res.Check, "")
+	if err != nil {
+		return exitError, err
+	}
+	rep.Applied = res.Applied
+	rep.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	rep.Reproduce = fmt.Sprintf("strife run --config %s --seed %d", *cfgPath, cfg.Seed)
+	rep.Notes = append(rep.Notes, "Live runs replay the same fault schedule and per-process operation sequence for a given seed; the interleaving chosen by the real cluster is recorded in history.jsonl and can be re-checked with `strife check`.")
+	if *dry {
+		rep.Notes = append(rep.Notes, "Dry run: fault commands were logged, not executed.")
+	}
+	rep.Fingerprint = report.Fingerprint(rep)
+	dir := filepath.Join(*out, fmt.Sprintf("%s-seed%d-%s", cfg.Name, cfg.Seed, time.Now().UTC().Format("20060102T150405Z")))
+	if _, err := report.WriteDir(dir, rep, res.History); err != nil {
+		return exitError, err
+	}
+	if dryLog != nil {
+		if err := os.WriteFile(filepath.Join(dir, "commands.log"), []byte(strings.Join(dryLog.Log, "\n")+"\n"), 0o644); err != nil {
+			return exitError, err
+		}
+	}
+	c := res.Check
+	fmt.Fprintf(stdout, "ops: %d (%d ok, %d fail, %d info)\nverdict: %s\nreport: %s\n",
+		c.Stats.Invocations, c.Stats.OK, c.Stats.Fail, c.Stats.Info, strings.ToUpper(string(c.Verdict)), filepath.Join(dir, "report.html"))
+	for _, k := range c.Failures() {
+		if ce := k.Counterexample; ce != nil {
+			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
+		}
+	}
+	return verdictCode(c.Verdict), nil
+}
