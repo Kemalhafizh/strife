@@ -4,23 +4,23 @@ x-etcd: &etcd
   build: .
   cap_add: [NET_ADMIN]
   environment: &env
-    ETCD_CLUSTER: n1=http://172.30.0.11:2380,n2=http://172.30.0.12:2380,n3=http://172.30.0.13:2380
+    STRIFE_CLUSTER: n1=http://172.30.0.11:2380,n2=http://172.30.0.12:2380,n3=http://172.30.0.13:2380
 
 services:
   n1:
     <<: *etcd
     container_name: strife-etcd1
-    environment: { <<: *env, ETCD_NAME: n1 }
+    environment: { <<: *env, STRIFE_NODE: n1 }
     networks: { strife: { ipv4_address: 172.30.0.11 } }
   n2:
     <<: *etcd
     container_name: strife-etcd2
-    environment: { <<: *env, ETCD_NAME: n2 }
+    environment: { <<: *env, STRIFE_NODE: n2 }
     networks: { strife: { ipv4_address: 172.30.0.12 } }
   n3:
     <<: *etcd
     container_name: strife-etcd3
-    environment: { <<: *env, ETCD_NAME: n3 }
+    environment: { <<: *env, STRIFE_NODE: n3 }
     networks: { strife: { ipv4_address: 172.30.0.13 } }
 
 networks:

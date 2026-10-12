@@ -672,9 +672,9 @@ func cmdPlan(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "live config (strife.json); prints the exact commands that would run")
-	seed := fs.Uint64("seed", 1, "seed (without --config)")
+	seed := fs.Uint64("seed", 1, "seed (overrides the config's)")
 	nodes := fs.Int("nodes", 5, "cluster size (without --config)")
-	duration := fs.Duration("duration", 60*time.Second, "test length (without --config)")
+	duration := fs.Duration("duration", 60*time.Second, "test length (overrides the config's)")
 	faults := fs.String("faults", "all", "fault kinds (without --config)")
 	interval := fs.Duration("fault-interval", 6*time.Second, "mean time between faults (without --config)")
 	length := fs.Duration("fault-length", 6*time.Second, "mean fault length (without --config)")
@@ -689,6 +689,15 @@ func cmdPlan(args []string, stdout, stderr io.Writer) (int, error) {
 		if cfg, err = runner.Load(*cfgPath); err != nil {
 			return exitUsage, err
 		}
+		// Explicit --seed / --duration override the config, as they do for run.
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "seed":
+				cfg.Seed = *seed
+			case "duration":
+				cfg.Duration = runner.Duration(*duration)
+			}
+		})
 		sched = cfg.Schedule()
 	} else {
 		kinds, err := nemesis.ParseKinds(*faults)
@@ -746,6 +755,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	seed := fs.Int64("seed", -1, "override the config seed")
 	duration := fs.Duration("duration", 0, "override the config duration")
 	quiet := fs.Bool("quiet", false, "less progress output")
+	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the verdict matches (for CI)")
+	faults := fs.String("faults", "", "override the config's fault kinds (comma separated, \"none\" for a baseline)")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -754,11 +765,24 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitUsage, err
 	}
+	if *expect != "" && *expect != string(checker.Linearizable) && *expect != string(checker.Violation) {
+		return exitUsage, fmt.Errorf("--expect must be linearizable or violation")
+	}
 	if *seed >= 0 {
 		cfg.Seed = uint64(*seed)
 	}
 	if *duration > 0 {
 		cfg.Duration = runner.Duration(*duration)
+	}
+	if *faults != "" {
+		kinds, err := nemesis.ParseKinds(*faults)
+		if err != nil {
+			return exitUsage, err
+		}
+		cfg.Nemesis.Faults = kinds
+		if err := cfg.Validate(); err != nil {
+			return exitUsage, err
+		}
 	}
 	opts := runner.Options{}
 	if !*quiet {
@@ -785,6 +809,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	rep.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 	rep.Reproduce = fmt.Sprintf("strife run --config %s --seed %d", *cfgPath, cfg.Seed)
 	rep.Notes = append(rep.Notes, "Live runs replay the same fault schedule and per-process operation sequence for a given seed; the interleaving chosen by the real cluster is recorded in history.jsonl and can be re-checked with `strife check`.")
+	if res.Namespace != "" {
+		rep.Notes = append(rep.Notes, fmt.Sprintf("Keys were isolated under the per-run namespace %q, so values left by earlier runs cannot leak into this history.", res.Namespace))
+	}
 	if *dry {
 		rep.Notes = append(rep.Notes, "Dry run: fault commands were logged, not executed.")
 	}
@@ -806,12 +833,25 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
 		}
 	}
+	suite := report.SuiteFromReport(rep, time.Since(start))
 	code, rerr := verdictCode(c.Verdict), error(nil)
+	if *expect != "" {
+		// The expectation is the verdict test case; fault injection stays.
+		vc := report.Case{Name: "expect " + *expect, Class: suite.Cases[0].Class, Time: time.Since(start), Status: report.Passed,
+			Output: fmt.Sprintf("verdict: %s", c.Verdict)}
+		if string(c.Verdict) == *expect {
+			code = exitOK
+		} else {
+			code, rerr = exitViolation, fmt.Errorf("expected %s, got %s", *expect, c.Verdict)
+			vc.Status, vc.Message = report.Failed, rerr.Error()
+		}
+		suite.Cases = append([]report.Case{vc}, suite.Cases[len(suite.Cases)-1])
+	}
 	if failed := injectionErrors(res.Applied); failed > 0 && code == exitOK {
-		// A clean verdict means little if the planned faults never happened.
+		// A clean outcome means little if the planned faults never happened.
 		code, rerr = exitError, fmt.Errorf("%d fault commands failed: the cluster did not see the planned schedule (see report)", failed)
 	}
-	return emitCI(*ci, code, rerr, report.SuiteFromReport(rep, time.Since(start)))
+	return emitCI(*ci, code, rerr, suite)
 }
 
 func injectionErrors(applied []report.Applied) int {

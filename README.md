@@ -170,8 +170,9 @@ strife run  --config strife.json     # 2 minutes of chaos, then the verdict
 ```
 
 Configs are plain JSON (see [`examples/etcd/strife.json`](examples/etcd/strife.json)).
-A built-in etcd v3 client is included. Adding another database means
-implementing one interface:
+Built-in clients cover etcd v3 (JSON gateway) and Redis/Valkey (RESP, with
+compare-and-set done atomically in a Lua script). Adding another database
+means implementing one interface:
 
 ```go
 type Client interface {
@@ -196,6 +197,28 @@ are measured over 100–200 seeds of a 5-node cluster with the faults listed:
 | `raft-stale-reads` | the leader serves reads without confirming leadership | `partition` | ~36% of seeds |
 | `raft-lease` | leader leases timed with the wall clock | `clock-skew` + `partition` | ~5% of seeds, 0% without clock faults |
 | `raft-unsafe-fsync` | votes and appends acknowledged before `fsync` | `kill` + `io-stall` | ~3.5% of seeds, 0% under partitions |
+
+### Real clusters
+
+The same engine runs against real databases in Docker with real faults
+(iptables partitions, signals, tc netem). These runs are part of CI
+(`.github/workflows/live.yml`):
+
+| Cluster | Faults | Operations | Verdict |
+|---|---|---|---|
+| etcd 3.5, 3 nodes ([example](examples/etcd)) | partition, kill, pause | ~16k in 60s | ✅ linearizable |
+| Valkey 8, primary + 2 async replicas, reads spread over all nodes ([example](examples/valkey)) | partition, pause | ~19k in 60s | ❌ stale reads from a cut-off replica (expected) |
+| Valkey 8, single primary with AOF ([example](examples/valkey)) | `kill -9` | ~10k in 45s | ✅ linearizable: acknowledged writes survive a process crash |
+
+Validating the live path also caught three bugs in Strife itself before
+release:
+
+- The etcd example could never start (`ETCD_*` environment variables clash
+  with etcd's own flags).
+- A second run against the same cluster reported a false violation, because
+  it saw values left by the first run. Every run now uses its own key
+  namespace.
+- `plan --config` ignored `--seed`.
 
 Each bug stays invisible under faults that don't target its mechanism. That is
 why the fault mix matters, and why the explorer is cheap enough to run

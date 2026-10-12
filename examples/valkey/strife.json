@@ -1,0 +1,31 @@
+{
+  "name": "valkey-replicas",
+  "seed": 3,
+  "duration": "60s",
+  "nodes": [
+    { "name": "n1", "ip": "172.31.0.11", "container": "strife-valkey1" },
+    { "name": "n2", "ip": "172.31.0.12", "container": "strife-valkey2" },
+    { "name": "n3", "ip": "172.31.0.13", "container": "strife-valkey3" }
+  ],
+  "transport": { "type": "docker" },
+  "db": {
+    "kind": "valkey",
+    "endpoints": ["172.31.0.11:6379", "172.31.0.12:6379", "172.31.0.13:6379"],
+    "process": "valkey-server",
+    "start": "/usr/local/bin/start-valkey.sh"
+  },
+  "workload": {
+    "keys": 4,
+    "values": 5,
+    "concurrency": 9,
+    "read_ratio": 0.5,
+    "cas_ratio": 0.2,
+    "timeout": "1s"
+  },
+  "nemesis": {
+    "faults": ["partition", "pause"],
+    "interval": "8s",
+    "length": "6s",
+    "interface": "eth0"
+  }
+}
