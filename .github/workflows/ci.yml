@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: unit tests (race)
+        run: go test -race -short ./...
+      - name: full tests (bug-finding regression)
+        run: go test ./...
+
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o strife ./cmd/strife
+      - name: correct Raft survives 200 seeds, bit-for-bit deterministic
+        run: ./strife sim --system raft --seeds 1..200 --determinism --expect linearizable --out ""
+      - name: stale reads are caught
+        run: ./strife sim --system raft-stale-reads --faults partition --seeds 1..50 --expect violation --out ""
+      - name: wall-clock leases are caught under clock skew
+        run: ./strife sim --system raft-lease --faults clock-skew,partition --seeds 1..200 --expect violation --out ""
+      - name: lying fsync is caught under crashes and I/O stalls
+        run: ./strife sim --system raft-unsafe-fsync --faults kill,io-stall --seeds 1..200 --expect violation --out ""
+      - name: live runner end to end (in-memory store, dry-run nemesis)
+        run: ./strife run --config testdata/memory.json --duration 5s --dry-run --quiet
