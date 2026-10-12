@@ -105,6 +105,11 @@ loses power *while* the stall is still going on. The kill time was left
 unrounded because snapping it to a coarser grid makes the bug disappear, which
 is a finding in its own right.
 
+Across the built-in bugs, 35 of 37 violating seeds (95%) shrink to at most
+three faults, and every result is 1-minimal. Typical cost is 80–150
+simulations, or 4–12 seconds on four cores (see
+[docs/ROADMAP.md](docs/ROADMAP.md#11-strife-shrink-automatic-minimisation--done)).
+
 Shrink from a report (`strife shrink --report strife-out/…/report.json`), or
 explore and shrink in one go (`strife sim --seeds 1..500 --shrink`). The
 output directory `…-min/` contains the minimal `schedule.json`, a report with
