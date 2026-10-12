@@ -35,7 +35,7 @@ back up.
 | etcd target | ✅ Client and example. ⏳ Not yet validated on a real Docker host |
 | Redis target | ⏳ Phase 1 |
 | Raft demo | ✅ Done, with three bug switches that Strife catches |
-| `strife-shrink` (delta debugging) | ⏳ Phase 1 |
+| `strife-shrink` (delta debugging) | ✅ Done in Phase 1.1: `strife shrink`, measured below |
 | `strife-netlink` | ⏳ Phase 2, as part of `strife-agent` |
 | eBPF probes, Wasm workloads | ⏳ Phase 2+, scope narrowed (see below) |
 | Rust core daemon | ❎ Deferred: Go already meets the single-binary, zero-dependency goal |
@@ -45,27 +45,58 @@ back up.
 Goal: close the gaps in the blueprint's Phase 1 and ship the strongest
 differentiator early.
 
-### 1.1 `strife shrink`: automatic minimisation ⭐ top priority
+### 1.1 `strife shrink`: automatic minimisation ✅ done
 
-Once a violation is found, Strife reduces the fault schedule to a minimal set
-that still triggers it.
+Once a violation is found, Strife reduces the scenario to a minimal one that
+still triggers it.
 
-- **Simulator first.** It is deterministic, so delta debugging (ddmin) over the
-  fault list is sound: drop a subset, re-run the same seed, and keep the drop
-  if the violation remains.
-- Then shrink further:
-  - shorten each fault's window,
-  - shrink the target set (fewer nodes),
-  - reduce the workload length.
-- Output: `schedule.min.json` plus a report comparing the original and the
-  minimal result.
-- **Caveat:** dropping a fault changes the randomness downstream of it (more
-  or fewer messages). The criterion is "still violates", not "the same
-  violation". The report must state this.
-- **Done when:** the three buggy systems shrink to ≤ 3 faults on at least 80%
-  of their violating seeds, with a test.
-- Live runs: possible later (re-run with a reduced schedule), but
-  probabilistic. Mark the result as a "candidate", not a proof.
+- **Simulator first.** It is deterministic, so delta debugging is sound: drop
+  part of the scenario, re-run the same seed, and keep the drop if the
+  violation remains.
+- **Phases:**
+  - duration,
+  - ddmin over the faults,
+  - fault targets,
+  - fault windows (both ends),
+  - snapping fault times to a 100ms/10ms/1ms grid (timing-critical boundaries
+    stay exact and are reported),
+  - fault magnitudes,
+  - client count,
+  - a second duration pass,
+  - a final pass that guarantees **1-minimality**: dropping any single
+    remaining fault makes the violation disappear.
+- **Deterministic.** Candidates run in parallel but are chosen in a fixed
+  order, so the same input gives the same minimal scenario regardless of the
+  worker count. The final scenario is re-run and replays with an identical
+  trace hash.
+- **Output:** a `…-min/` directory with the minimal `schedule.json`, a report
+  with a before/after "Shrinking" section, `shrink.json` with every phase, and
+  a reproduction command.
+- **Caveat:** dropping a fault changes the randomness downstream of it. The
+  criterion is "still violates", not "the same anomaly". Reports state this.
+
+**Measured** (5 nodes, default workload, first violating seeds of each
+system):
+
+| System | Faults | ≤ 3 faults | Distribution of minimal fault counts | Median runs / time |
+|---|---|---|---|---|
+| `raft-stale-reads` | partition | **20/20 (100%)** | 1×15, 2×4, 3×1 | 80 / 4.6s |
+| `raft-lease` | clock-skew, partition | **8/10 (80%)** | 2×5, 3×3, 4×2 | 146 / 7.4s |
+| `raft-unsafe-fsync` | kill, io-stall | **7/7 (100%)** | 2×5, 3×2 | 119 / 11.7s |
+| `raft-stale-reads` | all eight kinds | **14/15 (93%)** | 1×9, 2×4, 3×1, 5×1 | 84 / 4.0s |
+
+Done criterion (≥ 80% of violating seeds at ≤ 3 faults, for every buggy
+system): **met**. Across the three target configurations that is 35 of 37
+seeds (95%). The two lease seeds that need 4 faults are 1-minimal, so all
+four faults are genuinely required. The bug needs a partition, a clock jump
+and a second partition to line up.
+
+Next for shrinking:
+
+- **Live runs:** re-run with a reduced schedule. The result is probabilistic,
+  so it must be labelled as a "candidate", not a proof.
+- **History shrinking:** cut the counterexample down to the handful of
+  operations that conflict, not just the schedule.
 
 ### 1.2 JUnit output and a GitHub Action
 
@@ -172,7 +203,7 @@ These are the claims we use in documentation and marketing:
 | "100% identical reproducibility" | "Bit-for-bit replay in the simulator; identical fault schedule and workload on live clusters" |
 | "Millions of events in seconds" | Numbers from the benchmark suite, with the history size and concurrency |
 | "Recording without instrumentation via eBPF" | "Client-side recording; eBPF for server-side observation" |
-| "Minimal 3-step scenario" (before 1.1 is measured) | The shrink success rate from the 1.1 test |
+| "Always shrinks to a minimal 3-step scenario" | "Shrinks to ≤ 3 faults on 95% of violating seeds in our benchmark (1-minimal on all of them)" |
 
 ## Monetisation
 

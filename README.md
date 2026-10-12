@@ -57,6 +57,7 @@ turns this into an engineering loop:
 | **Deterministic simulator** | A FoundationDB-style discrete-event simulator. Network, timers, disks and clocks all draw from one seeded PRNG, so a seed replays the exact execution. `--determinism` runs it twice and compares trace hashes. |
 | **Linearizability checker** | Wing & Gong / Lowe search with memoization, per-key P-compositionality run in parallel, and symmetry reduction for indeterminate ops. It is cross-checked against brute force on 3,000 random histories in the test suite. |
 | **Live fault injection** | `iptables` partitions in a dedicated `STRIFE` chain, `tc netem` latency and loss, `SIGKILL` with restart, `SIGSTOP`/`SIGCONT`, the cgroup v2 freezer, `io.max` disk stalls, and clock steps. It runs over Docker or SSH. `--dry-run` and `strife plan` show every command before anything is touched. |
+| **Automatic shrinking** | `strife shrink` reduces a failing run to its essential faults with delta debugging (ddmin). It then narrows targets, windows, magnitudes, duration and clients, and verifies that every remaining fault is necessary. The result replays bit for bit. |
 | **Audit reports** | `report.html`, `report.md`, `report.json`, `history.jsonl` and `schedule.json`, plus a SHA-256 fingerprint over config, schedule, history and trace. |
 | **Zero dependencies** | Pure Go standard library. One static binary. |
 
@@ -77,6 +78,44 @@ reproduces it. CI can assert the outcome:
 ```sh
 strife sim --system raft --seeds 1..1000 --determinism --expect linearizable
 ```
+
+### Shrinking a failure
+
+A violating seed usually comes with a dozen faults, and most of them are
+noise. `strife shrink` keeps only what the bug needs:
+
+```
+$ strife shrink --system raft-unsafe-fsync --faults kill,io-stall --seed 13
+shrinking raft-unsafe-fsync seed 13…
+  baseline    1 runs  faults 6   10s       clients 10  6 faults, 4429 ops
+  duration   18 runs  faults 6   8.94s     clients 10  10s → 8.94s
+  faults     27 runs  faults 2   8.94s     clients 10  ddmin: 6 → 2 faults
+  targets    46 runs  faults 2   8.94s     clients 10  removed 4 fault targets
+  windows    86 runs  faults 2   8.94s     clients 10  total fault time now 1.52s
+  round      98 runs  faults 2   8.94s     clients 10  snapped 3 fault boundaries to a coarse grid; 1 timing-critical boundaries kept exact
+  ...
+  verify    126 runs  faults 2   8.39s     clients 10  1-minimal: every remaining fault [4 5] is necessary
+minimal: 6 → 2 faults, 10s → 8.39s, 10 → 10 clients, 4429 → 3931 ops (127 runs, 18s)
+         #4   6.5s          → 7.9s          io-stall [3]
+         #5   7.877832081s  → 8.1s          kill [0 1 2 3 4]
+```
+
+That is the whole story of the bug: node 3's disk stalls, and the cluster
+loses power *while* the stall is still going on. The kill time was left
+unrounded because snapping it to a coarser grid makes the bug disappear, which
+is a finding in its own right.
+
+Across the built-in bugs, 35 of 37 violating seeds (95%) shrink to at most
+three faults, and every result is 1-minimal. Typical cost is 80–150
+simulations, or 4–12 seconds on four cores (see
+[docs/ROADMAP.md](docs/ROADMAP.md#11-strife-shrink-automatic-minimisation--done)).
+
+Shrink from a report (`strife shrink --report strife-out/…/report.json`), or
+explore and shrink in one go (`strife sim --seeds 1..500 --shrink`). The
+output directory `…-min/` contains the minimal `schedule.json`, a report with
+a before/after table, `shrink.json` with every phase, and a reproduction
+command. Shrinking is deterministic: the same input always produces the same
+minimal scenario, whatever the worker count.
 
 Exit codes: `0` linearizable (or matches `--expect`), `1` violation, `2` usage,
 `3` unknown (search budget exhausted), `4` error.
@@ -188,7 +227,7 @@ flowchart LR
 ```
 
 ```
-cmd/strife        CLI: sim, check, plan, run, systems
+cmd/strife        CLI: sim, shrink, check, plan, run, systems
 internal/rng      pinned, forkable xoshiro256** PRNG
 pkg/history       Jepsen-style histories, JSONL, pairing
 pkg/model         sequential specs: kv (cas registers), set
@@ -197,6 +236,7 @@ pkg/nemesis       seeded fault schedules → shell commands
 pkg/sim           discrete-event world: network, timers, disks, clocks
 pkg/sim/raft      reference system under test (+ bug switches)
 pkg/explore       simulated runs, seed exploration, determinism checks
+pkg/shrink        delta debugging of failing scenarios down to 1-minimal
 pkg/transport     docker exec / ssh / dry-run
 pkg/client        etcd v3 (JSON gateway) and in-memory reference store
 pkg/runner        live test orchestration
@@ -220,9 +260,9 @@ failure."*
 
 ## Roadmap
 
-Next up: automatic schedule shrinking, JUnit output with a GitHub Action, a
-Redis/Valkey client, then a per-node `strife-agent` with netlink injection and
-transactional (Elle-style) models. See [docs/ROADMAP.md](docs/ROADMAP.md) for
+Done: automatic shrinking (Phase 1.1). Next up: JUnit output with a GitHub
+Action, a Redis/Valkey client, then a per-node `strife-agent` with netlink
+injection and transactional (Elle-style) models. See [docs/ROADMAP.md](docs/ROADMAP.md) for
 the phased plan, the reasoning behind it, and the claims we will and won't
 make.
 
@@ -231,7 +271,7 @@ make.
 ```sh
 make test        # unit + bug-finding regression tests
 make test-short  # race detector, fast
-make chaos       # the CI gauntlet: 200 seeds of correct Raft + each bug found
+make chaos       # the CI gauntlet: 200 seeds of correct Raft, each bug found, one shrunk
 ```
 
 ## License

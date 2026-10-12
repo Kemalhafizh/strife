@@ -37,6 +37,23 @@ func Markdown(w io.Writer, r *Report) error {
 		fmt.Fprintf(&b, "Reproduce:\n\n```sh\n%s\n```\n\n", r.Reproduce)
 	}
 
+	if sh := r.Shrink; sh != nil {
+		b.WriteString("## Shrinking\n\n")
+		fmt.Fprintf(&b, "Minimised from a failing run in %d simulations (%v).\n\n", sh.Runs, sh.Elapsed.Round(time.Millisecond))
+		b.WriteString("| | Original | Minimal |\n|---|---|---|\n")
+		fmt.Fprintf(&b, "| Faults | %d | **%d** |\n", sh.OriginalFaults, sh.MinimalFaults)
+		fmt.Fprintf(&b, "| Duration | %v | %v |\n", sh.OriginalDuration, sh.MinimalDuration)
+		fmt.Fprintf(&b, "| Clients | %d | %d |\n", sh.OriginalClients, sh.MinimalClients)
+		fmt.Fprintf(&b, "| Operations | %d | %d |\n\n", sh.OriginalOps, sh.MinimalOps)
+		for _, s := range sh.Steps {
+			fmt.Fprintf(&b, "- %s\n", s)
+		}
+		if sh.BudgetExhausted {
+			b.WriteString("\n> The run budget was exhausted: the scenario is smaller but may not be 1-minimal.\n")
+		}
+		b.WriteString("\n> Removing faults changes everything downstream of them, so the minimal scenario reproduces *a* violation of the same system, not necessarily the identical anomaly as the original run.\n\n")
+	}
+
 	b.WriteString("## Integrity\n\n| Artifact | SHA-256 |\n|---|---|\n")
 	fmt.Fprintf(&b, "| Fingerprint | `%s` |\n", r.Fingerprint)
 	if r.ScheduleHash != "" {

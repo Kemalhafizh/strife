@@ -37,5 +37,13 @@ jobs:
         run: ./strife sim --system raft-lease --faults clock-skew,partition --seeds 1..200 --expect violation --out ""
       - name: lying fsync is caught under crashes and I/O stalls
         run: ./strife sim --system raft-unsafe-fsync --faults kill,io-stall --seeds 1..200 --expect violation --out ""
+      - name: a violation shrinks to a minimal, replayable scenario
+        run: |
+          set +e
+          ./strife shrink --system raft-stale-reads --faults partition --seed 2 --out shrunk
+          test $? -eq 1 || exit 1
+          set -e
+          test -f shrunk/raft-stale-reads-seed2-min/report.html
+          python3 -c "import json,sys; r=json.load(open('shrunk/raft-stale-reads-seed2-min/report.json')); sys.exit(0 if r['shrink']['minimal_faults'] <= 3 else 1)"
       - name: live runner end to end (in-memory store, dry-run nemesis)
         run: ./strife run --config testdata/memory.json --duration 5s --dry-run --quiet

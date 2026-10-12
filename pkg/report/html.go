@@ -254,6 +254,21 @@ ol li{margin:2px 0}
 {{if .R.TraceHash}}<tr><th>Trace SHA-256</th><td class="mono">{{.R.TraceHash}} ({{.R.Events}} events)</td></tr>{{end}}
 </table></div>
 
+{{with .R.Shrink}}
+<h2>Shrinking</h2>
+<div class="card">
+<p>Minimised from a failing run in {{.Runs}} simulations.</p>
+<table><tr><th></th><th>Original</th><th>Minimal</th></tr>
+<tr><th>Faults</th><td>{{.OriginalFaults}}</td><td><b>{{.MinimalFaults}}</b></td></tr>
+<tr><th>Duration</th><td>{{.OriginalDuration}}</td><td>{{.MinimalDuration}}</td></tr>
+<tr><th>Clients</th><td>{{.OriginalClients}}</td><td>{{.MinimalClients}}</td></tr>
+<tr><th>Operations</th><td>{{.OriginalOps}}</td><td>{{.MinimalOps}}</td></tr>
+</table>
+<ul>{{range .Steps}}<li>{{.}}</li>{{end}}</ul>
+{{if .BudgetExhausted}}<p class="muted">The run budget was exhausted: the scenario is smaller but may not be 1-minimal.</p>{{end}}
+<p class="muted">Removing faults changes everything downstream of them, so the minimal scenario reproduces a violation of the same system, not necessarily the identical anomaly.</p>
+</div>{{end}}
+
 {{range .Fails}}{{$key := .Key}}{{with .Counterexample}}
 <h2>Counterexample · key <code>{{$key}}</code></h2>
 <div class="card">
