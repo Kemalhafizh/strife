@@ -176,9 +176,10 @@ func TestAgainstBruteForce(t *testing.T) {
 	for iter := 0; iter < 3000; iter++ {
 		ops := randomHistory(r, 1+r.Intn(6))
 		got := CheckOperations(model.KV{}, ops, Options{Parallelism: 1})
+		search := CheckOperations(model.KV{}, ops, Options{Parallelism: 1, SearchOnly: true})
 		want := bruteForce(model.KV{}, ops)
-		if (got.Verdict == Linearizable) != want {
-			t.Fatalf("iter %d: wgl=%s brute=%v\n%s", iter, got.Verdict, want, dump(ops))
+		if (got.Verdict == Linearizable) != want || (search.Verdict == Linearizable) != want {
+			t.Fatalf("iter %d: checker=%s search-only=%s brute=%v\n%s", iter, got.Verdict, search.Verdict, want, dump(ops))
 		}
 		agree[got.Verdict]++
 	}

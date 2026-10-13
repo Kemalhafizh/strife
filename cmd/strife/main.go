@@ -136,6 +136,7 @@ func scenarioFlags(fs *flag.FlagSet) func() (explore.Config, error) {
 	length := fs.Duration("fault-length", d.FaultLength, "mean fault length")
 	planPath := fs.String("plan", "", "replay this schedule.json instead of generating one")
 	maxSteps := fs.Uint64("max-steps", 0, "checker search budget per key (0 = default)")
+	checkTimeout := fs.Duration("check-timeout", 0, "checker wall-clock budget per key (0 = none; makes verdicts machine dependent)")
 	return func() (explore.Config, error) {
 		kinds, err := nemesis.ParseKinds(*faults)
 		if err != nil {
@@ -145,6 +146,7 @@ func scenarioFlags(fs *flag.FlagSet) func() (explore.Config, error) {
 		cfg.System, cfg.Seed, cfg.Nodes, cfg.Clients, cfg.Keys, cfg.Values = *system, *seed, *nodes, *clients, *keys, *values
 		cfg.Duration, cfg.ReadRatio, cfg.CasRatio, cfg.OpTimeout = *duration, *readRatio, *casRatio, *opTimeout
 		cfg.Faults, cfg.FaultInterval, cfg.FaultLength, cfg.MaxSteps = kinds, *interval, *length, *maxSteps
+		cfg.CheckTimeout = *checkTimeout
 		if *planPath != "" {
 			data, err := os.ReadFile(*planPath)
 			if err != nil {
@@ -247,6 +249,12 @@ func reproduce(c explore.Config, planPath string) string {
 		f = "none"
 	}
 	fmt.Fprintf(&b, " --faults %s", f)
+	if c.MaxSteps != 0 {
+		fmt.Fprintf(&b, " --max-steps %d", c.MaxSteps)
+	}
+	if c.CheckTimeout != 0 {
+		fmt.Fprintf(&b, " --check-timeout %v", c.CheckTimeout)
+	}
 	if c.Plan != nil {
 		if planPath == "" {
 			planPath = "schedule.json"
@@ -271,6 +279,7 @@ func simReport(res *explore.Result, dir string) (*report.Report, error) {
 }
 
 func writeSimReport(res *explore.Result, dir string) (string, error) {
+	addWitnesses(model.KV{}, res.History, &res.Check)
 	r, err := simReport(res, dir)
 	if err != nil {
 		return "", err
@@ -303,6 +312,7 @@ func simOne(cfg explore.Config, o simOptions, stdout io.Writer) (int, error) {
 			return emitCI(o.ci, exitError, err, report.ErrorSuite(suiteName, err))
 		}
 	}
+	addWitnesses(model.KV{}, res.History, &res.Check)
 	printResult(stdout, res)
 	dir := ""
 	if o.out != "" {
@@ -361,7 +371,7 @@ func printResult(w io.Writer, res *explore.Result) {
 	fmt.Fprintf(w, "verdict: %s\n", strings.ToUpper(string(c.Verdict)))
 	for _, k := range c.Failures() {
 		if ce := k.Counterexample; ce != nil {
-			fmt.Fprintf(w, "  key %s: %s\n", k.Key, ce.Explanation)
+			fmt.Fprintf(w, "  key %s: %s\n", k.Key, ce.Summary())
 		}
 	}
 }
@@ -547,6 +557,7 @@ func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Wr
 		return nil, err
 	}
 	min := res.Minimal
+	addWitnesses(model.KV{}, res.Final.History, &res.Final.Check)
 	fmt.Fprintf(stdout, "minimal: %d → %d faults, %v → %v, %d → %d clients, %d → %d ops (%d runs, %v)\n",
 		len(res.OriginalSchedule.Faults), len(res.Faults()), res.Original.Duration, min.Duration,
 		res.Original.Clients, min.Clients, res.OriginalOps, res.Final.Check.Operations, res.Runs, res.Elapsed.Round(time.Millisecond))
@@ -555,7 +566,7 @@ func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Wr
 	}
 	for _, k := range res.Final.Check.Failures() {
 		if ce := k.Counterexample; ce != nil {
-			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
+			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Summary())
 			break
 		}
 	}
@@ -614,6 +625,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
 	out := fs.String("out", "", "write a report directory here")
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
+	timeout := fs.Duration("check-timeout", 0, "wall-clock budget per key (0 = none)")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -642,15 +654,16 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitError, err
 	}
 	start := time.Now()
-	rep, err := checker.Check(m, ops, checker.Options{MaxSteps: *maxSteps})
+	rep, err := checker.Check(m, ops, checker.Options{MaxSteps: *maxSteps, Timeout: *timeout})
 	if err != nil {
 		return exitError, err
 	}
+	addWitnesses(m, ops, &rep)
 	fmt.Fprintf(stdout, "checked %d operations (%d relevant) across %d keys in %v\n", rep.Operations, rep.Checked, len(rep.Keys), time.Since(start).Round(time.Millisecond))
 	fmt.Fprintf(stdout, "verdict: %s\n", strings.ToUpper(string(rep.Verdict)))
 	for _, k := range rep.Failures() {
 		if ce := k.Counterexample; ce != nil {
-			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
+			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Summary())
 		}
 	}
 	rr, err := report.New(report.KindCheck, filepath.Base(*path), 0, map[string]string{"model": m.Name()}, nemesis.Schedule{}, ops, rep, "")
@@ -801,6 +814,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return emitCI(*ci, exitError, err, report.ErrorSuite("live · "+cfg.Name, err))
 	}
+	addWitnesses(model.KV{}, res.History, &res.Check)
 	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg, res.Schedule, res.History, res.Check, "")
 	if err != nil {
 		return exitError, err
@@ -830,7 +844,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 		c.Stats.Invocations, c.Stats.OK, c.Stats.Fail, c.Stats.Info, strings.ToUpper(string(c.Verdict)), filepath.Join(dir, "report.html"))
 	for _, k := range c.Failures() {
 		if ce := k.Counterexample; ce != nil {
-			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Explanation)
+			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Summary())
 		}
 	}
 	suite := report.SuiteFromReport(rep, time.Since(start))
@@ -852,6 +866,12 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 		code, rerr = exitError, fmt.Errorf("%d fault commands failed: the cluster did not see the planned schedule (see report)", failed)
 	}
 	return emitCI(*ci, code, rerr, suite)
+}
+
+// addWitnesses attaches minimal witnesses and diagnoses to violations. A
+// failure here only costs readability, never the verdict.
+func addWitnesses(m model.Model, ops []history.Op, check *checker.Report) {
+	_ = checker.AddWitnesses(m, ops, check, checker.WitnessOptions{})
 }
 
 func injectionErrors(applied []report.Applied) int {

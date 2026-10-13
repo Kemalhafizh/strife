@@ -153,7 +153,7 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 
 	ops := rec.Ops()
 	logf("checking %d events", len(ops))
-	rep, err := checker.Check(model.KV{}, ops, checker.Options{MaxSteps: cfg.Checker.MaxSteps})
+	rep, err := checker.Check(model.KV{}, ops, checker.Options{MaxSteps: cfg.Checker.MaxSteps, Timeout: time.Duration(cfg.Checker.Timeout)})
 	if err != nil {
 		return nil, err
 	}

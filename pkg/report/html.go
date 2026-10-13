@@ -85,6 +85,13 @@ func layout(v *view, ops []history.Operation) {
 			marked[ce.Stuck.Index] = true
 			if stuck < 0 {
 				stuck = ce.Stuck.Index
+				if n := len(ce.Witness); n > 0 {
+					// Centre the drawing on the operation that proves it.
+					stuck = ce.Witness[n-1].Index
+				}
+			}
+			for _, w := range ce.Witness {
+				marked[w.Index] = true
 			}
 			for _, s := range ce.Concurrent {
 				marked[s.Index] = true
@@ -272,7 +279,12 @@ ol li{margin:2px 0}
 {{range .Fails}}{{$key := .Key}}{{with .Counterexample}}
 <h2>Counterexample · key <code>{{$key}}</code></h2>
 <div class="card">
-<p>{{.Explanation}}</p>
+<p><b>{{.Summary}}</b></p>
+{{if .Witness}}<p class="muted">Minimal witness: these {{len .Witness}} operations alone prove the violation.</p>
+<table><tr><th>Operation</th><th>Invoked</th><th>Completed</th></tr>
+{{range .Witness}}<tr><td><code>{{.Description}}</code></td><td>{{t .Call}}</td><td>{{t .Return}}</td></tr>{{end}}
+</table>{{end}}
+{{if .Diagnosis}}<p class="muted">Search: {{.Explanation}}</p>{{end}}
 <p><b>Stuck:</b> <code>{{.Stuck.Description}}</code> [{{t .Stuck.Call}} → {{t .Stuck.Return}}]</p>
 <p class="muted">Linearized prefix ({{len .Linearized}} ops, last 10 shown), ending in state <code>{{.StateAfter}}</code>:</p>
 <ol>{{range last 10 .Linearized}}<li><code>{{.Description}}</code> <span class="muted">[{{t .Call}} → {{t .Return}}]</span></li>{{end}}</ol>

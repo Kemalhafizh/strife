@@ -100,7 +100,18 @@ func Markdown(w io.Writer, r *Report) error {
 		if ce == nil {
 			continue
 		}
-		fmt.Fprintf(&b, "## Counterexample on key `%s`\n\n%s\n\n", k.Key, ce.Explanation)
+		fmt.Fprintf(&b, "## Counterexample on key `%s`\n\n%s\n\n", k.Key, ce.Summary())
+		if len(ce.Witness) > 0 {
+			fmt.Fprintf(&b, "**Minimal witness:** these %d operations alone prove the violation:\n\n", len(ce.Witness))
+			b.WriteString("| Operation | Invoked | Completed |\n|---|---|---|\n")
+			for _, s := range ce.Witness {
+				fmt.Fprintf(&b, "| `%s` | %s | %s |\n", s.Description, fmtTime(s.Call), fmtTime(s.Return))
+			}
+			b.WriteString("\n")
+		}
+		if ce.Diagnosis != "" {
+			fmt.Fprintf(&b, "<details><summary>How the search got stuck</summary>\n\n%s\n\n</details>\n\n", ce.Explanation)
+		}
 		fmt.Fprintf(&b, "**Stuck operation:** `%s` invoked at %s, returned at %s (history index %d)\n\n",
 			ce.Stuck.Description, fmtTime(ce.Stuck.Call), fmtTime(ce.Stuck.Return), ce.Stuck.Index)
 		lin := ce.Linearized

@@ -75,6 +75,9 @@ type Config struct {
 	FaultInterval time.Duration  `json:"fault_interval"`
 	FaultLength   time.Duration  `json:"fault_length"`
 	MaxSteps      uint64         `json:"max_steps,omitempty"`
+	// CheckTimeout bounds the checker's wall-clock time per key. A verdict
+	// that hits it depends on the machine, so prefer MaxSteps here.
+	CheckTimeout time.Duration `json:"check_timeout,omitempty"`
 	// Plan, if set, replaces the generated fault schedule (replaying a
 	// hand-written or previously exported scenario).
 	Plan *nemesis.Schedule `json:"plan,omitempty"`
@@ -185,7 +188,7 @@ func Run(cfg Config) (*Result, error) {
 	w.Run(int64(cfg.Duration + cfg.OpTimeout + 100*time.Millisecond))
 
 	ops := rec.Ops()
-	rep, err := checker.Check(model.KV{}, ops, checker.Options{MaxSteps: cfg.MaxSteps})
+	rep, err := checker.Check(model.KV{}, ops, checker.Options{MaxSteps: cfg.MaxSteps, Timeout: cfg.CheckTimeout})
 	if err != nil {
 		return nil, err
 	}
@@ -319,9 +322,12 @@ func Explore(base Config, seeds []uint64, workers int, onResult func(*Result)) [
 				} else {
 					s.Verdict, s.Ops, s.Faults, s.TraceHash = res.Check.Verdict, res.Check.Operations, len(res.Schedule.Faults), res.TraceHash
 					s.Elapsed = res.Elapsed
+					if res.Check.Verdict == checker.Violation {
+						_ = checker.AddWitnesses(model.KV{}, res.History, &res.Check, checker.WitnessOptions{DiagnoseOnly: true})
+					}
 					for _, k := range res.Check.Failures() {
 						if k.Counterexample != nil {
-							s.Explanation = fmt.Sprintf("key %s: %s", k.Key, k.Counterexample.Explanation)
+							s.Explanation = fmt.Sprintf("key %s: %s", k.Key, k.Counterexample.Summary())
 							break
 						}
 					}

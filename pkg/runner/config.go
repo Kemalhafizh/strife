@@ -79,7 +79,8 @@ type NemesisConfig struct {
 
 // CheckerConfig tunes the linearizability search.
 type CheckerConfig struct {
-	MaxSteps uint64 `json:"max_steps,omitempty"`
+	MaxSteps uint64   `json:"max_steps,omitempty"`
+	Timeout  Duration `json:"timeout,omitempty"` // wall-clock budget per key
 }
 
 // Load reads, defaults and validates a config file.
