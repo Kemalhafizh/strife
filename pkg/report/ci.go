@@ -279,12 +279,15 @@ func KeyCases(class string, check checker.Report, reproduce string) []Case {
 			c.Status = Failed
 			c.Message = "not linearizable"
 			if ce := k.Counterexample; ce != nil {
-				c.Message = ce.Explanation
+				c.Message = ce.Summary()
 				c.Detail = Counterexample(ce, reproduce)
 			}
 		case checker.Unknown:
 			c.Status = Errored
 			c.Message = "search budget exhausted before a verdict (raise --max-steps)"
+			if k.Reason == checker.ReasonTime {
+				c.Message = "time budget exhausted before a verdict (raise --check-timeout)"
+			}
 		}
 		out = append(out, c)
 	}
@@ -297,7 +300,14 @@ func KeyCases(class string, check checker.Report, reproduce string) []Case {
 // Counterexample renders a counterexample as plain text.
 func Counterexample(ce *checker.Counterexample, reproduce string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\nStuck: %s [%s → %s]\n", ce.Explanation, ce.Stuck.Description, fmtTime(ce.Stuck.Call), fmtTime(ce.Stuck.Return))
+	fmt.Fprintf(&b, "%s\n", ce.Summary())
+	if len(ce.Witness) > 0 {
+		fmt.Fprintf(&b, "\nMinimal witness (%d operations):\n", len(ce.Witness))
+		for _, s := range ce.Witness {
+			fmt.Fprintf(&b, "  %s [%s → %s]\n", s.Description, fmtTime(s.Call), fmtTime(s.Return))
+		}
+	}
+	fmt.Fprintf(&b, "\nSearch: %s\nStuck: %s [%s → %s]\n", ce.Explanation, ce.Stuck.Description, fmtTime(ce.Stuck.Call), fmtTime(ce.Stuck.Return))
 	lin := ce.Linearized
 	if len(lin) > 10 {
 		lin = lin[len(lin)-10:]

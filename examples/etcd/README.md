@@ -1,7 +1,8 @@
 # Example: 3-node etcd under Strife
 
 Requirements: Linux docker host (container IPs must be routable from the host),
-Docker Compose v2, and Strife built from the repository root.
+Docker Compose v2, and Strife built from the repository root. CI runs exactly
+this example on every push (`.github/workflows/live.yml`).
 
 ```sh
 cd examples/etcd
@@ -15,6 +16,11 @@ strife run --config strife.json
 
 docker compose down -v
 ```
+
+`latency` and `loss` need the `sch_netem` kernel module on the Docker host
+(`sudo modprobe sch_netem`). Without it Strife reports the failed fault
+commands and exits non-zero; drop those faults with
+`strife run --config strife.json --faults partition,kill,pause`.
 
 ## Adding cgroup faults (`freeze`, `io-stall`)
 

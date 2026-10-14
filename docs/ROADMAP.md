@@ -32,8 +32,8 @@ back up.
 | HTML violation reporter | ✅ Done (HTML, Markdown, JSON, fingerprint) |
 | JUnit reporter | ✅ Done in Phase 1.2: `--junit`, `--summary` and a GitHub Action |
 | Standalone CLI | ✅ Done (`sim`, `check`, `plan`, `run`, `systems`) |
-| etcd target | ✅ Client and example. ⏳ Not yet validated on a real Docker host |
-| Redis target | ⏳ Phase 1 |
+| etcd target | ✅ Client and example, validated on real Docker in CI |
+| Redis target | ✅ Redis/Valkey client and example, validated on real Docker in CI |
 | Raft demo | ✅ Done, with three bug switches that Strife catches |
 | `strife-shrink` (delta debugging) | ✅ Done in Phase 1.1: `strife shrink`, measured below |
 | `strife-netlink` | ⏳ Phase 2, as part of `strife-agent` |
@@ -135,15 +135,41 @@ Next for shrinking:
 - Next: publish prebuilt release binaries so the action skips the build
   (~15s), and add a Marketplace listing once tags are cut.
 
-### 1.3 Redis / Valkey client and real validation
+### 1.3 Redis / Valkey client and real validation ✅ done
 
-- A RESP client in the standard library. CAS via `EVAL` (Lua), reads via
-  `GET`.
-- Expected result: single-node Redis with async replicas **is not**
-  linearizable after failover. That makes a good demo, not a failure of
-  Strife.
-- Run `examples/etcd` on a real Docker host and record the result in the
-  README.
+- **RESP2 client** (`pkg/client/redis.go`, standard library only):
+  - operations: `GET`, `SET`, and compare-and-set as an atomic `EVAL` script;
+  - error classification: an error reply (e.g. `READONLY`) or a refused
+    connection is a definite `fail`; a timeout or a dropped connection after
+    sending a write is `info`; any I/O error discards the connection, so a
+    late reply can never be attributed to the next command;
+  - tests: a fake RESP server pins the protocol and every classification
+    path, plus a real `redis-server` when one is installed.
+- **Per-run key namespaces:** every live run writes under its own prefix
+  (recorded in the report). Without it, a second run against the same
+  cluster reported a false violation because it observed values from the
+  first run. Real validation found this.
+- **Real validation in Docker**, now permanent in CI (`live.yml`) and driven
+  through the GitHub Action:
+
+  | Cluster | Faults | Result |
+  |---|---|---|
+  | etcd 3.5, 3 nodes | partition, kill, pause (+ latency, loss where the kernel has netem) | ✅ linearizable, ~16k ops per minute |
+  | Valkey 8, primary + 2 async replicas, reads spread over all nodes | partition, pause | ❌ stale reads, as expected (`--expect violation`) |
+  | Valkey 8, single primary, AOF | `kill -9` | ✅ linearizable: acknowledged writes survive a process crash |
+
+- **Other bugs found along the way:**
+  - The etcd example never started: `ETCD_NAME` and `ETCD_CLUSTER` are read
+    by etcd as flags and clash with `--name`.
+  - `plan --config` ignored `--seed`.
+- **New flags:**
+  - `run --expect linearizable|violation` lets a weak setup be a passing CI
+    check;
+  - `run --faults` overrides the config, so CI can drop netem faults on
+    kernels without `sch_netem`.
+- **Not covered here:** the cgroup faults (`freeze`, `io-stall`) need cgroup
+  v2 and root on the Docker host, which the development sandbox (cgroup v1)
+  does not provide. They are still unit-tested at the command level only.
 
 ### 1.4 Checker hardening
 

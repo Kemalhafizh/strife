@@ -1,0 +1,26 @@
+# One Valkey primary (n1) and two asynchronous replicas (n2, n3) on a fixed
+# subnet. NET_ADMIN lets the nemesis use iptables and tc in each container.
+x-valkey: &valkey
+  build: .
+  cap_add: [NET_ADMIN]
+
+services:
+  n1:
+    <<: *valkey
+    container_name: strife-valkey1
+    networks: { strife: { ipv4_address: 172.31.0.11 } }
+  n2:
+    <<: *valkey
+    container_name: strife-valkey2
+    environment: { STRIFE_PRIMARY: 172.31.0.11 }
+    networks: { strife: { ipv4_address: 172.31.0.12 } }
+  n3:
+    <<: *valkey
+    container_name: strife-valkey3
+    environment: { STRIFE_PRIMARY: 172.31.0.11 }
+    networks: { strife: { ipv4_address: 172.31.0.13 } }
+
+networks:
+  strife:
+    ipam:
+      config: [{ subnet: 172.31.0.0/24 }]

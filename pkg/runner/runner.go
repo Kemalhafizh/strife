@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,6 +33,9 @@ type Result struct {
 	History  []history.Op
 	Applied  []report.Applied
 	Check    checker.Report
+	// Namespace is the key namespace this run used ("" when the caller
+	// supplied its own clients).
+	Namespace string
 }
 
 // Run executes a live test. The fault schedule and every process's sequence
@@ -50,9 +54,11 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 		}
 	}
 	factory := opts.Clients
+	namespace := ""
 	if factory == nil {
+		namespace = Namespace(cfg, time.Now())
 		var err error
-		if factory, err = client.NewFactory(cfg.DB.Config, len(cfg.Nodes)); err != nil {
+		if factory, err = client.NewFactory(cfg.DB.Config, namespace); err != nil {
 			return nil, err
 		}
 	}
@@ -147,11 +153,17 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 
 	ops := rec.Ops()
 	logf("checking %d events", len(ops))
-	rep, err := checker.Check(model.KV{}, ops, checker.Options{MaxSteps: cfg.Checker.MaxSteps})
+	rep, err := checker.Check(model.KV{}, ops, checker.Options{MaxSteps: cfg.Checker.MaxSteps, Timeout: time.Duration(cfg.Checker.Timeout)})
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Schedule: sched, History: ops, Applied: applied, Check: rep}, nil
+	return &Result{Schedule: sched, History: ops, Applied: applied, Check: rep, Namespace: namespace}, nil
+}
+
+// Namespace is the per-run key namespace: the checker assumes every key starts
+// absent, so a run must never observe values left over by an earlier run.
+func Namespace(cfg *Config, now time.Time) string {
+	return fmt.Sprintf("%s-%d-%s", cfg.Name, cfg.Seed, strconv.FormatInt(now.UnixNano(), 36))
 }
 
 func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, factory client.Factory, rec *history.Recorder, until time.Time, logf func(string, ...any)) {

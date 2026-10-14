@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,31 +31,52 @@ type Factory func(i int) (Client, error)
 
 // Config selects a database driver.
 type Config struct {
-	Kind      string   `json:"kind"`                // etcd | memory
-	Endpoints []string `json:"endpoints,omitempty"` // one per node, e.g. http://10.0.0.1:2379
-	Prefix    string   `json:"prefix,omitempty"`    // key prefix, default "strife/"
+	Kind string `json:"kind"` // etcd | redis | valkey | memory
+	// Endpoints has one entry per node: http://10.0.0.1:2379 for etcd,
+	// 10.0.0.1:6379 for redis/valkey.
+	Endpoints []string `json:"endpoints,omitempty"`
+	Prefix    string   `json:"prefix,omitempty"` // key prefix, default "strife/" or "strife:"
 }
 
-// NewFactory builds a factory for the configured driver. nodes is the number
-// of nodes; memory clients all share one store.
-func NewFactory(c Config, nodes int) (Factory, error) {
+// Kinds lists the supported drivers.
+var Kinds = []string{"etcd", "redis", "valkey", "memory"}
+
+// NewFactory builds a factory for the configured driver. Every key the test
+// touches lives under prefix+namespace, so each run starts from empty
+// registers no matter what earlier runs left behind (the checker assumes
+// that every key starts absent). Memory clients all share one store.
+func NewFactory(c Config, namespace string) (Factory, error) {
+	sep := "/"
+	if c.Kind == "redis" || c.Kind == "valkey" {
+		sep = ":"
+	}
+	prefix := c.Prefix
+	if prefix == "" {
+		prefix = "strife" + sep
+	}
+	if namespace != "" {
+		prefix += namespace + sep
+	}
 	switch c.Kind {
 	case "etcd":
 		if len(c.Endpoints) == 0 {
 			return nil, fmt.Errorf("client: etcd needs db.endpoints")
 		}
-		prefix := c.Prefix
-		if prefix == "" {
-			prefix = "strife/"
-		}
 		return func(i int) (Client, error) {
 			return NewEtcd(c.Endpoints[i%len(c.Endpoints)], prefix), nil
+		}, nil
+	case "redis", "valkey":
+		if len(c.Endpoints) == 0 {
+			return nil, fmt.Errorf("client: %s needs db.endpoints (host:port per node)", c.Kind)
+		}
+		return func(i int) (Client, error) {
+			return NewRedis(c.Endpoints[i%len(c.Endpoints)], prefix), nil
 		}, nil
 	case "memory":
 		store := NewMemoryStore()
 		return func(i int) (Client, error) { return store.Client(), nil }, nil
 	}
-	return nil, fmt.Errorf("client: unknown db kind %q (etcd, memory)", c.Kind)
+	return nil, fmt.Errorf("client: unknown db kind %q (%s)", c.Kind, strings.Join(Kinds, ", "))
 }
 
 // Classify maps a transport error to a completion type. Errors that prove

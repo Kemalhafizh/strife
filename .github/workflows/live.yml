@@ -1,0 +1,88 @@
+name: live
+
+# Real clusters in Docker, real faults (iptables, tc, signals), driven through
+# Strife's own GitHub Action. These are the end-to-end tests of the live path:
+# a correct system must pass and a known-weak setup must be caught.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  etcd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: pick faults the runner kernel supports
+        id: faults
+        run: |
+          faults=partition,kill,pause
+          if sudo modprobe sch_netem 2>/dev/null; then faults="$faults,latency,loss"; fi
+          echo "faults=$faults" >> "$GITHUB_OUTPUT"
+          echo "faults: $faults"
+      - name: start a 3-node etcd cluster
+        working-directory: examples/etcd
+        run: docker compose up -d --build
+      - name: wait until every member is healthy
+        run: |
+          for _ in $(seq 1 60); do
+            ok=0
+            for ip in 11 12 13; do
+              curl -fsS -m 2 "http://172.30.0.$ip:2379/health" >/dev/null && ok=$((ok + 1))
+            done
+            [ "$ok" = 3 ] && exit 0
+            sleep 2
+          done
+          docker compose -f examples/etcd/docker-compose.yml logs
+          exit 1
+      - name: etcd stays linearizable under faults
+        uses: ./
+        with:
+          command: run --config examples/etcd/strife.json --duration 90s --faults ${{ steps.faults.outputs.faults }} --expect linearizable --quiet
+          out: live-out/etcd
+          junit: live-out/etcd.xml
+          artifact-name: live-etcd
+      - name: logs
+        if: always()
+        run: for c in strife-etcd1 strife-etcd2 strife-etcd3; do echo "== $c"; docker exec "$c" tail -20 /var/log/etcd.log || true; done
+      - name: stop the cluster
+        if: always()
+        working-directory: examples/etcd
+        run: docker compose down -v
+
+  valkey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: start a Valkey primary with two replicas
+        working-directory: examples/valkey
+        run: docker compose up -d --build
+      - name: wait for replication
+        run: |
+          for _ in $(seq 1 60); do
+            n=$(docker exec strife-valkey1 valkey-cli info replication | tr -d '\r' | sed -n 's/^connected_slaves://p')
+            [ "$n" = 2 ] && exit 0
+            sleep 2
+          done
+          docker compose -f examples/valkey/docker-compose.yml logs
+          exit 1
+      - name: reads from async replicas are caught as stale
+        uses: ./
+        with:
+          command: run --config examples/valkey/strife.json --expect violation --quiet
+          out: live-out/replicas
+          junit: live-out/replicas.xml
+          artifact-name: live-valkey-replicas
+      - name: a single primary survives kill -9
+        uses: ./
+        with:
+          command: run --config examples/valkey/strife-primary.json --expect linearizable --quiet
+          out: live-out/primary
+          junit: live-out/primary.xml
+          artifact-name: live-valkey-primary
+      - name: stop the cluster
+        if: always()
+        working-directory: examples/valkey
+        run: docker compose down -v
