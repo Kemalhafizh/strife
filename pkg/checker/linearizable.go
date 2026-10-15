@@ -253,7 +253,8 @@ func (d *deadEnd) counterexample(ops []history.Operation) *Counterexample {
 	if d == nil {
 		return nil
 	}
-	ce := &Counterexample{StateAfter: d.state.String(), Stuck: step(ops[d.stuck])}
+	stuckOp := ops[d.stuck]
+	ce := &Counterexample{StateAfter: d.state.String(), Stuck: step(stuckOp)}
 	for _, i := range d.linearized {
 		ce.Linearized = append(ce.Linearized, step(ops[i]))
 	}
@@ -268,6 +269,26 @@ func (d *deadEnd) counterexample(ops []history.Operation) *Counterexample {
 	} else {
 		b.WriteString(", which is inconsistent with the observed result.")
 	}
+
+	// Targeted counterexample: identify the latest completed write that directly contradicts the stuck read.
+	if stuckOp.Input.F == history.FRead && stuckOp.Output.Value != nil {
+		var latestWrite *history.Operation
+		for i := range ops {
+			o := &ops[i]
+			if o.Status() == history.OK && o.Return < stuckOp.Call && (o.Input.F == history.FWrite || o.Input.F == history.FCas || o.Input.F == history.FAdd) {
+				if latestWrite == nil || o.Return > latestWrite.Return {
+					latestWrite = o
+				}
+			}
+		}
+		if latestWrite != nil && latestWrite.Output.Value != nil && *latestWrite.Output.Value != *stuckOp.Output.Value {
+			fmt.Fprintf(&b, " Latest preceding write was %s (completed at %.3fs, %v before this read began), but read returned %d.",
+				latestWrite.Describe(), float64(latestWrite.Return)/1e9,
+				time.Duration(stuckOp.Call-latestWrite.Return).Round(time.Microsecond),
+				*stuckOp.Output.Value)
+		}
+	}
+
 	ce.Explanation = b.String()
 	return ce
 }

@@ -15,10 +15,11 @@ import (
 // Node is a machine or container under test.
 type Node struct {
 	Name      string `json:"name"`
-	Host      string `json:"host,omitempty"`      // SSH address; defaults to IP
-	IP        string `json:"ip"`                  // address peers use to reach this node
-	Container string `json:"container,omitempty"` // docker container name
-	Cgroup    string `json:"cgroup,omitempty"`    // cgroup v2 dir of the db process (on the host)
+	Host      string `json:"host,omitempty"`       // SSH address; defaults to IP
+	IP        string `json:"ip"`                   // address peers use to reach this node
+	Container string `json:"container,omitempty"`  // docker container name
+	Cgroup    string `json:"cgroup,omitempty"`     // cgroup v2 dir of the db process (on the host)
+	AgentAddr string `json:"agent_addr,omitempty"` // strife-agent address (host:port or socket path)
 }
 
 // Transport runs shell scripts for a node.
@@ -33,12 +34,14 @@ type Transport interface {
 
 // Config selects and configures a transport.
 type Config struct {
-	Type   string `json:"type"` // docker | ssh | dry-run
-	Docker string `json:"docker,omitempty"`
-	User   string `json:"user,omitempty"`
-	Port   int    `json:"port,omitempty"`
-	Key    string `json:"key,omitempty"`
-	Sudo   bool   `json:"sudo,omitempty"`
+	Type      string `json:"type"` // docker | ssh | agent | dry-run
+	Docker    string `json:"docker,omitempty"`
+	User      string `json:"user,omitempty"`
+	Port      int    `json:"port,omitempty"`
+	Key       string `json:"key,omitempty"`
+	Sudo      bool   `json:"sudo,omitempty"`
+	AgentPort int    `json:"agent_port,omitempty"` // strife-agent port, default 9292
+	Token     string `json:"token,omitempty"`      // strife-agent authorization token
 }
 
 // New builds the configured transport.
@@ -52,10 +55,12 @@ func New(c Config) (Transport, error) {
 		return &Docker{Binary: bin}, nil
 	case "ssh":
 		return &SSH{User: c.User, Port: c.Port, Key: c.Key, Sudo: c.Sudo}, nil
+	case "agent":
+		return NewAgent(c), nil
 	case "dry-run", "dryrun", "":
 		return &DryRun{}, nil
 	}
-	return nil, fmt.Errorf("transport: unknown type %q (docker, ssh, dry-run)", c.Type)
+	return nil, fmt.Errorf("transport: unknown type %q (docker, ssh, agent, dry-run)", c.Type)
 }
 
 // Quote single-quotes s for a POSIX shell.

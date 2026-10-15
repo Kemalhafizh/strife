@@ -41,6 +41,8 @@ type Applied struct {
 	Start   bool          `json:"start"`
 	Planned time.Duration `json:"planned"`
 	Actual  time.Duration `json:"actual"`
+	Jitter  time.Duration `json:"jitter,omitempty"`
+	Method  string        `json:"method,omitempty"`
 	Errors  []string      `json:"errors,omitempty"`
 }
 

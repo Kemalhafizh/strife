@@ -100,6 +100,11 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	defer func() {
 		cctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
+		if fa, ok := tr.(transport.FaultApplier); ok {
+			for _, n := range cfg.Nodes {
+				_ = fa.TeardownNode(cctx, n)
+			}
+		}
 		if errs := exec(cctx, env.Teardown(cfg.Nemesis.Faults)); len(errs) > 0 {
 			logf("teardown errors: %v", errs)
 		}
@@ -124,16 +129,62 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 			case <-runCtx.Done():
 				return
 			}
-			cmds := env.Inject(a.Fault)
+			actual := time.Since(start)
+			jitter := actual - a.At
+			if jitter < 0 {
+				jitter = -jitter
+			}
+			method := tr.Name()
+			var errs []string
+
+			if fa, ok := tr.(transport.FaultApplier); ok {
+				method = "agent:direct"
+				targetNodes := a.Fault.Nodes
+				if a.Fault.Kind == nemesis.Partition {
+					targetNodes = make([]int, len(cfg.Nodes))
+					for idx := range cfg.Nodes {
+						targetNodes[idx] = idx
+					}
+				}
+				var nodeWG sync.WaitGroup
+				var mu sync.Mutex
+				for _, nIdx := range targetNodes {
+					nodeWG.Add(1)
+					go func(nIdx int) {
+						defer nodeWG.Done()
+						n := cfg.Nodes[nIdx]
+						cctx, cCancel := context.WithTimeout(runCtx, 10*time.Second)
+						defer cCancel()
+						var err error
+						if a.Start {
+							_, err = fa.InjectFault(cctx, n, a.Fault, env)
+						} else {
+							_, err = fa.HealFault(cctx, n, a.Fault, env)
+						}
+						if err != nil {
+							mu.Lock()
+							errs = append(errs, fmt.Sprintf("%s: %v", n.Name, err))
+							mu.Unlock()
+						}
+					}(nIdx)
+				}
+				nodeWG.Wait()
+			} else {
+				cmds := env.Inject(a.Fault)
+				if !a.Start {
+					cmds = env.Heal(a.Fault)
+				}
+				errs = exec(runCtx, cmds)
+			}
+
 			verb := "inject"
 			if !a.Start {
-				cmds, verb = env.Heal(a.Fault), "heal"
+				verb = "heal"
 			}
-			logf("%7.2fs %s %s", time.Since(start).Seconds(), verb, a.Fault.Describe(len(cfg.Nodes)))
-			errs := exec(runCtx, cmds)
+			logf("%7.2fs %s %s (jitter: %v)", actual.Seconds(), verb, a.Fault.Describe(len(cfg.Nodes)), jitter)
 			applied = append(applied, report.Applied{
 				FaultID: a.Fault.ID, Kind: a.Fault.Kind, Start: a.Start,
-				Planned: a.At, Actual: time.Since(start), Errors: errs,
+				Planned: a.At, Actual: actual, Jitter: jitter, Method: method, Errors: errs,
 			})
 		}
 	}()
@@ -150,6 +201,13 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	}
 	wg.Wait()
 	nemWG.Wait()
+
+	if fa, ok := tr.(transport.FaultApplier); ok {
+		sum := fa.JitterSummary()
+		if sum.Count > 0 {
+			logf("injection jitter: samples=%d p50=%v p95=%v min=%v max=%v", sum.Count, sum.P50, sum.P95, sum.Min, sum.Max)
+		}
+	}
 
 	ops := rec.Ops()
 	logf("checking %d events", len(ops))

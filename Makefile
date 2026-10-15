@@ -2,6 +2,7 @@
 
 build:
 	go build -o bin/strife ./cmd/strife
+	go build -o bin/strife-agent ./cmd/strife-agent
 
 test:
 	go test ./...

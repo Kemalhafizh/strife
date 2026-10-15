@@ -56,10 +56,10 @@ turns this into an engineering loop:
 |---|---|
 | **Deterministic simulator** | A FoundationDB-style discrete-event simulator. Network, timers, disks and clocks all draw from one seeded PRNG, so a seed replays the exact execution. `--determinism` runs it twice and compares trace hashes. |
 | **Linearizability checker** | Wing & Gong / Lowe search with memoization, per-key P-compositionality run in parallel, and symmetry reduction for indeterminate ops. It is cross-checked against brute force on 3,000 random histories in the test suite. |
-| **Live fault injection** | `iptables` partitions in a dedicated `STRIFE` chain, `tc netem` latency and loss, `SIGKILL` with restart, `SIGSTOP`/`SIGCONT`, the cgroup v2 freezer, `io.max` disk stalls, and clock steps. It runs over Docker or SSH. `--dry-run` and `strife plan` show every command before anything is touched. |
-| **Automatic shrinking** | `strife shrink` reduces a failing run to its essential faults with delta debugging (ddmin). It then narrows targets, windows, magnitudes, duration and clients, and verifies that every remaining fault is necessary. The result replays bit for bit. |
+| **Live fault injection** | Direct Linux RTNETLINK qdiscs, syscall signals, and cgroup v2 via `strife-agent` (<1ms jitter), with fallback to `docker exec` / SSH and `iptables` partitions. `--dry-run` and `strife plan` show every command before anything is touched. |
+| **Automatic shrinking** | `strife shrink` reduces a failing run to its essential faults with delta debugging (ddmin) and verifies 1-minimality. In addition, `strife shrink --history` applies sound delta debugging to shrink raw JSONL execution traces of thousands of operations down to 2–4 minimal operations reproducing the violation without artificial phantom reads. |
 | **CI native** | `--junit` and `--summary` on every command that reaches a verdict, plus a GitHub Action that builds Strife, posts the digest to the job summary, uploads the reports and fails the job on a violation. |
-| **Audit reports** | `report.html`, `report.md`, `report.json`, `history.jsonl` and `schedule.json`, plus a SHA-256 fingerprint over config, schedule, history and trace. |
+| **Audit reports & Visualizer** | Interactive `report.html` (zero-dependency HTML5/Canvas studio with 60fps zoom/pan, anomaly auto-focus, key/process filtering, and popover inspection) alongside `report.md`, `report.json`, `history.jsonl`, `schedule.json`, and SHA-256 tamper-evident fingerprints. |
 | **Zero dependencies** | Pure Go standard library. One static binary. |
 
 ## Quick start
@@ -121,6 +121,30 @@ minimal scenario, whatever the worker count.
 Exit codes: `0` linearizable (or matches `--expect`), `1` violation, `2` usage,
 `3` unknown (search budget exhausted), `4` error.
 
+### Shrinking a recorded history
+
+When a test against a live cluster produces thousands of operations with a violation, finding the root cause by manual inspection of JSONL traces is impractical. `strife shrink --history` applies sound delta debugging to isolate the exact 2–4 operations that break linearizability:
+
+```sh
+strife shrink --history ops.jsonl --model kv --out strife-out/
+```
+
+```
+shrinking history "ops.jsonl" (2400 ops, model kv)…
+  partition    150 ops   isolated violating key "k0"
+  diagnose     3 ops     found sound register witness
+  ddmin-read   3 ops     eliminated non-essential reads
+  ddmin-sound  3 ops     preserved causal write history (isSoundHistory invariant)
+  verify       3 ops     1-minimal: dropping any remaining operation removes violation
+minimal: 2400 → 3 ops (0.04s)
+         #1  call 0.001s   return 0.005s   p1 write k0 → 2
+         #2  call 0.006s   return 0.008s   p2 write k0 → 3
+         #3  call 0.009s   return 0.012s   p3 read k0 → 2
+diagnosis: stale read: p3 read 2 returned at 0.012s, but p2 write 3 completed earlier at 0.008s (1.000ms before read call)
+```
+
+The algorithm enforces a soundness invariant (`isSoundHistory`): candidate sub-histories never drop writes that would turn an observed read into an artificial unwritten phantom value, preventing false positive anomalies. Output artifacts (`history.jsonl`, `report.json`) in `strife-out/history-min/` allow immediate re-verification with `strife check`.
+
 ### In CI
 
 ```yaml
@@ -158,8 +182,11 @@ strife check --history ops.jsonl --model kv --out report/
 ```
 
 Models: `kv` (independent read/write/compare-and-set registers, checked per
-key) and `set` (grow-only set with read-all). `time` is in nanoseconds. A
-process that observes `info` must continue under a new process id.
+key), `set` (grow-only set with read-all), `queue` (FIFO queue with enqueue and
+dequeue), `counter` (shared integer counter with add and read), `idgen`
+(unique identifier generator), and `txn` (multi-key transactions with Elle-style
+dependency cycle detection: G0, G1a, G1b, G1c, G2, G-realtime). `time` is in
+nanoseconds. A process that observes `info` must continue under a new process id.
 
 ### Testing a real cluster
 
@@ -169,10 +196,15 @@ strife plan --config strife.json     # every iptables/tc/pkill command, by time
 strife run  --config strife.json     # 2 minutes of chaos, then the verdict
 ```
 
-Configs are plain JSON (see [`examples/etcd/strife.json`](examples/etcd/strife.json)).
-Built-in clients cover etcd v3 (JSON gateway) and Redis/Valkey (RESP, with
-compare-and-set done atomically in a Lua script). Adding another database
-means implementing one interface:
+Configs are plain JSON (see [`examples/etcd/strife.json`](examples/etcd/strife.json), [`examples/valkey/strife.json`](examples/valkey/strife.json), [`examples/postgres/strife.json`](examples/postgres/strife.json), [`examples/kafka/strife.json`](examples/kafka/strife.json), and [`examples/tidb/strife.json`](examples/tidb/strife.json)).
+Built-in clients cover:
+- **etcd v3** (JSON gateway);
+- **Redis / Valkey** (RESP2, with compare-and-set done atomically via Lua);
+- **PostgreSQL** (pure Go stdlib v3.0 protocol, KV, queue, counter, and multi-statement transactions with honest SQLSTATE error classification);
+- **Kafka** (pure Go stdlib binary wire protocol v0, produce/fetch message sets with CRC32 and consumer offsets);
+- **MySQL / TiDB** (pure Go stdlib client/server wire protocol v10, Native 4.1 auth, KV, queue, counter, and multi-statement transactions with honest error classification).
+
+Adding another database means implementing one interface:
 
 ```go
 type Client interface {
@@ -273,19 +305,23 @@ flowchart LR
 
 ```
 cmd/strife        CLI: sim, shrink, check, plan, run, systems
+cmd/strife-agent  low-jitter per-node daemon (Linux RTNETLINK, syscalls, cgroup v2)
 internal/rng      pinned, forkable xoshiro256** PRNG
 pkg/history       Jepsen-style histories, JSONL, pairing
-pkg/model         sequential specs: kv (cas registers), set
+pkg/model         sequential specs: kv, set, queue, counter, idgen, txn
+pkg/txn           multi-key transaction graphs & Elle-style anomaly detection (G0..G2)
 pkg/checker       linearizability search and counterexamples
 pkg/nemesis       seeded fault schedules → shell commands
 pkg/sim           discrete-event world: network, timers, disks, clocks
 pkg/sim/raft      reference system under test (+ bug switches)
 pkg/explore       simulated runs, seed exploration, determinism checks
 pkg/shrink        delta debugging of failing scenarios down to 1-minimal
-pkg/transport     docker exec / ssh / dry-run
-pkg/client        etcd v3 (JSON gateway) and in-memory reference store
+pkg/transport     docker exec / ssh / strife-agent / dry-run
+pkg/agent         agent daemon protocol, server, client, and jitter analyzer
+pkg/client        etcd v3, Redis/Valkey (RESP2), PostgreSQL (v3.0), Kafka (wire v0), and in-memory store
 pkg/runner        live test orchestration
 pkg/report        audit artifacts and fingerprints
+pkg/attest        in-toto v0.1 attestation statements and Ed25519 cryptographic signing
 ```
 
 ## For enterprise and compliance
@@ -299,6 +335,7 @@ failure."*
 - **Tamper-evident artifacts:** the fingerprint covers the config, schedule,
   history and trace. Anyone can recompute it and re-run `strife check` on the
   shipped history to confirm the verdict without trusting the tester.
+- **Cryptographic attestation:** `strife sign` produces an in-toto v0.1 signed statement (`bundle.json`) with an Ed25519 signature over the report fingerprint and artifact digests. `strife verify` checks the cryptographic signature and proves that neither the linearizability verdict nor the on-disk `history.jsonl` was tampered with.
 - **Regression gates:** `--expect linearizable` over a fixed seed range,
   through the GitHub Action or `--junit` on any CI system, turns a chaos
   campaign into a check that fails the build on the first violation. Each
@@ -306,12 +343,16 @@ failure."*
 
 ## Roadmap
 
-Done: automatic shrinking (Phase 1.1), and JUnit/summary output with a GitHub
-Action (Phase 1.2). Next up: a Redis/Valkey client, checker hardening, then a
-per-node `strife-agent` with netlink injection and transactional (Elle-style)
-models. See [docs/ROADMAP.md](docs/ROADMAP.md) for
-the phased plan, the reasoning behind it, and the claims we will and won't
-make.
+Done: automatic scenario shrinking (Phase 1.1), JUnit/summary output with a GitHub
+Action (Phase 1.2), Redis/Valkey client & live validation (Phase 1.3),
+history shrinking (`strife shrink --history`) & checker hardening (Phase 1.4),
+`strife-agent` with socket / RTNETLINK injection (Phase 2.1), sequential
+models (`queue`, `counter`, `idgen`) and transactional anomaly detection
+(Phase 2.2), PostgreSQL, Kafka, MySQL & TiDB targets (Phase 2.3), Interactive
+Timeline Analyzer & Visualizer (Phase 3.1), and Cryptographic Report Attestation
+& Ed25519 Signing (Phase 4.1). Next up: Cloud runner or Server-side diagnostic probes.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, the
+reasoning behind it, and the claims we will and won't make.
 
 ## Development
 

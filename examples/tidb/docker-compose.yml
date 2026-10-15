@@ -1,0 +1,21 @@
+# TiDB chaos environment for Strife
+# NET_ADMIN capability gives the nemesis access to iptables and tc inside the container.
+services:
+  n1:
+    image: pingcap/tidb:v7.1.0
+    container_name: strife-tidb1
+    cap_add: [NET_ADMIN]
+    command:
+      - -P=4000
+      - --status=10080
+      - --store=unistore
+    networks:
+      strife:
+        ipv4_address: 172.31.3.11
+    ports:
+      - "4000:4000"
+
+networks:
+  strife:
+    ipam:
+      config: [{ subnet: 172.31.3.0/24 }]

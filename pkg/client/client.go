@@ -39,7 +39,7 @@ type Config struct {
 }
 
 // Kinds lists the supported drivers.
-var Kinds = []string{"etcd", "redis", "valkey", "memory"}
+var Kinds = []string{"etcd", "redis", "valkey", "memory", "postgres", "kafka", "mysql", "tidb"}
 
 // NewFactory builds a factory for the configured driver. Every key the test
 // touches lives under prefix+namespace, so each run starts from empty
@@ -71,6 +71,27 @@ func NewFactory(c Config, namespace string) (Factory, error) {
 		}
 		return func(i int) (Client, error) {
 			return NewRedis(c.Endpoints[i%len(c.Endpoints)], prefix), nil
+		}, nil
+	case "postgres", "postgresql":
+		if len(c.Endpoints) == 0 {
+			return nil, fmt.Errorf("client: postgres needs db.endpoints (host:port per node)")
+		}
+		return func(i int) (Client, error) {
+			return NewPostgres(c.Endpoints[i%len(c.Endpoints)], prefix), nil
+		}, nil
+	case "kafka":
+		if len(c.Endpoints) == 0 {
+			return nil, fmt.Errorf("client: kafka needs db.endpoints (host:port per node)")
+		}
+		return func(i int) (Client, error) {
+			return NewKafka(c.Endpoints[i%len(c.Endpoints)], prefix), nil
+		}, nil
+	case "mysql", "tidb":
+		if len(c.Endpoints) == 0 {
+			return nil, fmt.Errorf("client: %s needs db.endpoints (host:port per node)", c.Kind)
+		}
+		return func(i int) (Client, error) {
+			return NewMySQL(c.Endpoints[i%len(c.Endpoints)], prefix), nil
 		}, nil
 	case "memory":
 		store := NewMemoryStore()

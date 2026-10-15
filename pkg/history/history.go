@@ -35,25 +35,38 @@ const (
 
 // Operation functions understood by the built-in models.
 const (
-	FRead  = "read"
-	FWrite = "write"
-	FCas   = "cas"
-	FAdd   = "add"
+	FRead     = "read"
+	FWrite    = "write"
+	FCas      = "cas"
+	FAdd      = "add"
+	FEnqueue  = "enqueue"
+	FDequeue  = "dequeue"
+	FInc      = "inc"
+	FGenerate = "generate"
+	FTxn      = "txn"
 )
+
+// MicroOp is one read or write operation inside a transaction.
+type MicroOp struct {
+	F     string `json:"f"`               // "r" (read) or "w" (write)
+	Key   string `json:"key"`
+	Value *int64 `json:"value,omitempty"` // written or read value
+}
 
 // Op is one event in a history.
 type Op struct {
-	Index   int     `json:"index"`
-	Process int     `json:"process"`
-	Type    Type    `json:"type"`
-	F       string  `json:"f"`
-	Key     string  `json:"key,omitempty"`
-	Value   *int64  `json:"value,omitempty"`  // write/add argument, cas new value, read result
-	Old     *int64  `json:"old,omitempty"`    // cas expected value
-	Values  []int64 `json:"values,omitempty"` // set read result
-	Time    int64   `json:"time"`             // nanoseconds since the start of the test
-	Node    string  `json:"node,omitempty"`   // which node served the request, if known
-	Error   string  `json:"error,omitempty"`
+	Index   int       `json:"index"`
+	Process int       `json:"process"`
+	Type    Type      `json:"type"`
+	F       string    `json:"f"`
+	Key     string    `json:"key,omitempty"`
+	Value   *int64    `json:"value,omitempty"`  // write/add argument, cas new value, read result
+	Old     *int64    `json:"old,omitempty"`    // cas expected value
+	Values  []int64   `json:"values,omitempty"` // set read result
+	Txn     []MicroOp `json:"txn,omitempty"`    // transactional micro-operations
+	Time    int64     `json:"time"`             // nanoseconds since the start of the test
+	Node    string    `json:"node,omitempty"`   // which node served the request, if known
+	Error   string    `json:"error,omitempty"`
 }
 
 // Int returns a pointer to v; handy for building ops.
@@ -69,7 +82,24 @@ func (o Op) String() string {
 	switch o.F {
 	case FCas:
 		fmt.Fprintf(&b, " %s→%s", fmtVal(o.Old), fmtVal(o.Value))
-	case FRead:
+	case FTxn:
+		b.WriteString(" [")
+		for i, m := range o.Txn {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			if m.F == "w" || m.F == "write" {
+				fmt.Fprintf(&b, "w(%s, %s)", m.Key, fmtVal(m.Value))
+			} else {
+				if m.Value != nil {
+					fmt.Fprintf(&b, "r(%s)→%s", m.Key, fmtVal(m.Value))
+				} else {
+					fmt.Fprintf(&b, "r(%s)", m.Key)
+				}
+			}
+		}
+		b.WriteString("]")
+	case FRead, FDequeue, FGenerate:
 		if o.Type != Invoke {
 			if o.Values != nil {
 				fmt.Fprintf(&b, " →%v", o.Values)

@@ -17,6 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/explore"
 	"github.com/kemalhafizh/strife/pkg/history"
@@ -45,6 +46,9 @@ Usage:
   strife check   [flags]   check a recorded history (JSONL) for linearizability
   strife plan    [flags]   print a seeded fault schedule and its shell commands
   strife run     [flags]   run a live test against a real cluster
+  strife keygen  [flags]   generate an Ed25519 signing keypair for compliance audits
+  strife sign    [flags]   cryptographically sign a report artifact (in-toto attestation)
+  strife verify  [flags]   verify a signed compliance bundle against a public key
   strife systems           list the built-in simulated systems
   strife version
 
@@ -74,6 +78,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdPlan(rest, stdout, stderr)
 	case "run":
 		code, err = cmdRun(rest, stdout, stderr)
+	case "keygen":
+		code, err = cmdKeygen(rest, stdout, stderr)
+	case "sign":
+		code, err = cmdSign(rest, stdout, stderr)
+	case "verify":
+		code, err = cmdVerify(rest, stdout, stderr)
 	case "systems":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "SYSTEM\tEXPECTED\tEXPOSED BY\tDESCRIPTION")
@@ -495,6 +505,9 @@ func faultList(c explore.Config) string {
 func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("shrink", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	historyPath := fs.String("history", "", "shrink a recorded history (JSONL) down to minimal conflicting operations")
+	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
+	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn)")
 	scenario := scenarioFlags(fs)
 	from := fs.String("report", "", "shrink the scenario recorded in this simulation report.json (overrides scenario flags)")
 	out := fs.String("out", "strife-out", "directory for the minimal report (\"\" to disable)")
@@ -505,6 +518,11 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
+
+	if *historyPath != "" {
+		return cmdShrinkHistory(*historyPath, *modelName, *isolation, *out, *ci, stdout, stderr)
+	}
+
 	var cfg explore.Config
 	if *from != "" {
 		data, err := os.ReadFile(*from)
@@ -543,6 +561,104 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	suite := report.SuiteFromReport(rep, time.Since(start))
 	suite.Name = name
 	return emitCI(*ci, exitViolation, nil, suite)
+}
+
+func cmdShrinkHistory(path, modelName, isolation, outDir string, ci ciOpt, stdout, stderr io.Writer) (int, error) {
+	start := time.Now()
+	f, err := os.Open(path)
+	if err != nil {
+		return exitUsage, err
+	}
+	defer f.Close()
+
+	ops, err := history.ReadJSONL(f)
+	if err != nil {
+		return exitUsage, fmt.Errorf("%s: %w", path, err)
+	}
+
+	m, err := model.ByName(modelName)
+	if err != nil {
+		return exitUsage, err
+	}
+	if tm, ok := m.(model.TxnModel); ok {
+		tm.Level = isolation
+		m = tm
+	}
+
+	fmt.Fprintf(stdout, "\nshrinking history %q (%d ops, model %s)…\n", path, len(ops), modelName)
+
+	progress := func(s shrink.HistoryStep) {
+		fmt.Fprintf(stdout, "  %-12s %d ops   %s\n", s.Phase, s.Ops, s.Note)
+	}
+
+	res, err := shrink.History(context.Background(), m, ops, shrink.HistoryOptions{
+		Progress: progress,
+	})
+	if errors.Is(err, shrink.ErrNotViolating) {
+		return emitCI(ci, exitUsage, err, report.ErrorSuite("shrink history", err))
+	}
+	if err != nil {
+		return emitCI(ci, exitError, err, report.ErrorSuite("shrink history", err))
+	}
+
+	fmt.Fprintf(stdout, "minimal: %d → %d ops (%.2fs)\n", res.OriginalOps, res.MinimalOps, res.Elapsed.Seconds())
+	for i, o := range res.Operations {
+		ret := fmt.Sprintf("%.3fs", float64(o.Return)/1e9)
+		if o.Return == history.Infinity {
+			ret = "?"
+		}
+		fmt.Fprintf(stdout, "         #%d  call %-8.3fs return %-8s  %s\n", i+1, float64(o.Call)/1e9, ret, o.Describe())
+	}
+	if res.Diagnosis != "" {
+		fmt.Fprintf(stdout, "diagnosis: %s\n", res.Diagnosis)
+	}
+
+	if outDir != "" {
+		minDir := outDir
+		if !strings.HasSuffix(minDir, "-min") {
+			minDir = filepath.Join(outDir, "history-min")
+		}
+		if err := os.MkdirAll(minDir, 0o755); err != nil {
+			return exitError, err
+		}
+		minHistFile := filepath.Join(minDir, "history.jsonl")
+		hf, err := os.Create(minHistFile)
+		if err != nil {
+			return exitError, err
+		}
+		if err := history.WriteJSONL(hf, res.History); err != nil {
+			hf.Close()
+			return exitError, err
+		}
+		hf.Close()
+
+		rep, err := report.New(report.KindCheck, "history-min", 0, nil, nemesis.Schedule{}, res.History, checker.Report{
+			Model: modelName, Verdict: checker.Violation, Operations: len(res.History), Checked: len(res.Operations),
+			Keys: []checker.KeyResult{{Key: res.Key, Verdict: checker.Violation, Operations: len(res.Operations), Counterexample: &checker.Counterexample{
+				Diagnosis: res.Diagnosis, Explanation: res.Explanation,
+			}}},
+		}, "")
+		if err == nil {
+			_, _ = report.WriteDir(minDir, rep, res.History)
+		}
+		fmt.Fprintf(stdout, "artifacts: %s\n", minDir)
+	}
+
+	suite := report.Suite{
+		Name:    "shrink · history",
+		Elapsed: time.Since(start),
+		Cases: []report.Case{
+			{
+				Name:    res.Key,
+				Elapsed: res.Elapsed,
+				Failure: &report.Failure{
+					Message: fmt.Sprintf("minimal conflict of %d ops found", res.MinimalOps),
+					Details: res.Diagnosis,
+				},
+			},
+		},
+	}
+	return emitCI(ci, exitViolation, nil, suite)
 }
 
 // runShrink minimises cfg, prints the outcome and writes the minimal report.
@@ -623,6 +739,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	fs.SetOutput(stderr)
 	path := fs.String("history", "", "history file (JSONL, one op per line; - for stdin)")
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
+	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
 	out := fs.String("out", "", "write a report directory here")
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
 	timeout := fs.Duration("check-timeout", 0, "wall-clock budget per key (0 = none)")
@@ -639,6 +756,10 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	m, err := model.ByName(*modelName)
 	if err != nil {
 		return exitUsage, err
+	}
+	if tm, ok := m.(model.TxnModel); ok {
+		tm.Level = *isolation
+		m = tm
 	}
 	var r io.Reader = os.Stdin
 	if *path != "-" {
@@ -880,4 +1001,94 @@ func injectionErrors(applied []report.Applied) int {
 		n += len(a.Errors)
 	}
 	return n
+}
+
+func cmdKeygen(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	outPrefix := fs.String("out", "strife-key", "output keypair path prefix (writes <out>.key and <out>.pub)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+
+	pub, priv, err := attest.GenerateKeyPair()
+	if err != nil {
+		return exitError, err
+	}
+
+	privPath := *outPrefix + ".key"
+	pubPath := *outPrefix + ".pub"
+
+	if err := attest.SaveKeys(privPath, pubPath, priv, pub); err != nil {
+		return exitError, err
+	}
+
+	fmt.Fprintf(stdout, "generated ed25519 signing keypair:\n")
+	fmt.Fprintf(stdout, "  private key: %s (mode 0600)\n", privPath)
+	fmt.Fprintf(stdout, "  public key:  %s (key id: %s)\n", pubPath, attest.KeyID(pub))
+	return exitOK, nil
+}
+
+func cmdSign(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	reportPath := fs.String("report", "", "path to report.json to sign")
+	keyPath := fs.String("key", "", "path to ed25519 private key (.key)")
+	outPath := fs.String("out", "", "output bundle.json path (default: <report_dir>/bundle.json)")
+	signer := fs.String("signer", "strife-auditor", "signer identity or role name")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if *reportPath == "" || *keyPath == "" {
+		return exitUsage, fmt.Errorf("both --report and --key are required")
+	}
+
+	bundle, err := attest.SignReportFile(*reportPath, *keyPath, *outPath, *signer)
+	if err != nil {
+		return exitError, err
+	}
+
+	targetOut := *outPath
+	if targetOut == "" {
+		targetOut = filepath.Join(filepath.Dir(*reportPath), "bundle.json")
+	}
+
+	fmt.Fprintf(stdout, "signed in-toto attestation bundle:\n")
+	fmt.Fprintf(stdout, "  subject:     %s (seed %d, %s)\n", bundle.Statement.Predicate.Target, bundle.Statement.Predicate.Seed, bundle.Statement.Predicate.Verdict)
+	fmt.Fprintf(stdout, "  fingerprint: %s\n", bundle.Statement.Predicate.Fingerprint)
+	fmt.Fprintf(stdout, "  key id:      %s\n", bundle.Signatures[0].KeyID)
+	fmt.Fprintf(stdout, "  bundle file: %s\n", targetOut)
+	return exitOK, nil
+}
+
+func cmdVerify(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	bundlePath := fs.String("bundle", "", "path to bundle.json")
+	keyPath := fs.String("key", "", "path to ed25519 public key (.pub)")
+	histPath := fs.String("history", "", "optional: verify that this history.jsonl matches the signed digest")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if *bundlePath == "" || *keyPath == "" {
+		return exitUsage, fmt.Errorf("both --bundle and --key are required")
+	}
+
+	res, err := attest.VerifyBundleFile(*bundlePath, *keyPath, *histPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "verification FAILED: %v\n", err)
+		return exitViolation, err
+	}
+
+	fmt.Fprintf(stdout, "VERIFICATION: SUCCESS ✅\n")
+	fmt.Fprintf(stdout, "  target:       %s (seed %d)\n", res.Target, res.Seed)
+	fmt.Fprintf(stdout, "  verdict:      %s\n", strings.ToUpper(string(res.Verdict)))
+	fmt.Fprintf(stdout, "  signer:       %s (key id: %s)\n", res.Signer, res.KeyID)
+	fmt.Fprintf(stdout, "  signed at:    %s\n", res.SignedAt.Format(time.RFC3339))
+	fmt.Fprintf(stdout, "  fingerprint:  %s\n", res.Fingerprint)
+	fmt.Fprintf(stdout, "  history hash: %s\n", res.HistoryHash)
+	if res.HistoryVerified {
+		fmt.Fprintf(stdout, "  history file: %s (VERIFIED bit-for-bit ✅)\n", *histPath)
+	}
+	return exitOK, nil
 }

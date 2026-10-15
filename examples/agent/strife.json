@@ -1,0 +1,50 @@
+{
+  "name": "agent-cluster",
+  "seed": 42,
+  "duration": "30s",
+  "nodes": [
+    {
+      "name": "node1",
+      "ip": "172.28.0.11",
+      "agent_addr": "127.0.0.1:9291"
+    },
+    {
+      "name": "node2",
+      "ip": "172.28.0.12",
+      "agent_addr": "127.0.0.1:9292"
+    },
+    {
+      "name": "node3",
+      "ip": "172.28.0.13",
+      "agent_addr": "127.0.0.1:9293"
+    }
+  ],
+  "transport": {
+    "type": "agent",
+    "agent_port": 9292
+  },
+  "db": {
+    "kind": "memory",
+    "endpoints": ["172.28.0.11:9291", "172.28.0.12:9292", "172.28.0.13:9293"]
+  },
+  "workload": {
+    "model": "kv",
+    "keys": 5,
+    "values": 10,
+    "concurrency": 8,
+    "read_ratio": 0.5,
+    "cas_ratio": 0.2,
+    "think": "5ms",
+    "timeout": "2s"
+  },
+  "nemesis": {
+    "faults": ["partition", "latency", "loss"],
+    "interval": "5s",
+    "length": "2s",
+    "interface": "eth0"
+  },
+  "checker": {
+    "max_steps": 100000,
+    "timeout": "30s"
+  }
+}

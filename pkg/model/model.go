@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/kemalhafizh/strife/pkg/history"
+	"github.com/kemalhafizh/strife/pkg/txn"
 )
 
 // State is an immutable model state.
@@ -62,12 +63,20 @@ func ByName(name string) (Model, error) {
 		return KV{}, nil
 	case "set":
 		return Set{}, nil
+	case "queue", "fifo", "fifo-queue":
+		return Queue{}, nil
+	case "counter":
+		return Counter{}, nil
+	case "idgen", "uid", "unique-id":
+		return IDGen{}, nil
+	case "txn", "transaction", "transactional":
+		return TxnModel{}, nil
 	}
-	return nil, fmt.Errorf("model: unknown model %q (want kv or set)", name)
+	return nil, fmt.Errorf("model: unknown model %q (want kv, set, queue, counter, idgen, or txn)", name)
 }
 
 // Names lists the built-in models.
-func Names() []string { return []string{"kv", "set"} }
+func Names() []string { return []string{"kv", "set", "queue", "counter", "idgen", "txn"} }
 
 func partitionByKey(ops []history.Operation) ([]string, [][]history.Operation) {
 	idx := map[string]int{}
@@ -485,4 +494,635 @@ func (Set) Step(s State, in, out history.Op) (bool, State) {
 // Partition implements Model.
 func (Set) Partition(ops []history.Operation) ([]string, [][]history.Operation) {
 	return partitionByKey(ops)
+}
+
+// ---------------------------------------------------------------------------
+// Queue: a FIFO queue with enqueue and dequeue.
+
+// Queue models a FIFO queue: enqueue(x) and dequeue() returning the oldest element.
+type Queue struct{}
+
+type queueState struct {
+	elems []int64 // oldest at 0, newest at end
+}
+
+func (q queueState) Hash() uint64 {
+	h := fnv.New64a()
+	var b [8]byte
+	for _, e := range q.elems {
+		for i := 0; i < 8; i++ {
+			b[i] = byte(uint64(e) >> (8 * i))
+		}
+		_, _ = h.Write(b[:])
+	}
+	return h.Sum64()
+}
+
+func (q queueState) Equal(o State) bool {
+	t, ok := o.(queueState)
+	if !ok || len(q.elems) != len(t.elems) {
+		return false
+	}
+	for i := range q.elems {
+		if q.elems[i] != t.elems[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (q queueState) String() string { return fmt.Sprint(q.elems) }
+
+func (q queueState) enqueue(v int64) queueState {
+	n := make([]int64, len(q.elems)+1)
+	copy(n, q.elems)
+	n[len(q.elems)] = v
+	return queueState{elems: n}
+}
+
+func (q queueState) dequeue() queueState {
+	if len(q.elems) == 0 {
+		return q
+	}
+	n := make([]int64, len(q.elems)-1)
+	copy(n, q.elems[1:])
+	return queueState{elems: n}
+}
+
+// Name implements Model.
+func (Queue) Name() string { return "queue" }
+
+// Init implements Model.
+func (Queue) Init() State { return queueState{} }
+
+// Relevant implements Model.
+func (Queue) Relevant(o history.Operation) bool {
+	switch o.Status() {
+	case history.Fail:
+		return false
+	case history.Info:
+		return isEnqueue(o.Input.F)
+	}
+	return true
+}
+
+func isEnqueue(f string) bool {
+	return f == history.FEnqueue || f == "push" || f == "send" || f == history.FAdd
+}
+
+func isDequeue(f string) bool {
+	return f == history.FDequeue || f == "pop" || f == "poll" || f == history.FRead
+}
+
+// Step implements Model.
+func (Queue) Step(s State, in, out history.Op) (bool, State) {
+	st := s.(queueState)
+	switch {
+	case isEnqueue(in.F):
+		if in.Value == nil {
+			return false, st
+		}
+		return true, st.enqueue(*in.Value)
+	case isDequeue(in.F):
+		if out.Type != history.OK {
+			return true, st
+		}
+		if len(st.elems) == 0 {
+			if out.Value == nil {
+				return true, st
+			}
+			return false, st
+		}
+		head := st.elems[0]
+		if out.Value == nil || *out.Value != head {
+			return false, st
+		}
+		return true, st.dequeue()
+	}
+	return false, st
+}
+
+// Partition implements Model.
+func (Queue) Partition(ops []history.Operation) ([]string, [][]history.Operation) {
+	return partitionByKey(ops)
+}
+
+// Diagnose implements Diagnoser for Queue.
+func (Queue) Diagnose(ops []history.Operation) ([]int, string, bool) {
+	// 1. Phantom elements: a dequeue returned a value that was never enqueued
+	// or where all enqueues of that value began strictly after the dequeue returned.
+	for di, d := range ops {
+		if !isDequeue(d.Input.F) || d.Status() != history.OK || d.Output.Value == nil {
+			continue
+		}
+		val := *d.Output.Value
+		foundEnqueue := false
+		earliestEnqueue := -1
+		for ei, e := range ops {
+			if isEnqueue(e.Input.F) && e.Input.Value != nil && *e.Input.Value == val {
+				if e.Call <= d.Return {
+					foundEnqueue = true
+					break
+				}
+				if earliestEnqueue < 0 || e.Call < ops[earliestEnqueue].Call {
+					earliestEnqueue = ei
+				}
+			}
+		}
+		if !foundEnqueue {
+			if earliestEnqueue >= 0 {
+				ee := ops[earliestEnqueue]
+				return []int{di, earliestEnqueue}, fmt.Sprintf(
+					"Phantom dequeue: %s returned %d at %s, but that value was not enqueued until %s at %s.",
+					d.Describe(), val, fmtNs(d.Return), ee.Describe(), fmtNs(ee.Call)), true
+			}
+			return []int{di}, fmt.Sprintf(
+				"Phantom dequeue: %s returned %d at %s, but that value was never enqueued.",
+				d.Describe(), val, fmtNs(d.Return)), true
+		}
+	}
+
+	// 2. FIFO order inversion:
+	// If enqueue(A) completed before enqueue(B) began, then A is strictly ahead of B in FIFO order.
+	// If dequeue(B) completed, but no dequeue of A occurred before dequeue(B) finished, then B was dequeued before A.
+	for eaIdx, ea := range ops {
+		if !isEnqueue(ea.Input.F) || ea.Status() != history.OK || ea.Input.Value == nil {
+			continue
+		}
+		valA := *ea.Input.Value
+
+		for ebIdx, eb := range ops {
+			if !isEnqueue(eb.Input.F) || eb.Input.Value == nil || ea.Return >= eb.Call {
+				continue
+			}
+			valB := *eb.Input.Value
+			if valA == valB {
+				continue
+			}
+			// ea completed strictly before eb began.
+			for dbIdx, db := range ops {
+				if !isDequeue(db.Input.F) || db.Status() != history.OK || db.Output.Value == nil || *db.Output.Value != valB {
+					continue
+				}
+				// db is a dequeue of B. Did A get dequeued before db finished?
+				dequeuedABefore := false
+				daAfter := -1
+				for daIdx, da := range ops {
+					if !isDequeue(da.Input.F) || da.Status() != history.OK || da.Output.Value == nil || *da.Output.Value != valA {
+						continue
+					}
+					if da.Call <= db.Return {
+						dequeuedABefore = true
+						break
+					}
+					if daAfter < 0 || da.Call < ops[daAfter].Call {
+						daAfter = daIdx
+					}
+				}
+				if !dequeuedABefore {
+					witness := []int{eaIdx, ebIdx, dbIdx}
+					if daAfter >= 0 {
+						witness = append(witness, daAfter)
+						sort.Ints(witness)
+						return witness, fmt.Sprintf(
+							"FIFO order inversion: %s completed at %s before %s began at %s, but %s completed at %s before %s was dequeued (%s at %s).",
+							ea.Describe(), fmtNs(ea.Return), eb.Describe(), fmtNs(eb.Call), db.Describe(), fmtNs(db.Return), fmtVal(&valA), ops[daAfter].Describe(), fmtNs(ops[daAfter].Call)), true
+					}
+					sort.Ints(witness)
+					return witness, fmt.Sprintf(
+						"FIFO order inversion: %s completed at %s before %s began at %s, but %s completed at %s while %s was never dequeued.",
+						ea.Describe(), fmtNs(ea.Return), eb.Describe(), fmtNs(eb.Call), db.Describe(), fmtNs(db.Return), fmtVal(&valA)), true
+				}
+			}
+		}
+	}
+
+	// 3. Premature empty dequeue:
+	// enqueue(A) completed strictly before a dequeue returning empty (nil) began,
+	// and no dequeue could have consumed A.
+	for eaIdx, ea := range ops {
+		if !isEnqueue(ea.Input.F) || ea.Status() != history.OK || ea.Input.Value == nil {
+			continue
+		}
+		for deIdx, de := range ops {
+			if !isDequeue(de.Input.F) || de.Status() != history.OK || de.Output.Value != nil || ea.Return >= de.Call {
+				continue
+			}
+			anyDequeue := false
+			for _, d := range ops {
+				if isDequeue(d.Input.F) && d.Output.Value != nil && d.Call <= de.Return && d.Return >= ea.Call {
+					anyDequeue = true
+					break
+				}
+			}
+			if !anyDequeue {
+				return []int{eaIdx, deIdx}, fmt.Sprintf(
+					"Premature empty dequeue: %s completed at %s, but %s observed an empty queue at %s with no intervening dequeue.",
+					ea.Describe(), fmtNs(ea.Return), de.Describe(), fmtNs(de.Call)), true
+			}
+		}
+	}
+
+	return nil, "", false
+}
+
+// ---------------------------------------------------------------------------
+// Counter: a shared integer counter with add and read.
+
+// Counter models an integer counter with add(delta) and read() returning the total.
+type Counter struct{}
+
+type counterState struct {
+	val int64
+}
+
+func (c counterState) Hash() uint64 {
+	h := fnv.New64a()
+	var b [8]byte
+	for i := 0; i < 8; i++ {
+		b[i] = byte(uint64(c.val) >> (8 * i))
+	}
+	_, _ = h.Write(b[:])
+	return h.Sum64()
+}
+
+func (c counterState) Equal(o State) bool {
+	t, ok := o.(counterState)
+	return ok && c.val == t.val
+}
+
+func (c counterState) String() string { return fmt.Sprint(c.val) }
+
+// Name implements Model.
+func (Counter) Name() string { return "counter" }
+
+// ReadOnly implements ReadOnly.
+func (Counter) ReadOnly(in history.Op) bool {
+	return in.F == history.FRead || in.F == "get"
+}
+
+// Init implements Model.
+func (Counter) Init() State { return counterState{val: 0} }
+
+// Relevant implements Model.
+func (Counter) Relevant(o history.Operation) bool {
+	switch o.Status() {
+	case history.Fail:
+		return false
+	case history.Info:
+		return o.Input.F != history.FRead && o.Input.F != "get"
+	}
+	return true
+}
+
+func isAdd(f string) bool {
+	return f == history.FAdd || f == history.FInc || f == "increment"
+}
+
+func isCounterRead(f string) bool {
+	return f == history.FRead || f == "get"
+}
+
+// Step implements Model.
+func (Counter) Step(s State, in, out history.Op) (bool, State) {
+	st := s.(counterState)
+	switch {
+	case isAdd(in.F):
+		delta := int64(1)
+		if in.Value != nil {
+			delta = *in.Value
+		}
+		return true, counterState{val: st.val + delta}
+	case isCounterRead(in.F):
+		if out.Type != history.OK {
+			return true, st
+		}
+		if out.Value == nil {
+			return false, st
+		}
+		return *out.Value == st.val, st
+	}
+	return false, st
+}
+
+// Partition implements Model.
+func (Counter) Partition(ops []history.Operation) ([]string, [][]history.Operation) {
+	return partitionByKey(ops)
+}
+
+// Diagnose implements Diagnoser for Counter.
+func (Counter) Diagnose(ops []history.Operation) ([]int, string, bool) {
+	// Check if all increments are non-negative
+	allNonNeg := true
+	for _, o := range ops {
+		if isAdd(o.Input.F) && o.Input.Value != nil && *o.Input.Value < 0 {
+			allNonNeg = false
+			break
+		}
+	}
+	if !allNonNeg {
+		return nil, "", false
+	}
+
+	for ri, r := range ops {
+		if !isCounterRead(r.Input.F) || r.Status() != history.OK || r.Output.Value == nil {
+			continue
+		}
+		observedVal := *r.Output.Value
+		if observedVal < 0 {
+			return []int{ri}, fmt.Sprintf(
+				"Negative counter value: %s returned %d at %s, but the counter begins at 0 and increments are non-negative.",
+				r.Describe(), observedVal, fmtNs(r.Return)), true
+		}
+
+		// Sum completed adds that returned strictly before r began
+		var completedSum int64
+		var completedAdds []int
+		for ai, a := range ops {
+			if isAdd(a.Input.F) && a.Status() == history.OK && a.Return < r.Call {
+				delta := int64(1)
+				if a.Input.Value != nil {
+					delta = *a.Input.Value
+				}
+				completedSum += delta
+				completedAdds = append(completedAdds, ai)
+			}
+		}
+
+		if observedVal < completedSum {
+			// Select minimal subset of completedAdds whose sum already exceeds observedVal
+			var minAdds []int
+			var running int64
+			for _, ai := range completedAdds {
+				delta := int64(1)
+				if ops[ai].Input.Value != nil {
+					delta = *ops[ai].Input.Value
+				}
+				running += delta
+				minAdds = append(minAdds, ai)
+				if running > observedVal {
+					break
+				}
+			}
+			witness := append(minAdds, ri)
+			sort.Ints(witness)
+			return witness, fmt.Sprintf(
+				"Stale counter read: %s returned %d at %s, but completed increments totaling %d had already finished before the read began.",
+				r.Describe(), observedVal, fmtNs(r.Return), running), true
+		}
+
+		// Check if observedVal exceeds all additions that were invoked before r completed
+		var allInitiatedSum int64
+		for _, a := range ops {
+			if isAdd(a.Input.F) && a.Status() != history.Fail && a.Call <= r.Return {
+				delta := int64(1)
+				if a.Input.Value != nil {
+					delta = *a.Input.Value
+				}
+				allInitiatedSum += delta
+			}
+		}
+		if observedVal > allInitiatedSum {
+			return []int{ri}, fmt.Sprintf(
+				"Overstated counter read: %s returned %d at %s, but the sum of all initiated increments is only %d.",
+				r.Describe(), observedVal, fmtNs(r.Return), allInitiatedSum), true
+		}
+	}
+
+	return nil, "", false
+}
+
+// ---------------------------------------------------------------------------
+// IDGen: a unique identifier generator.
+
+// IDGen models a unique identifier generator where every generated ID is distinct.
+type IDGen struct{}
+
+type idGenState struct {
+	seen []int64 // sorted list of generated IDs
+}
+
+func (s idGenState) Hash() uint64 {
+	h := fnv.New64a()
+	var b [8]byte
+	for _, e := range s.seen {
+		for i := 0; i < 8; i++ {
+			b[i] = byte(uint64(e) >> (8 * i))
+		}
+		_, _ = h.Write(b[:])
+	}
+	return h.Sum64()
+}
+
+func (s idGenState) Equal(o State) bool {
+	t, ok := o.(idGenState)
+	if !ok || len(s.seen) != len(t.seen) {
+		return false
+	}
+	for i := range s.seen {
+		if s.seen[i] != t.seen[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s idGenState) String() string { return fmt.Sprint(s.seen) }
+
+// Name implements Model.
+func (IDGen) Name() string { return "idgen" }
+
+// Init implements Model.
+func (IDGen) Init() State { return idGenState{} }
+
+// Relevant implements Model.
+func (IDGen) Relevant(o history.Operation) bool {
+	return o.Status() != history.Fail
+}
+
+// Step implements Model.
+func (IDGen) Step(s State, in, out history.Op) (bool, State) {
+	st := s.(idGenState)
+	if out.Type != history.OK {
+		return true, st
+	}
+	if out.Value == nil {
+		return false, st
+	}
+	id := *out.Value
+	idx := sort.Search(len(st.seen), func(i int) bool { return st.seen[i] >= id })
+	if idx < len(st.seen) && st.seen[idx] == id {
+		// Duplicate ID: violation!
+		return false, st
+	}
+	next := make([]int64, len(st.seen)+1)
+	copy(next[:idx], st.seen[:idx])
+	next[idx] = id
+	copy(next[idx+1:], st.seen[idx:])
+	return true, idGenState{seen: next}
+}
+
+// Partition implements Model.
+func (IDGen) Partition(ops []history.Operation) ([]string, [][]history.Operation) {
+	return partitionByKey(ops)
+}
+
+// Diagnose implements Diagnoser for IDGen.
+func (IDGen) Diagnose(ops []history.Operation) ([]int, string, bool) {
+	seen := map[int64]int{}
+	for i, o := range ops {
+		if o.Status() != history.OK || o.Output.Value == nil {
+			continue
+		}
+		id := *o.Output.Value
+		if prev, ok := seen[id]; ok {
+			p := ops[prev]
+			return []int{prev, i}, fmt.Sprintf(
+				"Duplicate ID generated: %s and %s both generated ID %d.",
+				p.Describe(), o.Describe(), id), true
+		}
+		seen[id] = i
+	}
+	return nil, "", false
+}
+
+// ---------------------------------------------------------------------------
+// TxnModel: multi-key transactional consistency model with Elle-style cycle detection.
+
+// TxnModel models multi-key transactions checking for isolation anomalies (G0, G1, G2).
+type TxnModel struct {
+	Level string // target isolation level, default "serializable"
+}
+
+type txnState struct {
+	kvs map[string]int64
+}
+
+func (s txnState) Hash() uint64 {
+	h := fnv.New64a()
+	var keys []string
+	for k := range s.kvs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b [8]byte
+	for _, k := range keys {
+		_, _ = h.Write([]byte(k))
+		v := s.kvs[k]
+		for i := 0; i < 8; i++ {
+			b[i] = byte(uint64(v) >> (8 * i))
+		}
+		_, _ = h.Write(b[:])
+	}
+	return h.Sum64()
+}
+
+func (s txnState) Equal(o State) bool {
+	t, ok := o.(txnState)
+	if !ok || len(s.kvs) != len(t.kvs) {
+		return false
+	}
+	for k, v := range s.kvs {
+		if t.kvs[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func (s txnState) String() string {
+	return fmt.Sprint(s.kvs)
+}
+
+// Name implements Model.
+func (TxnModel) Name() string { return "txn" }
+
+// Init implements Model.
+func (TxnModel) Init() State { return txnState{kvs: make(map[string]int64)} }
+
+// Relevant implements Model.
+func (TxnModel) Relevant(o history.Operation) bool {
+	return o.Status() != history.Fail
+}
+
+// Step implements Model.
+func (TxnModel) Step(s State, in, out history.Op) (bool, State) {
+	st := s.(txnState)
+	if in.F != history.FTxn {
+		return true, st
+	}
+	next := txnState{kvs: make(map[string]int64, len(st.kvs))}
+	for k, v := range st.kvs {
+		next.kvs[k] = v
+	}
+
+	for _, m := range in.Txn {
+		if m.F == "w" || m.F == "write" {
+			if m.Value != nil {
+				next.kvs[m.Key] = *m.Value
+			}
+		} else {
+			if out.Type == history.OK && m.Value != nil {
+				cur, exists := next.kvs[m.Key]
+				if !exists {
+					if *m.Value != 0 && *m.Value != -1 {
+						return false, st
+					}
+				} else if cur != *m.Value {
+					return false, st
+				}
+			}
+		}
+	}
+	return true, next
+}
+
+// Partition implements Model.
+func (TxnModel) Partition(ops []history.Operation) ([]string, [][]history.Operation) {
+	return []string{"txns"}, [][]history.Operation{ops}
+}
+
+// Diagnose implements Diagnoser for TxnModel.
+func (m TxnModel) Diagnose(ops []history.Operation) ([]int, string, bool) {
+	txns := txn.FromOperations(ops)
+	level := txn.LevelSerializable
+	if m.Level != "" {
+		level = txn.IsolationLevel(m.Level)
+	}
+	rep := txn.Check(txns, level)
+	if rep.Verdict != txn.Violation || len(rep.Anomalies) == 0 {
+		return nil, "", false
+	}
+	first := rep.Anomalies[0]
+	var witness []int
+	if first.Cycle != nil {
+		for _, nodeID := range first.Cycle.Nodes {
+			for i, o := range ops {
+				if o.ID == nodeID {
+					witness = append(witness, i)
+					break
+				}
+			}
+		}
+	} else if len(first.Txns) > 0 {
+		for _, t := range first.Txns {
+			for i, o := range ops {
+				if o.ID == t.ID {
+					witness = append(witness, i)
+					break
+				}
+			}
+		}
+	}
+	seen := make(map[int]bool)
+	var dedup []int
+	for _, w := range witness {
+		if !seen[w] {
+			seen[w] = true
+			dedup = append(dedup, w)
+		}
+	}
+	sort.Ints(dedup)
+	explanation := first.String()
+	return dedup, explanation, true
 }

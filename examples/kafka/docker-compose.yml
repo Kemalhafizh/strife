@@ -1,0 +1,45 @@
+# 3-node Kafka cluster in KRaft mode (no Zookeeper required).
+# NET_ADMIN capability gives the nemesis access to iptables and tc inside each container.
+x-kafka: &kafka
+  build: .
+  cap_add: [NET_ADMIN]
+
+services:
+  n1:
+    <<: *kafka
+    container_name: strife-kafka1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://172.31.2.11:9092'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@172.31.2.11:9093,2@172.31.2.12:9093,3@172.31.2.13:9093'
+    networks: { strife: { ipv4_address: 172.31.2.11 } }
+  n2:
+    <<: *kafka
+    container_name: strife-kafka2
+    environment:
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://172.31.2.12:9092'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@172.31.2.11:9093,2@172.31.2.12:9093,3@172.31.2.13:9093'
+    networks: { strife: { ipv4_address: 172.31.2.12 } }
+  n3:
+    <<: *kafka
+    container_name: strife-kafka3
+    environment:
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://172.31.2.13:9092'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@172.31.2.11:9093,2@172.31.2.12:9093,3@172.31.2.13:9093'
+    networks: { strife: { ipv4_address: 172.31.2.13 } }
+
+networks:
+  strife:
+    ipam:
+      config: [{ subnet: 172.31.2.0/24 }]

@@ -1,0 +1,29 @@
+{
+  "name": "tidb-cluster",
+  "seed": 42,
+  "duration": "60s",
+  "nodes": [
+    { "name": "n1", "ip": "172.31.3.11", "container": "strife-tidb1" }
+  ],
+  "transport": { "type": "docker" },
+  "db": {
+    "kind": "tidb",
+    "endpoints": ["172.31.3.11:4000"],
+    "prefix": "strife/"
+  },
+  "workload": {
+    "model": "kv",
+    "keys": 4,
+    "values": 5,
+    "concurrency": 8,
+    "read_ratio": 0.5,
+    "cas_ratio": 0.2,
+    "timeout": "2s"
+  },
+  "nemesis": {
+    "faults": ["pause"],
+    "interval": "8s",
+    "length": "6s",
+    "interface": "eth0"
+  }
+}

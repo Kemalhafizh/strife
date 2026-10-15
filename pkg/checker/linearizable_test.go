@@ -283,3 +283,138 @@ func BenchmarkCheck(b *testing.B) {
 		CheckOperations(model.KV{}, ops, Options{})
 	}
 }
+
+func TestQueueModelLinearizable(t *testing.T) {
+	b := &builder{}
+	b.add(inv(0, "enqueue", "q", v(10))).add(done(0, history.OK, "enqueue", "q", v(10)))
+	b.add(inv(1, "enqueue", "q", v(20))).add(done(1, history.OK, "enqueue", "q", v(20)))
+	b.add(inv(2, "dequeue", "q", nil)).add(done(2, history.OK, "dequeue", "q", v(10)))
+	b.add(inv(3, "dequeue", "q", nil)).add(done(3, history.OK, "dequeue", "q", v(20)))
+	b.add(inv(4, "dequeue", "q", nil)).add(done(4, history.OK, "dequeue", "q", nil))
+
+	r, err := Check(model.Queue{}, b.ops, Options{})
+	if err != nil || r.Verdict != Linearizable {
+		t.Fatalf("expected linearizable queue, got %s (err: %v)", r.Verdict, err)
+	}
+}
+
+func TestQueueFIFOInversionViolation(t *testing.T) {
+	b := &builder{}
+	// Enqueue 10 completes strictly before enqueue 20 begins
+	b.add(inv(0, "enqueue", "q", v(10))).add(done(0, history.OK, "enqueue", "q", v(10)))
+	b.add(inv(1, "enqueue", "q", v(20))).add(done(1, history.OK, "enqueue", "q", v(20)))
+	// Dequeue returns 20 instead of 10
+	b.add(inv(2, "dequeue", "q", nil)).add(done(2, history.OK, "dequeue", "q", v(20)))
+
+	r, err := Check(model.Queue{}, b.ops, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != Violation {
+		t.Fatalf("expected violation for FIFO order inversion, got %s", r.Verdict)
+	}
+}
+
+func TestQueuePhantomDequeueViolation(t *testing.T) {
+	b := &builder{}
+	b.add(inv(0, "enqueue", "q", v(10))).add(done(0, history.OK, "enqueue", "q", v(10)))
+	// Dequeue returns 999 which was never enqueued
+	b.add(inv(1, "dequeue", "q", nil)).add(done(1, history.OK, "dequeue", "q", v(999)))
+
+	r, err := Check(model.Queue{}, b.ops, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != Violation {
+		t.Fatalf("expected violation for phantom dequeue, got %s", r.Verdict)
+	}
+}
+
+func TestCounterModelLinearizable(t *testing.T) {
+	b := &builder{}
+	b.add(inv(0, "add", "c", v(2))).add(done(0, history.OK, "add", "c", v(2)))
+	b.add(inv(1, "inc", "c", nil)).add(done(1, history.OK, "inc", "c", nil))
+	b.add(inv(2, "read", "c", nil)).add(done(2, history.OK, "read", "c", v(3)))
+
+	r, err := Check(model.Counter{}, b.ops, Options{})
+	if err != nil || r.Verdict != Linearizable {
+		t.Fatalf("expected linearizable counter, got %s (err: %v)", r.Verdict, err)
+	}
+}
+
+func TestCounterStaleReadViolation(t *testing.T) {
+	b := &builder{}
+	b.add(inv(0, "add", "c", v(5))).add(done(0, history.OK, "add", "c", v(5)))
+	b.add(inv(1, "add", "c", v(3))).add(done(1, history.OK, "add", "c", v(3)))
+	// Both completed, so counter >= 8. Reading 5 is stale.
+	b.add(inv(2, "read", "c", nil)).add(done(2, history.OK, "read", "c", v(5)))
+
+	r, err := Check(model.Counter{}, b.ops, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != Violation {
+		t.Fatalf("expected violation for stale counter read, got %s", r.Verdict)
+	}
+}
+
+func TestIDGenDuplicateViolation(t *testing.T) {
+	b := &builder{}
+	b.add(inv(0, "generate", "id", nil)).add(done(0, history.OK, "generate", "id", v(42)))
+	b.add(inv(1, "generate", "id", nil)).add(done(1, history.OK, "generate", "id", v(42)))
+
+	r, err := Check(model.IDGen{}, b.ops, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != Violation {
+		t.Fatalf("expected violation for duplicate generated ID, got %s", r.Verdict)
+	}
+}
+
+func TestTxnModelIntegration(t *testing.T) {
+	b := &builder{}
+	// T0: writes x=1, y=1
+	b.add(history.Op{
+		Process: 0, Type: history.Invoke, F: history.FTxn,
+		Txn: []history.MicroOp{
+			{F: "w", Key: "x", Value: v(1)},
+			{F: "w", Key: "y", Value: v(1)},
+		},
+	}).add(history.Op{Process: 0, Type: history.OK, F: history.FTxn})
+
+	// T1: reads x=1, reads y=1, writes x=0
+	b.add(history.Op{
+		Process: 1, Type: history.Invoke, F: history.FTxn,
+		Txn: []history.MicroOp{
+			{F: "r", Key: "x", Value: v(1)},
+			{F: "r", Key: "y", Value: v(1)},
+			{F: "w", Key: "x", Value: v(0)},
+		},
+	}).add(history.Op{Process: 1, Type: history.OK, F: history.FTxn})
+
+	// T2: reads x=1, reads y=1, writes y=0 (Write Skew concurrent with T1)
+	b.add(history.Op{
+		Process: 2, Type: history.Invoke, F: history.FTxn,
+		Txn: []history.MicroOp{
+			{F: "r", Key: "x", Value: v(1)},
+			{F: "r", Key: "y", Value: v(1)},
+			{F: "w", Key: "y", Value: v(0)},
+		},
+	}).add(history.Op{Process: 2, Type: history.OK, F: history.FTxn})
+
+	r, err := Check(model.TxnModel{Level: "serializable"}, b.ops, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != Violation {
+		t.Fatalf("expected violation for transactional write skew, got %s", r.Verdict)
+	}
+	if len(r.Keys) == 0 || r.Keys[0].Counterexample == nil {
+		t.Fatal("expected counterexample with diagnosis")
+	}
+	if r.Keys[0].Counterexample.Diagnosis == "" {
+		t.Fatal("expected non-empty diagnosis for transactional violation")
+	}
+}
+

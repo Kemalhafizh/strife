@@ -1,0 +1,283 @@
+package agent
+
+import (
+	"context"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/kemalhafizh/strife/pkg/nemesis"
+)
+
+func startTestServer(t *testing.T, token string) (*Server, *Client, func()) {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+
+	cfg := ServerConfig{
+		NodeName:  "test-node-1",
+		Interface: "lo",
+		Token:     token,
+	}
+	srv := NewServer(cfg)
+
+	go func() {
+		_ = srv.Serve(l)
+	}()
+
+	client := NewClient(l.Addr().String(), token)
+
+	cleanup := func() {
+		_ = srv.Shutdown(context.Background())
+		_ = l.Close()
+	}
+
+	return srv, client, cleanup
+}
+
+func TestServerHealthAndPing(t *testing.T) {
+	_, client, cleanup := startTestServer(t, "")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	status, err := client.Ping(ctx)
+	if err != nil {
+		t.Fatalf("Ping failed: %v", err)
+	}
+
+	if status.Node != "test-node-1" {
+		t.Errorf("expected node test-node-1, got %s", status.Node)
+	}
+	if status.ActiveFaults != 0 {
+		t.Errorf("expected 0 active faults, got %d", status.ActiveFaults)
+	}
+	if status.Capabilities.OS == "" {
+		t.Errorf("expected non-empty OS capability")
+	}
+}
+
+func TestServerAuth(t *testing.T) {
+	secretToken := "secret-token-12345"
+	_, validClient, cleanup := startTestServer(t, secretToken)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Valid token should succeed
+	_, err := validClient.Ping(ctx)
+	if err != nil {
+		t.Fatalf("valid client ping failed: %v", err)
+	}
+
+	// Invalid token should fail with 401
+	badClient := NewClient(validClient.addr, "wrong-token")
+	_, err = badClient.Ping(ctx)
+	if err == nil {
+		t.Fatalf("expected error with bad token, got nil")
+	}
+}
+
+func TestServerApplyPartition(t *testing.T) {
+	_, client, cleanup := startTestServer(t, "")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Inject partition
+	injectReq := ApplyRequest{
+		Action:    ActionInject,
+		FaultID:   1,
+		Kind:      nemesis.Partition,
+		TargetIPs: []string{"192.168.1.10", "192.168.1.11"},
+	}
+	resp, err := client.Apply(ctx, injectReq)
+	if err != nil {
+		t.Fatalf("apply inject failed: %v", err)
+	}
+	if !resp.Success {
+		t.Errorf("expected success, got error %s", resp.Error)
+	}
+	if resp.Method != "filter:iptables" {
+		t.Errorf("expected filter:iptables method, got %s", resp.Method)
+	}
+
+	// Verify active fault count
+	status, err := client.Ping(ctx)
+	if err != nil {
+		t.Fatalf("ping failed: %v", err)
+	}
+	if status.ActiveFaults != 1 {
+		t.Errorf("expected 1 active fault, got %d", status.ActiveFaults)
+	}
+
+	// Heal partition
+	healReq := ApplyRequest{
+		Action:  ActionHeal,
+		FaultID: 1,
+		Kind:    nemesis.Partition,
+	}
+	healResp, err := client.Apply(ctx, healReq)
+	if err != nil {
+		t.Fatalf("apply heal failed: %v", err)
+	}
+	if !healResp.Success {
+		t.Errorf("heal failed: %s", healResp.Error)
+	}
+
+	// Verify 0 active faults
+	status, _ = client.Ping(ctx)
+	if status.ActiveFaults != 0 {
+		t.Errorf("expected 0 active faults after heal, got %d", status.ActiveFaults)
+	}
+}
+
+func TestServerApplyNetem(t *testing.T) {
+	srv, client, cleanup := startTestServer(t, "")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req := ApplyRequest{
+		Action:  ActionInject,
+		FaultID: 2,
+		Kind:    nemesis.Latency,
+		Iface:   "lo",
+		Delay:   50 * time.Millisecond,
+		Jitter:  5 * time.Millisecond,
+	}
+
+	resp, _ := client.Apply(ctx, req)
+	if resp != nil && resp.Success {
+		if resp.Method != "netlink:netem" {
+			t.Errorf("expected netlink:netem, got %s", resp.Method)
+		}
+	}
+
+	// Teardown
+	srv.Teardown()
+	status, _ := client.Ping(ctx)
+	if status.ActiveFaults != 0 {
+		t.Errorf("expected 0 faults after teardown, got %d", status.ActiveFaults)
+	}
+}
+
+func TestServerCgroup(t *testing.T) {
+	tmpDir := t.TempDir()
+	freezeFile := filepath.Join(tmpDir, "cgroup.freeze")
+	ioFile := filepath.Join(tmpDir, "io.max")
+
+	cgroup := NewCgroupEngine()
+	if err := cgroup.Freeze(tmpDir); err != nil {
+		t.Fatalf("freeze failed: %v", err)
+	}
+	data, _ := os.ReadFile(freezeFile)
+	if string(data) != "1\n" {
+		t.Errorf("expected 1\\n, got %q", string(data))
+	}
+
+	if err := cgroup.Unfreeze(tmpDir); err != nil {
+		t.Fatalf("unfreeze failed: %v", err)
+	}
+	data, _ = os.ReadFile(freezeFile)
+	if string(data) != "0\n" {
+		t.Errorf("expected 0\\n, got %q", string(data))
+	}
+
+	if err := cgroup.IOStall(tmpDir, "8:0"); err != nil {
+		t.Fatalf("io-stall failed: %v", err)
+	}
+	data, _ = os.ReadFile(ioFile)
+	if string(data) != "8:0 rbps=1 wbps=1 riops=1 wiops=1\n" {
+		t.Errorf("unexpected io.max content: %q", string(data))
+	}
+
+	if err := cgroup.HealIOStall(tmpDir, "8:0"); err != nil {
+		t.Fatalf("heal io-stall failed: %v", err)
+	}
+	data, _ = os.ReadFile(ioFile)
+	if string(data) != "8:0 rbps=max wbps=max riops=max wiops=max\n" {
+		t.Errorf("unexpected io.max content: %q", string(data))
+	}
+}
+
+func TestServerExec(t *testing.T) {
+	_, client, cleanup := startTestServer(t, "")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Simple echo execution
+	out, err := client.Exec(ctx, "echo 'hello strife'")
+	if err != nil {
+		t.Logf("exec error (expected if sh is not on Windows without Git bash): %v", err)
+	} else if out != "hello strife" {
+		t.Errorf("expected 'hello strife', got %q", out)
+	}
+}
+
+func TestJitterCollector(t *testing.T) {
+	c := NewJitterCollector()
+
+	// Record several samples with known values
+	c.Record(JitterSample{
+		FaultID:   1,
+		Kind:      nemesis.Partition,
+		PlannedAt: 100 * time.Millisecond,
+		AppliedAt: 102 * time.Millisecond,
+		Jitter:    2 * time.Millisecond,
+	})
+	c.Record(JitterSample{
+		FaultID:   2,
+		Kind:      nemesis.Latency,
+		PlannedAt: 200 * time.Millisecond,
+		AppliedAt: 204 * time.Millisecond,
+		Jitter:    4 * time.Millisecond,
+	})
+	c.Record(JitterSample{
+		FaultID:   3,
+		Kind:      nemesis.Kill,
+		PlannedAt: 300 * time.Millisecond,
+		AppliedAt: 301 * time.Millisecond,
+		Jitter:    1 * time.Millisecond,
+	})
+	c.Record(JitterSample{
+		FaultID:   4,
+		Kind:      nemesis.Pause,
+		PlannedAt: 400 * time.Millisecond,
+		AppliedAt: 403 * time.Millisecond,
+		Jitter:    3 * time.Millisecond,
+	})
+
+	sum := c.Summary()
+	if sum.Count != 4 {
+		t.Errorf("expected count 4, got %d", sum.Count)
+	}
+	if sum.Min != 1*time.Millisecond {
+		t.Errorf("expected min 1ms, got %v", sum.Min)
+	}
+	if sum.Max != 4*time.Millisecond {
+		t.Errorf("expected max 4ms, got %v", sum.Max)
+	}
+	if sum.Mean != 2500*time.Microsecond {
+		t.Errorf("expected mean 2.5ms, got %v", sum.Mean)
+	}
+	if sum.P50 != 2*time.Millisecond {
+		t.Errorf("expected p50 2ms, got %v", sum.P50)
+	}
+
+	table := sum.FormatTable()
+	if table == "" {
+		t.Errorf("expected non-empty formatted markdown table")
+	}
+}

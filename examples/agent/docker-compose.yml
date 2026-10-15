@@ -1,0 +1,52 @@
+services:
+  node1:
+    build:
+      context: ../..
+      dockerfile: examples/agent/Dockerfile
+    container_name: strife-agent-node1
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    command: ["-node", "node1", "-listen", "0.0.0.0:9292", "-iface", "eth0"]
+    ports:
+      - "9291:9292"
+    networks:
+      strife-net:
+        ipv4_address: 172.28.0.11
+
+  node2:
+    build:
+      context: ../..
+      dockerfile: examples/agent/Dockerfile
+    container_name: strife-agent-node2
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    command: ["-node", "node2", "-listen", "0.0.0.0:9292", "-iface", "eth0"]
+    ports:
+      - "9292:9292"
+    networks:
+      strife-net:
+        ipv4_address: 172.28.0.12
+
+  node3:
+    build:
+      context: ../..
+      dockerfile: examples/agent/Dockerfile
+    container_name: strife-agent-node3
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    command: ["-node", "node3", "-listen", "0.0.0.0:9292", "-iface", "eth0"]
+    ports:
+      - "9293:9292"
+    networks:
+      strife-net:
+        ipv4_address: 172.28.0.13
+
+networks:
+  strife-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
