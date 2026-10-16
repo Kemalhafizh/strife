@@ -39,16 +39,16 @@ import (
 //   - Timeout or connection drop on write/commit after sending: info (outcome indeterminate);
 //   - Reads: always safe to call fail.
 type MySQL struct {
-	addr      string
-	prefix    string
-	user      string
-	password  string
-	database  string
-	conn      net.Conn
-	rd        *bufio.Reader
-	seq       uint8
-	initDone  bool
-	mu        sync.Mutex
+	addr     string
+	prefix   string
+	user     string
+	password string
+	database string
+	conn     net.Conn
+	rd       *bufio.Reader
+	seq      uint8
+	initDone bool
+	mu       sync.Mutex
 }
 
 // NewMySQL returns a MySQL / TiDB client for one node endpoint (e.g. "127.0.0.1:4000" or "127.0.0.1:3306").
@@ -235,7 +235,7 @@ func (m *MySQL) dial(ctx context.Context) error {
 	for idx < len(handshake) && handshake[idx] != 0 {
 		idx++
 	}
-	idx++ // skip null byte of server version
+	idx++    // skip null byte of server version
 	idx += 4 // skip connection id
 	if idx+8 <= len(handshake) {
 		copy(salt[0:8], handshake[idx:idx+8])
@@ -319,12 +319,12 @@ func (m *MySQL) dial(ctx context.Context) error {
 	return nil
 }
 
-type queryResult struct {
+type mysqlQueryResult struct {
 	affectedRows uint64
 	rows         [][]string
 }
 
-func (m *MySQL) execQuery(ctx context.Context, sql string) (*queryResult, error) {
+func (m *MySQL) execQuery(ctx context.Context, sql string) (*mysqlQueryResult, error) {
 	if err := m.dial(ctx); err != nil {
 		return nil, err
 	}
@@ -349,7 +349,7 @@ func (m *MySQL) execQuery(ctx context.Context, sql string) (*queryResult, error)
 	}
 
 	if len(firstPkt) == 0 {
-		return &queryResult{}, nil
+		return &mysqlQueryResult{}, nil
 	}
 
 	// Error packet
@@ -360,7 +360,7 @@ func (m *MySQL) execQuery(ctx context.Context, sql string) (*queryResult, error)
 	// OK packet
 	if firstPkt[0] == 0x00 {
 		affected, _ := readLengthEncodedInt(firstPkt[1:])
-		return &queryResult{affectedRows: affected}, nil
+		return &mysqlQueryResult{affectedRows: affected}, nil
 	}
 
 	// Result Set
@@ -407,7 +407,7 @@ func (m *MySQL) execQuery(ctx context.Context, sql string) (*queryResult, error)
 		rows = append(rows, parseRowValues(rowPkt, int(colCount)))
 	}
 
-	return &queryResult{rows: rows}, nil
+	return &mysqlQueryResult{rows: rows}, nil
 }
 
 func mysqlTableName(prefix string) string {
@@ -501,10 +501,10 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 			res.Error = err.Error()
 			return res
 		}
-		res.Type = history.Ok
+		res.Type = history.OK
 		if len(qr.rows) > 0 && len(qr.rows[0]) > 0 && qr.rows[0][0] != "NULL" {
 			if v, err := strconv.ParseInt(qr.rows[0][0], 10, 64); err == nil {
-				res.Value = v
+				res.Value = history.Int(v)
 			}
 		} else {
 			res.Value = nil
@@ -514,9 +514,7 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 	case history.FWrite:
 		val := int64(0)
 		if op.Value != nil {
-			if iv, ok := op.Value.(int64); ok {
-				val = iv
-			}
+			val = *op.Value
 		}
 		sql := fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v);", table, op.Key, val)
 		_, err := m.execQuery(ctx, sql)
@@ -525,20 +523,16 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 			res.Error = err.Error()
 			return res
 		}
-		res.Type = history.Ok
+		res.Type = history.OK
 		return res
 
 	case history.FCas:
 		oldVal, newVal := int64(0), int64(0)
-		if op.Value != nil {
-			if iv, ok := op.Value.(int64); ok {
-				oldVal = iv
-			}
+		if op.Old != nil {
+			oldVal = *op.Old
 		}
-		if op.Value2 != nil {
-			if iv, ok := op.Value2.(int64); ok {
-				newVal = iv
-			}
+		if op.Value != nil {
+			newVal = *op.Value
 		}
 		sql := fmt.Sprintf("UPDATE %s SET v = %d WHERE k = '%s' AND v = %d;", table, newVal, op.Key, oldVal)
 		qr, err := m.execQuery(ctx, sql)
@@ -548,20 +542,18 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 			return res
 		}
 		if qr.affectedRows > 0 {
-			res.Type = history.Ok
-			res.Value = newVal
+			res.Type = history.OK
+			res.Value = history.Int(newVal)
 		} else {
 			res.Type = history.Fail
 			res.Error = "cas condition mismatch"
 		}
 		return res
 
-	case history.FAdd:
+	case history.FAdd, history.FInc:
 		delta := int64(1)
 		if op.Value != nil {
-			if iv, ok := op.Value.(int64); ok {
-				delta = iv
-			}
+			delta = *op.Value
 		}
 		sql := fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = %s.v + VALUES(v);", table, op.Key, delta, table)
 		if _, err := m.execQuery(ctx, sql); err != nil {
@@ -576,10 +568,10 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 			res.Error = err.Error()
 			return res
 		}
-		res.Type = history.Ok
+		res.Type = history.OK
 		if len(qr.rows) > 0 && len(qr.rows[0]) > 0 {
 			if v, err := strconv.ParseInt(qr.rows[0][0], 10, 64); err == nil {
-				res.Value = v
+				res.Value = history.Int(v)
 			}
 		}
 		return res
@@ -587,9 +579,7 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 	case history.FEnqueue:
 		val := int64(0)
 		if op.Value != nil {
-			if iv, ok := op.Value.(int64); ok {
-				val = iv
-			}
+			val = *op.Value
 		}
 		sql := fmt.Sprintf("INSERT INTO %s (q, v) VALUES ('%s', %d);", qTable, op.Key, val)
 		if _, err := m.execQuery(ctx, sql); err != nil {
@@ -597,7 +587,7 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 			res.Error = err.Error()
 			return res
 		}
-		res.Type = history.Ok
+		res.Type = history.OK
 		return res
 
 	case history.FDequeue:
@@ -616,7 +606,7 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 		}
 		if len(qr.rows) == 0 {
 			_, _ = m.execQuery(ctx, "COMMIT;")
-			res.Type = history.Ok
+			res.Type = history.OK
 			res.Value = nil
 			return res
 		}
@@ -634,8 +624,8 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 			res.Error = err.Error()
 			return res
 		}
-		res.Type = history.Ok
-		res.Value = val
+		res.Type = history.OK
+		res.Value = history.Int(val)
 		return res
 
 	case history.FTxn:
@@ -648,7 +638,7 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 		for _, mop := range op.Txn {
 			mres := mop
 			switch mop.F {
-			case history.FRead:
+			case "r", history.FRead:
 				sql := fmt.Sprintf("SELECT v FROM %s WHERE k = '%s';", table, mop.Key)
 				qr, err := m.execQuery(ctx, sql)
 				if err != nil {
@@ -659,17 +649,15 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 				}
 				if len(qr.rows) > 0 && len(qr.rows[0]) > 0 && qr.rows[0][0] != "NULL" {
 					if v, err := strconv.ParseInt(qr.rows[0][0], 10, 64); err == nil {
-						mres.Value = v
+						mres.Value = history.Int(v)
 					}
 				} else {
 					mres.Value = nil
 				}
-			case history.FWrite:
+			case "w", history.FWrite:
 				val := int64(0)
 				if mop.Value != nil {
-					if iv, ok := mop.Value.(int64); ok {
-						val = iv
-					}
+					val = *mop.Value
 				}
 				sql := fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v);", table, mop.Key, val)
 				if _, err := m.execQuery(ctx, sql); err != nil {
@@ -686,7 +674,7 @@ func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
 			res.Error = err.Error()
 			return res
 		}
-		res.Type = history.Ok
+		res.Type = history.OK
 		res.Txn = completedTxn
 		return res
 	}

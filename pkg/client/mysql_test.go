@@ -15,10 +15,10 @@ import (
 
 // mockMySQLServer implements a minimal in-memory MySQL v10 wire protocol server.
 type mockMySQLServer struct {
-	listener net.Listener
-	addr     string
-	store    map[string]int64
-	mu       sync.Mutex
+	listener     net.Listener
+	addr         string
+	store        map[string]int64
+	mu           sync.Mutex
 	failDeadlock bool
 }
 
@@ -90,13 +90,13 @@ func (s *mockMySQLServer) handleConn(conn net.Conn) {
 	hs = binary.LittleEndian.AppendUint32(hs, 1) // connection id
 	salt := []byte("01234567890123456789")
 	hs = append(hs, salt[:8]...)
-	hs = append(hs, 0) // filler
-	hs = binary.LittleEndian.AppendUint16(hs, 0xffff) // capabilities 1
-	hs = append(hs, 45) // charset
-	hs = binary.LittleEndian.AppendUint16(hs, 0x0002) // status
-	hs = binary.LittleEndian.AppendUint16(hs, 0xffff) // capabilities 2
-	hs = append(hs, 21) // auth plugin data len
-	hs = append(hs, make([]byte, 10)...) // reserved
+	hs = append(hs, 0)                                 // filler
+	hs = binary.LittleEndian.AppendUint16(hs, 0xffff)  // capabilities 1
+	hs = append(hs, 45)                                // charset
+	hs = binary.LittleEndian.AppendUint16(hs, 0x0002)  // status
+	hs = binary.LittleEndian.AppendUint16(hs, 0xffff)  // capabilities 2
+	hs = append(hs, 21)                                // auth plugin data len
+	hs = append(hs, make([]byte, 10)...)               // reserved
 	hs = append(hs, salt[8:20]...)
 	hs = append(hs, []byte("mysql_native_password\x00")...)
 
@@ -234,11 +234,11 @@ func makeColumnDef(name string) []byte {
 	b = append(b, []byte(name)...)
 	b = append(b, byte(len(name)))
 	b = append(b, []byte(name)...)
-	b = append(b, 0x0c, 0x3f, 0x00) // len, charset
-	b = binary.LittleEndian.AppendUint32(b, 20) // column length
-	b = append(b, 0x08) // type LONGLONG
-	b = binary.LittleEndian.AppendUint16(b, 0x0000) // flags
-	b = append(b, 0x00, 0x00, 0x00) // decimals, filler
+	b = append(b, 0x0c, 0x3f, 0x00)                  // len, charset
+	b = binary.LittleEndian.AppendUint32(b, 20)      // column length
+	b = append(b, 0x08)                              // type LONGLONG
+	b = binary.LittleEndian.AppendUint16(b, 0x0000)  // flags
+	b = append(b, 0x00, 0x00, 0x00)                  // decimals, filler
 	return b
 }
 
@@ -303,8 +303,8 @@ func TestMySQLClientReadWrite(t *testing.T) {
 		F:       history.FRead,
 		Key:     "k0",
 	})
-	if r1.Type != history.Ok || r1.Value != nil {
-		t.Fatalf("expected Ok with nil value on initial read, got %+v", r1)
+	if r1.Type != history.OK || r1.Value != nil {
+		t.Fatalf("expected OK with nil value on initial read, got %+v", r1)
 	}
 
 	// 2. Write value 3
@@ -313,9 +313,9 @@ func TestMySQLClientReadWrite(t *testing.T) {
 		Type:    history.Invoke,
 		F:       history.FWrite,
 		Key:     "k0",
-		Value:   int64(3),
+		Value:   history.Int(3),
 	})
-	if w1.Type != history.Ok {
+	if w1.Type != history.OK {
 		t.Fatalf("expected write to succeed, got %+v", w1)
 	}
 
@@ -326,8 +326,8 @@ func TestMySQLClientReadWrite(t *testing.T) {
 		F:       history.FRead,
 		Key:     "k0",
 	})
-	if r2.Type != history.Ok || r2.Value != int64(3) {
-		t.Fatalf("expected Ok with value 3, got %+v", r2)
+	if r2.Type != history.OK || r2.Value == nil || *r2.Value != 3 {
+		t.Fatalf("expected OK with value 3, got %+v", r2)
 	}
 }
 
@@ -346,7 +346,7 @@ func TestMySQLClientCAS(t *testing.T) {
 		Type:    history.Invoke,
 		F:       history.FWrite,
 		Key:     "k1",
-		Value:   int64(5),
+		Value:   history.Int(5),
 	})
 
 	// CAS with wrong old value (expected 5, supplied 4) -> Fail
@@ -355,23 +355,23 @@ func TestMySQLClientCAS(t *testing.T) {
 		Type:    history.Invoke,
 		F:       history.FCas,
 		Key:     "k1",
-		Value:   int64(4),
-		Value2:  int64(6),
+		Old:     history.Int(4),
+		Value:   history.Int(6),
 	})
 	if casFail.Type != history.Fail {
 		t.Fatalf("expected CAS mismatch to fail, got %+v", casFail)
 	}
 
-	// CAS with matching old value (5 -> 6) -> Ok
+	// CAS with matching old value (5 -> 6) -> OK
 	casOk := cli.Invoke(ctx, history.Op{
 		Process: 0,
 		Type:    history.Invoke,
 		F:       history.FCas,
 		Key:     "k1",
-		Value:   int64(5),
-		Value2:  int64(6),
+		Old:     history.Int(5),
+		Value:   history.Int(6),
 	})
-	if casOk.Type != history.Ok || casOk.Value != int64(6) {
+	if casOk.Type != history.OK || casOk.Value == nil || *casOk.Value != 6 {
 		t.Fatalf("expected CAS success with value 6, got %+v", casOk)
 	}
 }
@@ -393,7 +393,7 @@ func TestMySQLDeadlockErrorClassification(t *testing.T) {
 		Type:    history.Invoke,
 		F:       history.FWrite,
 		Key:     "k2",
-		Value:   int64(10),
+		Value:   history.Int(10),
 	})
 
 	// Deadlock must be classified as definite Fail (rolled back by database), not Info

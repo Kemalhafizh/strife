@@ -15,12 +15,12 @@ import (
 func sampleTestOps() []history.Op {
 	v1, v2, v3 := int64(1), int64(2), int64(3)
 	return []history.Op{
-		{Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k1", Value: v2, Time: 1_000_000, Index: 0},
-		{Process: 0, Type: history.Ok, F: history.FWrite, Key: "k1", Value: v2, Time: 3_000_000, Index: 1},
-		{Process: 1, Type: history.Invoke, F: history.FWrite, Key: "k1", Value: v3, Time: 4_000_000, Index: 2},
-		{Process: 1, Type: history.Ok, F: history.FWrite, Key: "k1", Value: v3, Time: 7_000_000, Index: 3},
+		{Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k1", Value: &v2, Time: 1_000_000, Index: 0},
+		{Process: 0, Type: history.OK, F: history.FWrite, Key: "k1", Value: &v2, Time: 3_000_000, Index: 1},
+		{Process: 1, Type: history.Invoke, F: history.FWrite, Key: "k1", Value: &v3, Time: 4_000_000, Index: 2},
+		{Process: 1, Type: history.OK, F: history.FWrite, Key: "k1", Value: &v3, Time: 7_000_000, Index: 3},
 		{Process: 2, Type: history.Invoke, F: history.FRead, Key: "k1", Time: 8_000_000, Index: 4},
-		{Process: 2, Type: history.Ok, F: history.FRead, Key: "k1", Value: v1, Time: 12_000_000, Index: 5},
+		{Process: 2, Type: history.OK, F: history.FRead, Key: "k1", Value: &v1, Time: 12_000_000, Index: 5},
 	}
 }
 
@@ -34,8 +34,8 @@ func sampleViolatingReport() *Report {
 	}
 	// Mark stuck operation as index 4
 	r.Check.Keys[1].Counterexample = &checker.Counterexample{
-		Summary:     "stale read: p2 read 1, expected 3",
 		Explanation: "read k1 returned 1 instead of 3",
+		Diagnosis:   "stale read: p2 read 1, expected 3",
 		Stuck:       checker.Step{Index: 4, Process: 2, Call: 8_000_000, Return: 12_000_000, Description: "p2 read k1 → 1"},
 		Witness: []checker.Step{
 			{Index: 2, Process: 1, Call: 4_000_000, Return: 7_000_000, Description: "p1 write k1 3 (ok)"},
@@ -68,7 +68,7 @@ func TestHTMLGeneratesValidDocument(t *testing.T) {
 		"<noscript>",
 		"Timeline (Static Fallback)",
 		"p2 read k1 → 1",
-		"Partition",
+		"partition",
 	}
 
 	for _, snip := range expectedSnippets {
@@ -172,10 +172,10 @@ func TestHTMLLinearizableReport(t *testing.T) {
 
 	v1 := int64(10)
 	ops := []history.Op{
-		{Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: v1, Time: 100, Index: 0},
-		{Process: 0, Type: history.Ok, F: history.FWrite, Key: "k0", Value: v1, Time: 200, Index: 1},
+		{Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v1, Time: 100, Index: 0},
+		{Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v1, Time: 200, Index: 1},
 		{Process: 1, Type: history.Invoke, F: history.FRead, Key: "k0", Time: 300, Index: 2},
-		{Process: 1, Type: history.Ok, F: history.FRead, Key: "k0", Value: v1, Time: 400, Index: 3},
+		{Process: 1, Type: history.OK, F: history.FRead, Key: "k0", Value: &v1, Time: 400, Index: 3},
 	}
 
 	var buf bytes.Buffer

@@ -36,13 +36,13 @@ import (
 //   - Timeout or connection drop on write/commit after sending: info (outcome unknown);
 //   - Reads: always safe to call fail.
 type Postgres struct {
-	addr      string
-	prefix    string
-	user      string
-	database  string
-	conn      net.Conn
-	rd        *bufio.Reader
-	initDone  bool
+	addr     string
+	prefix   string
+	user     string
+	database string
+	conn     net.Conn
+	rd       *bufio.Reader
+	initDone bool
 }
 
 // NewPostgres returns a PostgreSQL client for one node address (e.g. "127.0.0.1:5432").

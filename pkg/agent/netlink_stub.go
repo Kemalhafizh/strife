@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-
 // StubNetlink implements NetlinkEngine on non-Linux platforms.
 type StubNetlink struct{}
 

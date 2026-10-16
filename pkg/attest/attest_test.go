@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/history"
@@ -17,8 +16,8 @@ import (
 func sampleTestReport() *report.Report {
 	v := int64(42)
 	ops := []history.Op{
-		{Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: v, Time: 1000, Index: 0},
-		{Process: 0, Type: history.Ok, F: history.FWrite, Key: "k0", Value: v, Time: 2000, Index: 1},
+		{Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: 1000, Index: 0},
+		{Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: 2000, Index: 1},
 	}
 	r, _ := report.New(
 		report.KindSimulation,
@@ -163,8 +162,8 @@ func TestHistoryFileVerification(t *testing.T) {
 
 	v := int64(100)
 	ops := []history.Op{
-		{Process: 0, Type: history.Invoke, F: history.FWrite, Key: "x", Value: v, Time: 10, Index: 0},
-		{Process: 0, Type: history.Ok, F: history.FWrite, Key: "x", Value: v, Time: 20, Index: 1},
+		{Process: 0, Type: history.Invoke, F: history.FWrite, Key: "x", Value: &v, Time: 10, Index: 0},
+		{Process: 0, Type: history.OK, F: history.FWrite, Key: "x", Value: &v, Time: 20, Index: 1},
 	}
 	rep, _ := report.New(
 		report.KindCheck,
@@ -200,7 +199,7 @@ func TestHistoryFileVerification(t *testing.T) {
 	}
 
 	// Tampered history file must fail
-	tamperedOps := append(ops, history.Op{Process: 1, Type: history.Ok, F: history.FRead, Key: "x", Time: 30})
+	tamperedOps := append(ops, history.Op{Process: 1, Type: history.OK, F: history.FRead, Key: "x", Time: 30})
 	f2, _ := os.Create(histPath)
 	_ = history.WriteJSONL(f2, tamperedOps)
 	f2.Close()

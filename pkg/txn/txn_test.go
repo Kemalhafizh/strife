@@ -74,7 +74,8 @@ func TestG0DirtyWriteCycle(t *testing.T) {
 		{
 			ID:     1,
 			Status: history.OK,
-			Call:   0, Return: 10,
+			Call:   0,
+			Return: 10,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(1)},
 				{Kind: OpWrite, Key: "y", Value: v(2)},
@@ -83,7 +84,8 @@ func TestG0DirtyWriteCycle(t *testing.T) {
 		{
 			ID:     2,
 			Status: history.OK,
-			Call:   0, Return: 10,
+			Call:   0,
+			Return: 10,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(2)},
 				{Kind: OpWrite, Key: "y", Value: v(1)},
@@ -92,26 +94,30 @@ func TestG0DirtyWriteCycle(t *testing.T) {
 		{
 			ID:     3,
 			Status: history.OK,
-			Call:   15, Return: 20,
-			Ops: []MicroOp{{Kind: OpRead, Key: "x", Value: v(1)}},
+			Call:   15,
+			Return: 20,
+			Ops:    []MicroOp{{Kind: OpRead, Key: "x", Value: v(1)}},
 		},
 		{
 			ID:     4,
 			Status: history.OK,
-			Call:   25, Return: 30,
-			Ops: []MicroOp{{Kind: OpRead, Key: "x", Value: v(2)}},
+			Call:   25,
+			Return: 30,
+			Ops:    []MicroOp{{Kind: OpRead, Key: "x", Value: v(2)}},
 		},
 		{
 			ID:     5,
 			Status: history.OK,
-			Call:   35, Return: 40,
-			Ops: []MicroOp{{Kind: OpRead, Key: "y", Value: v(1)}},
+			Call:   35,
+			Return: 40,
+			Ops:    []MicroOp{{Kind: OpRead, Key: "y", Value: v(1)}},
 		},
 		{
 			ID:     6,
 			Status: history.OK,
-			Call:   45, Return: 50,
-			Ops: []MicroOp{{Kind: OpRead, Key: "y", Value: v(2)}},
+			Call:   45,
+			Return: 50,
+			Ops:    []MicroOp{{Kind: OpRead, Key: "y", Value: v(2)}},
 		},
 	}
 
@@ -136,7 +142,8 @@ func TestG1aAbortedRead(t *testing.T) {
 		{
 			ID:     1,
 			Status: history.Fail, // Aborted
-			Call:   0, Return: 10,
+			Call:   0,
+			Return: 10,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(42)},
 			},
@@ -144,7 +151,8 @@ func TestG1aAbortedRead(t *testing.T) {
 		{
 			ID:     2,
 			Status: history.OK, // Committed
-			Call:   15, Return: 25,
+			Call:   15,
+			Return: 25,
 			Ops: []MicroOp{
 				{Kind: OpRead, Key: "x", Value: v(42)},
 			},
@@ -172,7 +180,8 @@ func TestG1bIntermediateRead(t *testing.T) {
 		{
 			ID:     1,
 			Status: history.OK,
-			Call:   0, Return: 20,
+			Call:   0,
+			Return: 20,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(10)}, // intermediate
 				{Kind: OpWrite, Key: "x", Value: v(20)}, // final committed
@@ -181,7 +190,8 @@ func TestG1bIntermediateRead(t *testing.T) {
 		{
 			ID:     2,
 			Status: history.OK,
-			Call:   25, Return: 35,
+			Call:   25,
+			Return: 35,
 			Ops: []MicroOp{
 				{Kind: OpRead, Key: "x", Value: v(10)}, // read intermediate!
 			},
@@ -212,7 +222,8 @@ func TestG1cCircularInformationFlow(t *testing.T) {
 		{
 			ID:     1,
 			Status: history.OK,
-			Call:   0, Return: 10,
+			Call:   0,
+			Return: 10,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(1)},
 				{Kind: OpRead, Key: "y", Value: v(2)},
@@ -221,7 +232,8 @@ func TestG1cCircularInformationFlow(t *testing.T) {
 		{
 			ID:     2,
 			Status: history.OK,
-			Call:   0, Return: 10,
+			Call:   0,
+			Return: 10,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "y", Value: v(2)},
 				{Kind: OpRead, Key: "x", Value: v(1)},
@@ -260,7 +272,8 @@ func TestG2WriteSkew(t *testing.T) {
 		{
 			ID:     0,
 			Status: history.OK,
-			Call:   0, Return: 5,
+			Call:   0,
+			Return: 5,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(1)},
 				{Kind: OpWrite, Key: "y", Value: v(1)},
@@ -269,7 +282,8 @@ func TestG2WriteSkew(t *testing.T) {
 		{
 			ID:     1,
 			Status: history.OK,
-			Call:   10, Return: 20,
+			Call:   10,
+			Return: 20,
 			Ops: []MicroOp{
 				{Kind: OpRead, Key: "x", Value: v(1)},
 				{Kind: OpRead, Key: "y", Value: v(1)},
@@ -279,7 +293,8 @@ func TestG2WriteSkew(t *testing.T) {
 		{
 			ID:     2,
 			Status: history.OK,
-			Call:   10, Return: 20,
+			Call:   10,
+			Return: 20,
 			Ops: []MicroOp{
 				{Kind: OpRead, Key: "x", Value: v(1)},
 				{Kind: OpRead, Key: "y", Value: v(1)},
@@ -323,7 +338,8 @@ func TestGRealtimeViolation(t *testing.T) {
 		{
 			ID:     0,
 			Status: history.OK,
-			Call:   0, Return: 5,
+			Call:   0,
+			Return: 5,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(1)},
 			},
@@ -331,7 +347,8 @@ func TestGRealtimeViolation(t *testing.T) {
 		{
 			ID:     1,
 			Status: history.OK,
-			Call:   10, Return: 15,
+			Call:   10,
+			Return: 15,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(2)},
 			},
@@ -339,7 +356,8 @@ func TestGRealtimeViolation(t *testing.T) {
 		{
 			ID:     2,
 			Status: history.OK,
-			Call:   20, Return: 25,
+			Call:   20,
+			Return: 25,
 			Ops: []MicroOp{
 				{Kind: OpRead, Key: "x", Value: v(1)},
 			},

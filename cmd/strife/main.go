@@ -563,7 +563,7 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	return emitCI(*ci, exitViolation, nil, suite)
 }
 
-func cmdShrinkHistory(path, modelName, isolation, outDir string, ci ciOpt, stdout, stderr io.Writer) (int, error) {
+func cmdShrinkHistory(path, modelName, isolation, outDir string, ci report.Outputs, stdout, stderr io.Writer) (int, error) {
 	start := time.Now()
 	f, err := os.Open(path)
 	if err != nil {
@@ -645,16 +645,15 @@ func cmdShrinkHistory(path, modelName, isolation, outDir string, ci ciOpt, stdou
 	}
 
 	suite := report.Suite{
-		Name:    "shrink · history",
-		Elapsed: time.Since(start),
+		Name: "shrink · history",
+		Time: time.Since(start),
 		Cases: []report.Case{
 			{
 				Name:    res.Key,
-				Elapsed: res.Elapsed,
-				Failure: &report.Failure{
-					Message: fmt.Sprintf("minimal conflict of %d ops found", res.MinimalOps),
-					Details: res.Diagnosis,
-				},
+				Time:    res.Elapsed,
+				Status:  report.Failed,
+				Message: fmt.Sprintf("minimal conflict of %d ops found", res.MinimalOps),
+				Detail:  res.Diagnosis,
 			},
 		},
 	}

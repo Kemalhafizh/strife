@@ -3,7 +3,6 @@ package txn
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/kemalhafizh/strife/pkg/history"
 )
@@ -45,10 +44,10 @@ func (e Edge) String() string {
 
 // Graph is the Direct Serialization Graph (DSG) over transactions.
 type Graph struct {
-	Txns  map[int]Txn      // Txn ID -> Txn
-	Nodes []int            // sorted list of Txn IDs
-	Adj   map[int][]Edge   // outgoing edges per Txn ID
-	Edges []Edge           // all edges in the graph
+	Txns  map[int]Txn    // Txn ID -> Txn
+	Nodes []int          // sorted list of Txn IDs
+	Adj   map[int][]Edge // outgoing edges per Txn ID
+	Edges []Edge         // all edges in the graph
 }
 
 // NewGraph initializes an empty DSG.

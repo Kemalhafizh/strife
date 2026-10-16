@@ -187,7 +187,14 @@ func buildTimelinePayload(r *Report, ops []history.Operation, fails []checker.Ke
 				}
 			}
 		}
-		if latestWrite != nil && latestWrite.Output.Value != nil && *latestWrite.Output.Value != *stuckOp.Output.Value {
+		var writtenVal *int64
+		if latestWrite != nil {
+			writtenVal = latestWrite.Input.Value
+			if writtenVal == nil {
+				writtenVal = latestWrite.Output.Value
+			}
+		}
+		if latestWrite != nil && writtenVal != nil && *writtenVal != *stuckOp.Output.Value {
 			if _, ok := marked[latestWrite.Input.Index]; !ok {
 				marked[latestWrite.Input.Index] = "write"
 			}
@@ -307,9 +314,15 @@ func buildTimelinePayload(r *Report, ops []history.Operation, fails []checker.Ke
 		if ret == history.Infinity {
 			ret = -1
 		}
-		val := o.Input.Value
+		var val any
 		if o.Output.Value != nil {
 			val = *o.Output.Value
+		} else if o.Input.Value != nil {
+			val = *o.Input.Value
+		}
+		var val2 any
+		if o.Input.Old != nil {
+			val2 = *o.Input.Old
 		}
 		top := timelineOp{
 			Index:   o.Input.Index,
@@ -317,7 +330,7 @@ func buildTimelinePayload(r *Report, ops []history.Operation, fails []checker.Ke
 			Key:     o.Input.Key,
 			Func:    string(o.Input.F),
 			Value:   val,
-			Value2:  o.Input.Value2,
+			Value2:  val2,
 			Call:    o.Call,
 			Return:  ret,
 			Status:  string(o.Status()),
@@ -746,7 +759,7 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
     data.keys.forEach(k => {
       const opt = document.createElement("option");
       opt.value = k.key;
-      opt.textContent = `${k.key} (${k.ops} ops${k.verdict === 'violation' ? ' ❌' : ''})`;
+      opt.textContent = k.key + " (" + k.ops + " ops" + (k.verdict === "violation" ? " ❌" : "") + ")";
       keySelect.appendChild(opt);
     });
   }
@@ -756,7 +769,7 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
     data.processes.forEach(p => {
       const opt = document.createElement("option");
       opt.value = p;
-      opt.textContent = `p${p}`;
+      opt.textContent = "p" + p;
       procSelect.appendChild(opt);
     });
   }
@@ -907,7 +920,7 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
         ctx.beginPath();
         ctx.rect(x0, y, w, bandHeight);
         ctx.clip();
-        ctx.fillText(`${f.kind} #${f.id}: ${f.desc}`, Math.max(x0 + 4, 4), y + 12);
+        ctx.fillText(f.kind + " #" + f.id + ": " + f.desc, Math.max(x0 + 4, 4), y + 12);
         ctx.restore();
       });
     }
@@ -1003,7 +1016,7 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
         ctx.beginPath();
         ctx.rect(x0 + 2, y, w - 4, h);
         ctx.clip();
-        const lbl = `p${o.p} ${o.f}${o.v !== undefined ? ' ' + o.v : ''}`;
+        const lbl = "p" + o.p + " " + o.f + (o.v !== undefined ? " " + o.v : "");
         ctx.fillText(lbl, x0 + 3, y + 9);
         ctx.restore();
       }
@@ -1014,7 +1027,7 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
     // Update Status Badge
     if (statusBadge) {
       const dur = fmtDuration(span);
-      statusBadge.textContent = `${visibleOps.length} ops visible · span: ${dur}`;
+      statusBadge.textContent = visibleOps.length + " ops visible · span: " + dur;
     }
   }
 
@@ -1186,41 +1199,33 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
 
   function showOpTooltip(o, clientX, clientY) {
     let roleBadge = "";
-    if (o.m === "stuck") roleBadge = `<span class="badge-role badge-stuck">🚨 Stuck Op</span>`;
-    else if (o.m === "write") roleBadge = `<span class="badge-role badge-write">⚡ Latest Write</span>`;
-    else if (o.m === "witness") roleBadge = `<span class="badge-role badge-witness">🔍 Witness</span>`;
-    else if (o.m === "concurrent") roleBadge = `<span class="badge-role badge-concurrent">⏳ Concurrent</span>`;
+    if (o.m === "stuck") roleBadge = '<span class="badge-role badge-stuck">🚨 Stuck Op</span>';
+    else if (o.m === "write") roleBadge = '<span class="badge-role badge-write">⚡ Latest Write</span>';
+    else if (o.m === "witness") roleBadge = '<span class="badge-role badge-witness">🔍 Witness</span>';
+    else if (o.m === "concurrent") roleBadge = '<span class="badge-role badge-concurrent">⏳ Concurrent</span>';
 
     const lat = o.r !== -1 ? fmtDuration(o.r - o.c) : "∞ (timeout)";
-    tooltip.innerHTML = `
-      <div class="tt-title">
-        <span>${o.d}</span>
-        ${roleBadge}
-      </div>
-      <div class="tt-row"><span>Status:</span><span class="tt-val" style="color:var(--${o.s})">${o.s.toUpperCase()}</span></div>
-      <div class="tt-row"><span>Process:</span><span class="tt-val">p${o.p}</span></div>
-      ${o.k ? `<div class="tt-row"><span>Key:</span><span class="tt-val">${o.k}</span></div>` : ''}
-      <div class="tt-row"><span>Call:</span><span class="tt-val">${fmtTime(o.c)}</span></div>
-      <div class="tt-row"><span>Return:</span><span class="tt-val">${fmtTime(o.r)}</span></div>
-      <div class="tt-row"><span>Latency:</span><span class="tt-val">${lat}</span></div>
-      <div style="margin-top:6px;font-size:10px;color:var(--muted)">Click to inspect JSON / timeline stream</div>
-    `;
+    tooltip.innerHTML =
+      '<div class="tt-title"><span>' + o.d + '</span>' + roleBadge + '</div>' +
+      '<div class="tt-row"><span>Status:</span><span class="tt-val" style="color:var(--' + o.s + ')">' + o.s.toUpperCase() + '</span></div>' +
+      '<div class="tt-row"><span>Process:</span><span class="tt-val">p' + o.p + '</span></div>' +
+      (o.k ? '<div class="tt-row"><span>Key:</span><span class="tt-val">' + o.k + '</span></div>' : '') +
+      '<div class="tt-row"><span>Call:</span><span class="tt-val">' + fmtTime(o.c) + '</span></div>' +
+      '<div class="tt-row"><span>Return:</span><span class="tt-val">' + fmtTime(o.r) + '</span></div>' +
+      '<div class="tt-row"><span>Latency:</span><span class="tt-val">' + lat + '</span></div>' +
+      '<div style="margin-top:6px;font-size:10px;color:var(--muted)">Click to inspect JSON / timeline stream</div>';
 
     positionTooltip(clientX, clientY);
   }
 
   function showFaultTooltip(f, clientX, clientY) {
     const dur = fmtDuration(f.end - f.start);
-    tooltip.innerHTML = `
-      <div class="tt-title">
-        <span>Fault #${f.id}: ${f.kind}</span>
-        <span class="badge-role badge-witness">FAULT</span>
-      </div>
-      <div class="tt-row"><span>Target:</span><span class="tt-val">${f.desc}</span></div>
-      <div class="tt-row"><span>Start:</span><span class="tt-val">${fmtTime(f.start)}</span></div>
-      <div class="tt-row"><span>End:</span><span class="tt-val">${fmtTime(f.end)}</span></div>
-      <div class="tt-row"><span>Duration:</span><span class="tt-val">${dur}</span></div>
-    `;
+    tooltip.innerHTML =
+      '<div class="tt-title"><span>Fault #' + f.id + ': ' + f.kind + '</span><span class="badge-role badge-witness">FAULT</span></div>' +
+      '<div class="tt-row"><span>Target:</span><span class="tt-val">' + f.desc + '</span></div>' +
+      '<div class="tt-row"><span>Start:</span><span class="tt-val">' + fmtTime(f.start) + '</span></div>' +
+      '<div class="tt-row"><span>End:</span><span class="tt-val">' + fmtTime(f.end) + '</span></div>' +
+      '<div class="tt-row"><span>Duration:</span><span class="tt-val">' + dur + '</span></div>';
     positionTooltip(clientX, clientY);
   }
 
@@ -1257,24 +1262,23 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
     const body = document.getElementById("tl-dialog-body");
     if (!dialog || !body) return;
 
-    if (title) title.textContent = `Operation #${o.i} · ${o.d}`;
+    if (title) title.textContent = "Operation #" + o.i + " · " + o.d;
     const lat = o.r !== -1 ? fmtDuration(o.r - o.c) : "∞ (indeterminate)";
     const raw = JSON.stringify(o, null, 2);
 
-    body.innerHTML = `
-      <table style="margin-bottom:12px">
-        <tr><th>Index</th><td class="mono">#${o.i}</td></tr>
-        <tr><th>Process</th><td class="mono">p${o.p}</td></tr>
-        ${o.k ? `<tr><th>Key</th><td class="mono">${o.k}</td></tr>` : ''}
-        <tr><th>Status</th><td class="mono" style="color:var(--${o.s})">${o.s.toUpperCase()}</td></tr>
-        <tr><th>Call Time</th><td class="mono">${fmtTime(o.c)} (${o.c} ns)</td></tr>
-        <tr><th>Return Time</th><td class="mono">${fmtTime(o.r)} (${o.r} ns)</td></tr>
-        <tr><th>Latency</th><td class="mono">${lat}</td></tr>
-        ${o.m ? `<tr><th>Anomaly Role</th><td><b>${o.m.toUpperCase()}</b></td></tr>` : ''}
-      </table>
-      <div style="font-weight:600;font-size:12px;margin-bottom:4px">Raw JSON Record:</div>
-      <pre class="dialog-code"><code>${raw}</code></pre>
-    `;
+    body.innerHTML =
+      '<table style="margin-bottom:12px">' +
+      '<tr><th>Index</th><td class="mono">#' + o.i + '</td></tr>' +
+      '<tr><th>Process</th><td class="mono">p' + o.p + '</td></tr>' +
+      (o.k ? '<tr><th>Key</th><td class="mono">' + o.k + '</td></tr>' : '') +
+      '<tr><th>Status</th><td class="mono" style="color:var(--' + o.s + ')">' + o.s.toUpperCase() + '</td></tr>' +
+      '<tr><th>Call Time</th><td class="mono">' + fmtTime(o.c) + ' (' + o.c + ' ns)</td></tr>' +
+      '<tr><th>Return Time</th><td class="mono">' + fmtTime(o.r) + ' (' + o.r + ' ns)</td></tr>' +
+      '<tr><th>Latency</th><td class="mono">' + lat + '</td></tr>' +
+      (o.m ? '<tr><th>Anomaly Role</th><td><b>' + o.m.toUpperCase() + '</b></td></tr>' : '') +
+      '</table>' +
+      '<div style="font-weight:600;font-size:12px;margin-bottom:4px">Raw JSON Record:</div>' +
+      '<pre class="dialog-code"><code>' + raw + '</code></pre>';
 
     dialog.showModal();
   }

@@ -281,7 +281,14 @@ func (d *deadEnd) counterexample(ops []history.Operation) *Counterexample {
 				}
 			}
 		}
-		if latestWrite != nil && latestWrite.Output.Value != nil && *latestWrite.Output.Value != *stuckOp.Output.Value {
+		var writtenVal *int64
+		if latestWrite != nil {
+			writtenVal = latestWrite.Input.Value
+			if writtenVal == nil {
+				writtenVal = latestWrite.Output.Value
+			}
+		}
+		if latestWrite != nil && writtenVal != nil && *writtenVal != *stuckOp.Output.Value {
 			fmt.Fprintf(&b, " Latest preceding write was %s (completed at %.3fs, %v before this read began), but read returned %d.",
 				latestWrite.Describe(), float64(latestWrite.Return)/1e9,
 				time.Duration(stuckOp.Call-latestWrite.Return).Round(time.Microsecond),
