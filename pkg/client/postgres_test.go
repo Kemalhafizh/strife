@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -47,10 +48,12 @@ func sendAuthOkAndReady(c net.Conn) {
 
 func readStartup(c net.Conn) {
 	var length int32
-	_ = binary.Read(c, binary.BigEndian, &length)
+	if err := binary.Read(c, binary.BigEndian, &length); err != nil {
+		return
+	}
 	if length > 4 {
 		buf := make([]byte, length-4)
-		_, _ = c.Read(buf)
+		_, _ = io.ReadFull(c, buf)
 	}
 }
 
@@ -67,9 +70,16 @@ func TestPostgresHandshakeAndQuery(t *testing.T) {
 				return
 			}
 			var length int32
-			_ = binary.Read(c, binary.BigEndian, &length)
+			if err := binary.Read(c, binary.BigEndian, &length); err != nil || length < 4 {
+				return
+			}
+			if msgType == 'X' {
+				return
+			}
 			queryBuf := make([]byte, length-4)
-			_, _ = c.Read(queryBuf)
+			if _, err := io.ReadFull(c, queryBuf); err != nil {
+				return
+			}
 			query := strings.TrimRight(string(queryBuf), "\x00")
 
 			if strings.Contains(query, "CREATE TABLE") {
@@ -139,9 +149,16 @@ func TestPostgresErrorClassification(t *testing.T) {
 				return
 			}
 			var length int32
-			_ = binary.Read(c, binary.BigEndian, &length)
+			if err := binary.Read(c, binary.BigEndian, &length); err != nil || length < 4 {
+				return
+			}
+			if msgType == 'X' {
+				return
+			}
 			queryBuf := make([]byte, length-4)
-			_, _ = c.Read(queryBuf)
+			if _, err := io.ReadFull(c, queryBuf); err != nil {
+				return
+			}
 
 			// ErrorResponse: 'E'
 			// Fields: 'C' code "40001", 'M' message "could not serialize access", 0

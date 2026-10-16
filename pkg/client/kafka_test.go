@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/crc32"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -40,11 +41,13 @@ func TestKafkaProduceAndFetch(t *testing.T) {
 		defer c.Close()
 		for {
 			var length int32
-			if err := binary.Read(c, binary.BigEndian, &length); err != nil {
+			if err := binary.Read(c, binary.BigEndian, &length); err != nil || length <= 0 {
 				return
 			}
 			reqBuf := make([]byte, length)
-			_, _ = c.Read(reqBuf)
+			if _, err := io.ReadFull(c, reqBuf); err != nil {
+				return
+			}
 			r := bytes.NewReader(reqBuf)
 
 			var apiKey, apiVersion int16
@@ -139,11 +142,13 @@ func TestKafkaErrorClassification(t *testing.T) {
 		defer c.Close()
 		for {
 			var length int32
-			if err := binary.Read(c, binary.BigEndian, &length); err != nil {
+			if err := binary.Read(c, binary.BigEndian, &length); err != nil || length <= 0 {
 				return
 			}
 			reqBuf := make([]byte, length)
-			_, _ = c.Read(reqBuf)
+			if _, err := io.ReadFull(c, reqBuf); err != nil {
+				return
+			}
 			r := bytes.NewReader(reqBuf)
 
 			var apiKey, apiVersion int16
