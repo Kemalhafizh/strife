@@ -185,8 +185,8 @@ func (k *Kafka) produce(ctx context.Context, topic string, val int64) error {
 	// Build MessageSet (v0 Message)
 	// Message: CRC(int32), magic(int8 0), attributes(int8 0), keyLen(-1), valLen(int32), valBytes
 	var msgBody bytes.Buffer
-	msgBody.WriteByte(0) // magic 0
-	msgBody.WriteByte(0) // attributes 0
+	msgBody.WriteByte(0)                                    // magic 0
+	msgBody.WriteByte(0)                                    // attributes 0
 	_ = binary.Write(&msgBody, binary.BigEndian, int32(-1)) // key length -1 (null)
 	_ = binary.Write(&msgBody, binary.BigEndian, int32(len(valBytes)))
 	msgBody.Write(valBytes)
@@ -258,10 +258,10 @@ func (k *Kafka) fetch(ctx context.Context, topic string) (*int64, error) {
 	// replicaId(int32 -1), maxWaitTime(int32 500), minBytes(int32 1), topicCount(int32 1),
 	// topicName(int16 string), partitionCount(int32 1), partition(int32 0), fetchOffset(int64), maxBytes(int32 65536)
 	var req bytes.Buffer
-	_ = binary.Write(&req, binary.BigEndian, int32(-1))   // replicaId -1 (normal consumer)
-	_ = binary.Write(&req, binary.BigEndian, int32(500))  // max wait 500ms
-	_ = binary.Write(&req, binary.BigEndian, int32(1))    // min bytes
-	_ = binary.Write(&req, binary.BigEndian, int32(1))    // 1 topic
+	_ = binary.Write(&req, binary.BigEndian, int32(-1))  // replicaId -1 (normal consumer)
+	_ = binary.Write(&req, binary.BigEndian, int32(500)) // max wait 500ms
+	_ = binary.Write(&req, binary.BigEndian, int32(1))   // min bytes
+	_ = binary.Write(&req, binary.BigEndian, int32(1))   // 1 topic
 	_ = binary.Write(&req, binary.BigEndian, int16(len(topic)))
 	req.WriteString(topic)
 	_ = binary.Write(&req, binary.BigEndian, int32(1))     // 1 partition

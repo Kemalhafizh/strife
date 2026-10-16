@@ -48,7 +48,7 @@ const (
 
 // MicroOp is one read or write operation inside a transaction.
 type MicroOp struct {
-	F     string `json:"f"`               // "r" (read) or "w" (write)
+	F     string `json:"f"` // "r" (read) or "w" (write)
 	Key   string `json:"key"`
 	Value *int64 `json:"value,omitempty"` // written or read value
 }

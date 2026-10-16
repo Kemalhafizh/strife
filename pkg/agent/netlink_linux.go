@@ -23,9 +23,9 @@ const (
 	nlmFCreate  = 0x400
 	nlmFReplace = 0x100
 
-	tcHRoot   = 0xFFFFFFFF // TC_H_ROOT
-	tcaKind   = 1          // TCA_KIND
-	tcaOptions = 2         // TCA_OPTIONS
+	tcHRoot    = 0xFFFFFFFF // TC_H_ROOT
+	tcaKind    = 1          // TCA_KIND
+	tcaOptions = 2          // TCA_OPTIONS
 )
 
 // tcNetemQopt matches Linux kernel struct tc_netem_qopt.

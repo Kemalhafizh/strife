@@ -150,11 +150,10 @@ func DetectG1b(txns []Txn) []Anomaly {
 				v := *op.Value
 				if iw, ok := inter[k][v]; ok && reader.ID != iw.txn.ID {
 					anomalies = append(anomalies, Anomaly{
-						Type: AnomalyG1b,
-						Name: "Intermediate Read (G1b)",
-						Explanation: fmt.Sprintf("Transaction T%d read intermediate value %s=%d from T%d, which was overwritten with %d before commit.",
-							reader.ID, k, v, iw.txn.ID, iw.finalVal),
-						Txns: []Txn{iw.txn, reader},
+						Type:        AnomalyG1b,
+						Name:        "Intermediate Read (G1b)",
+						Explanation: fmt.Sprintf("Transaction T%d read intermediate value %s=%d from T%d, which was overwritten with %d before commit.", reader.ID, k, v, iw.txn.ID, iw.finalVal),
+						Txns:        []Txn{iw.txn, reader},
 					})
 				}
 			}

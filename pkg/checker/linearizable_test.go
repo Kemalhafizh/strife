@@ -376,7 +376,9 @@ func TestTxnModelIntegration(t *testing.T) {
 	b := &builder{}
 	// T0: writes x=1, y=1
 	b.add(history.Op{
-		Process: 0, Type: history.Invoke, F: history.FTxn,
+		Process: 0,
+		Type:    history.Invoke,
+		F:       history.FTxn,
 		Txn: []history.MicroOp{
 			{F: "w", Key: "x", Value: v(1)},
 			{F: "w", Key: "y", Value: v(1)},
@@ -385,7 +387,9 @@ func TestTxnModelIntegration(t *testing.T) {
 
 	// T1: reads x=1, reads y=1, writes x=0
 	b.add(history.Op{
-		Process: 1, Type: history.Invoke, F: history.FTxn,
+		Process: 1,
+		Type:    history.Invoke,
+		F:       history.FTxn,
 		Txn: []history.MicroOp{
 			{F: "r", Key: "x", Value: v(1)},
 			{F: "r", Key: "y", Value: v(1)},
@@ -395,7 +399,9 @@ func TestTxnModelIntegration(t *testing.T) {
 
 	// T2: reads x=1, reads y=1, writes y=0 (Write Skew concurrent with T1)
 	b.add(history.Op{
-		Process: 2, Type: history.Invoke, F: history.FTxn,
+		Process: 2,
+		Type:    history.Invoke,
+		F:       history.FTxn,
 		Txn: []history.MicroOp{
 			{F: "r", Key: "x", Value: v(1)},
 			{F: "r", Key: "y", Value: v(1)},
@@ -417,4 +423,3 @@ func TestTxnModelIntegration(t *testing.T) {
 		t.Fatal("expected non-empty diagnosis for transactional violation")
 	}
 }
-

@@ -90,13 +90,13 @@ func (s *mockMySQLServer) handleConn(conn net.Conn) {
 	hs = binary.LittleEndian.AppendUint32(hs, 1) // connection id
 	salt := []byte("01234567890123456789")
 	hs = append(hs, salt[:8]...)
-	hs = append(hs, 0)                                 // filler
-	hs = binary.LittleEndian.AppendUint16(hs, 0xffff)  // capabilities 1
-	hs = append(hs, 45)                                // charset
-	hs = binary.LittleEndian.AppendUint16(hs, 0x0002)  // status
-	hs = binary.LittleEndian.AppendUint16(hs, 0xffff)  // capabilities 2
-	hs = append(hs, 21)                                // auth plugin data len
-	hs = append(hs, make([]byte, 10)...)               // reserved
+	hs = append(hs, 0)                                // filler
+	hs = binary.LittleEndian.AppendUint16(hs, 0xffff) // capabilities 1
+	hs = append(hs, 45)                               // charset
+	hs = binary.LittleEndian.AppendUint16(hs, 0x0002) // status
+	hs = binary.LittleEndian.AppendUint16(hs, 0xffff) // capabilities 2
+	hs = append(hs, 21)                               // auth plugin data len
+	hs = append(hs, make([]byte, 10)...)              // reserved
 	hs = append(hs, salt[8:20]...)
 	hs = append(hs, []byte("mysql_native_password\x00")...)
 
@@ -234,11 +234,11 @@ func makeColumnDef(name string) []byte {
 	b = append(b, []byte(name)...)
 	b = append(b, byte(len(name)))
 	b = append(b, []byte(name)...)
-	b = append(b, 0x0c, 0x3f, 0x00)                  // len, charset
-	b = binary.LittleEndian.AppendUint32(b, 20)      // column length
-	b = append(b, 0x08)                              // type LONGLONG
-	b = binary.LittleEndian.AppendUint16(b, 0x0000)  // flags
-	b = append(b, 0x00, 0x00, 0x00)                  // decimals, filler
+	b = append(b, 0x0c, 0x3f, 0x00)                 // len, charset
+	b = binary.LittleEndian.AppendUint32(b, 20)     // column length
+	b = append(b, 0x08)                             // type LONGLONG
+	b = binary.LittleEndian.AppendUint16(b, 0x0000) // flags
+	b = append(b, 0x00, 0x00, 0x00)                 // decimals, filler
 	return b
 }
 

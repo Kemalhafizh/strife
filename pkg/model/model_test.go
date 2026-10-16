@@ -317,9 +317,12 @@ func TestTxnModelAndDiagnoser(t *testing.T) {
 	// Diagnoser finds G1c cycle
 	ops := []history.Operation{
 		{
-			ID: 0, Call: 0, Return: 10,
+			ID:     0,
+			Call:   0,
+			Return: 10,
 			Input: history.Op{
-				Process: 0, F: history.FTxn,
+				Process: 0,
+				F:       history.FTxn,
 				Txn: []history.MicroOp{
 					{F: "w", Key: "x", Value: v(1)},
 					{F: "r", Key: "y", Value: v(2)},
@@ -328,9 +331,12 @@ func TestTxnModelAndDiagnoser(t *testing.T) {
 			Output: history.Op{Type: history.OK},
 		},
 		{
-			ID: 1, Call: 0, Return: 10,
+			ID:     1,
+			Call:   0,
+			Return: 10,
 			Input: history.Op{
-				Process: 1, F: history.FTxn,
+				Process: 1,
+				F:       history.FTxn,
 				Txn: []history.MicroOp{
 					{F: "w", Key: "y", Value: v(2)},
 					{F: "r", Key: "x", Value: v(1)},
