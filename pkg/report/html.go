@@ -91,7 +91,7 @@ type view struct {
 	Total        int
 	Fails        []checker.KeyResult
 	FaultRows    []faultRow
-	TimelineJSON template.HTML
+	TimelineJSON template.JS
 	HasAnomaly   bool
 }
 
@@ -132,7 +132,7 @@ func HTML(w io.Writer, r *Report, ops []history.Op) error {
 		payload := buildTimelinePayload(r, paired, v.Fails)
 		v.HasAnomaly = payload.HasAnomaly
 		if j, err := json.Marshal(payload); err == nil {
-			v.TimelineJSON = template.HTML(j)
+			v.TimelineJSON = template.JS(j)
 		}
 	}
 

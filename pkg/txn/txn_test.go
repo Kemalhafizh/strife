@@ -336,28 +336,31 @@ func TestGRealtimeViolation(t *testing.T) {
 	// Cycle: T1 ──ro──> T2 ──rw(x)──> T1
 	txns := []Txn{
 		{
-			ID:     0,
-			Status: history.OK,
-			Call:   0,
-			Return: 5,
+			ID:      0,
+			Process: 0,
+			Status:  history.OK,
+			Call:    0,
+			Return:  5,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(1)},
 			},
 		},
 		{
-			ID:     1,
-			Status: history.OK,
-			Call:   10,
-			Return: 15,
+			ID:      1,
+			Process: 1,
+			Status:  history.OK,
+			Call:    10,
+			Return:  15,
 			Ops: []MicroOp{
 				{Kind: OpWrite, Key: "x", Value: v(2)},
 			},
 		},
 		{
-			ID:     2,
-			Status: history.OK,
-			Call:   20,
-			Return: 25,
+			ID:      2,
+			Process: 2,
+			Status:  history.OK,
+			Call:    20,
+			Return:  25,
 			Ops: []MicroOp{
 				{Kind: OpRead, Key: "x", Value: v(1)},
 			},

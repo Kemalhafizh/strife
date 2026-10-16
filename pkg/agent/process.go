@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // ProcessEngine manages process signals (SIGSTOP, SIGCONT, SIGKILL) with direct syscalls.
@@ -91,7 +90,7 @@ func (p *ProcessEngine) Pause(pattern string) ([]int, error) {
 	}
 	var signaled []int
 	for _, pid := range pids {
-		if err := syscall.Kill(pid, syscall.SIGSTOP); err == nil {
+		if err := sendStop(pid); err == nil {
 			signaled = append(signaled, pid)
 		}
 	}
@@ -106,7 +105,7 @@ func (p *ProcessEngine) Resume(pattern string) ([]int, error) {
 	}
 	var signaled []int
 	for _, pid := range pids {
-		if err := syscall.Kill(pid, syscall.SIGCONT); err == nil {
+		if err := sendCont(pid); err == nil {
 			signaled = append(signaled, pid)
 		}
 	}
@@ -121,7 +120,7 @@ func (p *ProcessEngine) Kill(pattern string) ([]int, error) {
 	}
 	var signaled []int
 	for _, pid := range pids {
-		if err := syscall.Kill(pid, syscall.SIGKILL); err == nil {
+		if err := sendKill(pid); err == nil {
 			signaled = append(signaled, pid)
 		}
 	}

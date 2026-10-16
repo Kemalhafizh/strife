@@ -322,7 +322,7 @@ func BuildGraph(txns []Txn) *Graph {
 			if t2.Status != history.OK {
 				continue
 			}
-			if t1.Return < t2.Call {
+			if t1.Process != t2.Process && t1.Return < t2.Call {
 				g.AddEdge(Edge{
 					From: t1.ID,
 					To:   t2.ID,
