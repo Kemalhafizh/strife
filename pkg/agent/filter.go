@@ -14,6 +14,7 @@ type FilterEngine struct {
 	mu      sync.Mutex
 	dropped map[string]bool
 	chain   string
+	enabled bool
 }
 
 // NewFilterEngine creates a new packet filter manager.
@@ -38,7 +39,11 @@ func (f *FilterEngine) Setup() error {
 		"iptables -N %[1]s 2>/dev/null || true; iptables -C INPUT -j %[1]s 2>/dev/null || iptables -I INPUT -j %[1]s",
 		f.chain,
 	))
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	f.enabled = true
+	return nil
 }
 
 // Drop drops all packets from source IP.
@@ -50,7 +55,7 @@ func (f *FilterEngine) Drop(ip string) error {
 		return nil // Already dropped (idempotent)
 	}
 
-	if _, err := exec.LookPath("iptables"); err == nil {
+	if f.enabled {
 		cmd := exec.Command("iptables", "-A", f.chain, "-s", ip, "-j", "DROP")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("iptables drop %s: %w (%s)", ip, err, strings.TrimSpace(string(out)))
@@ -69,7 +74,7 @@ func (f *FilterEngine) Undrop(ip string) error {
 		return nil // Not dropped
 	}
 
-	if _, err := exec.LookPath("iptables"); err == nil {
+	if f.enabled {
 		cmd := exec.Command("iptables", "-D", f.chain, "-s", ip, "-j", "DROP")
 		_ = cmd.Run()
 	}
@@ -82,7 +87,7 @@ func (f *FilterEngine) Flush() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if _, err := exec.LookPath("iptables"); err == nil {
+	if f.enabled {
 		cmd := exec.Command("iptables", "-F", f.chain)
 		_ = cmd.Run()
 	}
