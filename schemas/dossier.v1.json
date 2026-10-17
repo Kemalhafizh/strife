@@ -3,6 +3,9 @@
     "compliance.ControlResult": {
       "additionalProperties": false,
       "properties": {
+        "citation": {
+          "type": "string"
+        },
         "control_id": {
           "type": "string"
         },

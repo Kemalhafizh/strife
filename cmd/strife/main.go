@@ -887,7 +887,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	probesPath := fs.String("probes", "", "optional server-side probe events file (probes.jsonl) for root-cause correlation")
 	schedPath := fs.String("schedule", "", "optional fault schedule file (schedule.json) for root-cause correlation")
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
-	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
+	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn and append): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
 	out := fs.String("out", "", "write a report directory here")
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
 	timeout := fs.Duration("check-timeout", 0, "wall-clock budget per key (0 = none)")
@@ -1504,7 +1504,7 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 	fmt.Fprintf(stdout, "compliance dossier: target=%s   kind=%s   verdict=%s   overall=%s\n",
 		dossier.Summary.Target, dossier.Summary.RunKind, strings.ToUpper(string(dossier.Summary.Verdict)), strings.ToUpper(string(dossier.Overall)))
 	for _, c := range dossier.Controls {
-		fmt.Fprintf(stdout, "  [%-7s] %-8s %-24s %s\n",
+		fmt.Fprintf(stdout, "  [%-7s] %-8s %-26s %s\n",
 			strings.ToUpper(string(c.Status)), strings.ToUpper(string(c.Framework)), c.ControlID, c.Title)
 	}
 	if *out != "" {

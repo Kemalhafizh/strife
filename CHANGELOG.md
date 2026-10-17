@@ -14,7 +14,16 @@ with their default security, and Strife ships as signed releases.
 
 ### Added
 - `strife bench inject`: measures how late faults land on a real cluster,
-  per transport and fault kind; the live CI publishes the numbers.
+  per transport and fault kind, and for strife-agent also the time spent
+  inside the agent; the live CI publishes the numbers, collected in
+  [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+- `strife shrink --live`: delta debugging of a live run's fault schedule on
+  the real cluster, several attempts per candidate, reported as a candidate
+  reproducer with its measured reproduction rate. `strife run --schedule`
+  replays a recorded or shrunk schedule.
+- Kubernetes transport (`"type": "kubernetes"`): faults through `kubectl
+  exec`, `"ip": "auto"` resolved to pod IPs, `{ip}` endpoints expanded per
+  node; `examples/kubernetes` and a kind job in CI.
 - List-append transactions checked the way Elle does (`--model append`,
   live `workload.model: append`): G0, G1a/b/c, G-single, G2, G-realtime,
   lost appends, incompatible orders, phantom, duplicate and internal reads.
@@ -27,7 +36,10 @@ with their default security, and Strife ships as signed releases.
   `file:PATH`, and literal secrets are redacted from reports.
 - `db.txn_isolation` and `db.init_sql` for SQL targets.
 - Examples validated in CI: PostgreSQL 17, MySQL 8.4, TiDB 8.5, Kafka 3.9
-  and 4.1, etcd transactions, cgroup v2 faults, strife-agent.
+  and 4.1, etcd transactions, etcd on Kubernetes, cgroup v2 faults,
+  strife-agent. Known-weak configurations must be caught: PostgreSQL write
+  skew and stale standby reads, MySQL and TiDB-pessimistic REPEATABLE READ.
+- Compliance controls carry a `citation` of the provision they support.
 - Docker transport: `sudo` for host commands, `"cgroup": "auto"` and
   `"io_device": "auto"` discovery.
 - Release pipeline: archives for Linux, macOS and Windows, SHA256SUMS, an
@@ -37,9 +49,14 @@ with their default security, and Strife ships as signed releases.
 - JSON Schemas for `report.json`, `history.jsonl` and `dossier.json`, with a
   test that refuses incompatible changes.
 - Fuzzing of every parser of untrusted bytes; brute-force cross-checks of
-  both transaction checkers.
+  both transaction checkers, including a completeness measurement for
+  list-append.
 
 ### Changed
+- Compliance control IDs are now Strife labels (`dora.data-integrity`,
+  `soc2.recovery`, `bi-ojk.jejak-audit`…) instead of strings that looked
+  like official clause numbers. Scripts that match on the old IDs must be
+  updated.
 - strife-agent refuses to listen on a network address without a token.
 - Runs record when each fault landed (every node confirmed), not only when
   dispatch started; reports summarise the fault timing.
@@ -49,7 +66,15 @@ with their default security, and Strife ships as signed releases.
   at strict serializability, and reads results from completions.
 
 ### Fixed
-- Agent "jitter" statistics were Unix timestamps, not durations.
+- Agent "jitter" statistics were Unix timestamps, not durations, and the
+  published 0.28 ms figure had no benchmark behind it; it is replaced by
+  measurements.
+- strife-agent encoded netem parameters in the wrong field order and units,
+  so `loss` faults timed out.
+- The DORA data-integrity control cited "Art. 9.4(c)"; the provision is
+  Art. 9(3)(b)–(c).
+- PostgreSQL standbys in the example could fail to clone the primary when a
+  checkpoint recycled WAL mid-copy.
 - PostgreSQL transactions attributed rows to the wrong read after an empty
   SELECT.
 - The workload isolation level never reached the SQL clients.

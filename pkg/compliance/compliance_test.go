@@ -90,7 +90,7 @@ func TestEvaluateFullPassAndArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"DORA-Art.24-25", "PI1.3-PI1.4", "A.8.17", "SEOJK-29/MRTIK-DRC", "chief-auditor"} {
+	for _, want := range []string{"dora.resilience-testing", "Art. 24", "PI1.3", "Annex A, 8.17", "bi-ojk.pemulihan-bencana", "POJK No. 11/POJK.03/2022", "chief-auditor"} {
 		if !strings.Contains(string(mdBytes), want) {
 			t.Errorf("dossier.md missing %q", want)
 		}

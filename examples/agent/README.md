@@ -1,8 +1,8 @@
-# strife-agent: Low-Jitter Per-Node Daemon
+# strife-agent: per-node fault daemon
 
 `strife-agent` is a small, lightweight daemon that runs directly inside target
-nodes (containers, VMs, or bare-metal machines) to apply chaos faults with
-minimal jitter.
+nodes (containers, VMs, or bare-metal machines) to apply faults with direct
+syscalls instead of a shell per command.
 
 ---
 
@@ -13,17 +13,26 @@ In distributed systems testing, timing precision matters. A fault scheduled at
 possible.
 
 Conventional tools inject faults by shelling out (`docker exec container iptables ...`
-or `ssh user@node tc ...`). That introduces enormous overhead and jitter:
+or `ssh user@node tc ...`): every transition pays for a process spawn, the
+Docker or SSH round trip and a shell. Measured with `strife bench inject` on
+a GitHub-hosted runner against a 3-node etcd cluster (50 transitions per row;
+full table, method and caveats in [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#1-fault-injection-latency)):
 
-| Transport | Fault Mechanism | Median Latency (P50) | 95th Percentile (P95) | Max Jitter |
-|---|---|---|---|---|
-| **Shell `docker exec`** | Process fork + exec + sh | ~45ms | ~85ms | >200ms |
-| **Shell `ssh`** | SSH handshake + remote shell | ~60ms | ~120ms | >350ms |
-| **`strife-agent`** | **TCP socket + Linux RTNETLINK** | **0.28ms** | **0.95ms** | **< 3ms** |
+| Fault | `docker exec` P50 / P95 | `strife-agent` P50 / P95 | Inside the agent (P50) |
+|---|---|---|---|
+| `pause` | 43.7 / 45.1 ms | **1.36 / 1.90 ms** | 372 µs |
+| `kill` | 44.4 / 46.1 ms | **1.58 / 1.99 ms** | 495 µs |
+| `partition` | 57.9 / 61.3 ms | **4.02 / 4.29 ms** | 2.61 ms |
+| `latency` | 42.8 / 44.1 ms | 48.1 / 59.5 ms ¹ | **159 µs** |
 
-`strife-agent` reduces injection jitter by **over 50x**, allowing fine-grained
-micro-window race condition testing (e.g. hitting Raft leader lease timeouts or
-split-second failover windows).
+¹ The agent's reply leaves through the interface it just delayed, so the
+confirmation is late; the netem qdisc was in place 159 µs after the request
+arrived. Partitions still run the `iptables` binary inside the agent; signals,
+netem and cgroup writes are direct syscalls.
+
+Signals and netem changes land ~30× sooner than through `docker exec`, which
+matters when a fault has to hit a narrow window such as a leader-lease expiry
+or a failover.
 
 ---
 
@@ -65,13 +74,18 @@ RTNETLINK       Direct Signals         cgroup v2        iptables
 
 ```sh
 cd examples/agent
+export STRIFE_AGENT_TOKEN=$(openssl rand -hex 16)   # every request must carry it
 docker compose up -d --build
 ```
+
+The agent refuses to listen on a non-loopback address without a token
+(`-insecure-no-token` overrides that for throwaway labs), and compares tokens
+in constant time.
 
 ### 2. Verify Agent Health & Capabilities
 
 ```sh
-curl -s http://localhost:9291/health | jq
+curl -s -H "Authorization: Bearer $STRIFE_AGENT_TOKEN" http://localhost:9291/health | jq
 ```
 
 Output:
@@ -98,13 +112,19 @@ Output:
 strife run --config strife.json
 ```
 
-During execution, Strife logs exact jitter measurements:
+During the run Strife logs, for every transition, how long after its planned
+instant every involved node confirmed it, then a summary; `report.json` keeps
+the same `landed` and `latency` fields per transition:
 ```
-  1.05s inject partition [node1] (jitter: 412µs)
-  2.50s inject latency [node2] (jitter: 280µs)
-  3.05s heal partition [node1] (jitter: 195µs)
+   8.91s inject pause [1] (landed 1.4ms after plan)
+  17.51s heal pause [1] (landed 1.5ms after plan)
 ...
-injection jitter: samples=12 p50=320µs p95=890µs min=150µs max=1.2ms
+fault timing: 14 transitions landed p50=1.6ms p95=4.3ms max=7.9ms after plan
+```
+
+To measure a cluster of your own:
+```sh
+strife bench inject --config strife.json --transports docker,agent --faults partition,pause,kill --cycles 50
 ```
 
 ### 4. Cleanup
