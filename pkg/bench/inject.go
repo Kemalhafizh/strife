@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/internal/stats"
+	"github.com/kemalhafizh/strife/pkg/agent"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/runner"
 	"github.com/kemalhafizh/strife/pkg/transport"
@@ -41,14 +42,19 @@ type InjectConfig struct {
 // the cgroup frozen. Wake is the part of it spent before dispatch even began
 // (scheduler and timer slack), which no transport can remove.
 type Row struct {
-	Transport  string        `json:"transport"`
-	Method     string        `json:"method"`
-	Kind       nemesis.Kind  `json:"kind"`
-	Edge       string        `json:"edge"`
-	Latency    stats.Summary `json:"latency"`
-	Wake       stats.Summary `json:"wake"`
-	Errors     int           `json:"errors"`
-	FirstError string        `json:"first_error,omitempty"`
+	Transport string        `json:"transport"`
+	Method    string        `json:"method"`
+	Kind      nemesis.Kind  `json:"kind"`
+	Edge      string        `json:"edge"`
+	Latency   stats.Summary `json:"latency"`
+	Wake      stats.Summary `json:"wake"`
+	// Agent is, for agent transports, the time spent inside the agents from
+	// receiving the request until the kernel call returned (the slowest
+	// node per transition). It excludes the trip back to Strife, which
+	// latency and loss faults slow down on the interface they impair.
+	Agent      *stats.Summary `json:"agent,omitempty"`
+	Errors     int            `json:"errors"`
+	FirstError string         `json:"first_error,omitempty"`
 }
 
 // Host identifies the machine the benchmark ran on.
@@ -138,10 +144,13 @@ func Inject(ctx context.Context, c InjectConfig) (*InjectResult, error) {
 
 func measure(ctx context.Context, inj *runner.Injector, name string, kind nemesis.Kind, cycles int, period time.Duration, nodes int) []Row {
 	type acc struct {
-		lat, wake []time.Duration
-		errs      int
-		first     string
+		lat, wake, agent []time.Duration
+		errs             int
+		first            string
 	}
+	col, _ := inj.Transport.(interface {
+		Collector() *agent.LatencyCollector
+	})
 	var edges [2]acc // inject, heal
 	t0 := time.Now().Add(period)
 	for i := 0; i < cycles && ctx.Err() == nil; i++ {
@@ -151,6 +160,10 @@ func measure(ctx context.Context, inj *runner.Injector, name string, kind nemesi
 			select {
 			case <-time.After(time.Until(planned)):
 			case <-ctx.Done():
+			}
+			seen := 0
+			if col != nil {
+				seen = len(col.Collector().Samples())
 			}
 			dispatched := time.Now()
 			errs := inj.Apply(ctx, f, start)
@@ -165,16 +178,28 @@ func measure(ctx context.Context, inj *runner.Injector, name string, kind nemesi
 			}
 			a.lat = append(a.lat, landed.Sub(planned))
 			a.wake = append(a.wake, dispatched.Sub(planned))
+			if col != nil {
+				var slowest time.Duration
+				for _, smp := range col.Collector().Samples()[seen:] {
+					slowest = max(slowest, smp.Server)
+				}
+				a.agent = append(a.agent, slowest)
+			}
 		}
 	}
 	var rows []Row
 	for e, edge := range []string{"inject", "heal"} {
 		a := edges[e]
-		rows = append(rows, Row{
+		row := Row{
 			Transport: name, Method: inj.Method(), Kind: kind, Edge: edge,
 			Latency: stats.Summarize(a.lat), Wake: stats.Summarize(a.wake),
 			Errors: a.errs, FirstError: a.first,
-		})
+		}
+		if col != nil {
+			sum := stats.Summarize(a.agent)
+			row.Agent = &sum
+		}
+		rows = append(rows, row)
 	}
 	return rows
 }
@@ -199,15 +224,25 @@ func host() Host {
 // edge, followed by the environment needed to interpret it.
 func (r *InjectResult) Markdown() string {
 	var b strings.Builder
-	b.WriteString("| Transport | Fault | Edge | n | P50 | P95 | P99 | Max | Std dev | Errors |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| Transport | Fault | Edge | n | P50 | P95 | P99 | Max | Std dev | Agent-side P50 / P95 | Errors |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|\n")
+	agentRows := false
 	for _, row := range r.Rows {
 		l := row.Latency
-		fmt.Fprintf(&b, "| %s | %s | %s | %d | %v | %v | %v | %v | %v | %d |\n", row.Method, row.Kind, row.Edge, l.Count,
-			stats.Round(l.P50), stats.Round(l.P95), stats.Round(l.P99), stats.Round(l.Max), stats.Round(l.StdDev), row.Errors)
+		side := "–"
+		if row.Agent != nil && row.Agent.Count > 0 {
+			side = fmt.Sprintf("%v / %v", stats.Round(row.Agent.P50), stats.Round(row.Agent.P95))
+			agentRows = true
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %v | %v | %v | %v | %v | %s | %d |\n", row.Method, row.Kind, row.Edge, l.Count,
+			stats.Round(l.P50), stats.Round(l.P95), stats.Round(l.P99), stats.Round(l.Max), stats.Round(l.StdDev), side, row.Errors)
 	}
 	fmt.Fprintf(&b, "\nLatency: from the planned instant until every involved node confirmed the change. %d cycles per row, one transition every %v, %d nodes.\n",
 		r.Cycles, r.Period, r.Nodes)
+	if agentRows {
+		b.WriteString("Agent-side: inside the agent, from receiving the request until the kernel call returned (slowest node). " +
+			"The agent's reply leaves through the interface it just impaired, so latency and loss also delay the confirmation, not the fault.\n")
+	}
 	fmt.Fprintf(&b, "Host: %s/%s, %d CPUs", r.Host.OS, r.Host.Arch, r.Host.CPUs)
 	if r.Host.CPUModel != "" {
 		fmt.Fprintf(&b, " (%s)", r.Host.CPUModel)
