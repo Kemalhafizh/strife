@@ -112,7 +112,7 @@ func Inject(ctx context.Context, c InjectConfig) (*InjectResult, error) {
 			return nil, err
 		}
 		inj := &runner.Injector{Transport: tr, Nodes: c.Cluster.Nodes, Env: env, CommandTimeout: 10 * time.Second}
-		if errs := inj.Exec(ctx, env.Setup()); len(errs) > 0 {
+		if errs := inj.Exec(ctx, env.Setup(c.Kinds)); len(errs) > 0 {
 			return nil, fmt.Errorf("bench: setup via %s: %s", name, strings.Join(errs, "; "))
 		}
 		for _, kind := range c.Kinds {

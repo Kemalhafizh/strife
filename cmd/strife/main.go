@@ -893,7 +893,7 @@ func cmdPlan(args []string, stdout, stderr io.Writer) (int, error) {
 	var env nemesis.Env
 	if cfg != nil {
 		env = cfg.Env()
-		for _, c := range env.Setup() {
+		for _, c := range env.Setup(cfg.Nemesis.Faults) {
 			fmt.Fprintf(stdout, "  setup  [%s] %s\n", cfg.Nodes[c.Node].Name, c.Script)
 		}
 		fmt.Fprintln(stdout)

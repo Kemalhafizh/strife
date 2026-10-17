@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -108,8 +109,13 @@ func (e Env) pgrepPattern() string {
 
 func ms(d time.Duration) int64 { return d.Milliseconds() }
 
-// Setup prepares every node: a dedicated iptables chain hooked into INPUT.
-func (e Env) Setup() []Command {
+// Setup prepares every node for the given kinds: a dedicated iptables chain
+// hooked into INPUT when partitions are planned. Other kinds need no
+// preparation, so nodes without iptables can still take them.
+func (e Env) Setup(kinds []Kind) []Command {
+	if !slices.Contains(kinds, Partition) {
+		return nil
+	}
 	var out []Command
 	for i := range e.Nodes {
 		out = append(out, Command{Node: i, Script: fmt.Sprintf(
@@ -230,7 +236,10 @@ func (e Env) Teardown(kinds []Kind) []Command {
 	}
 	var out []Command
 	for i, n := range e.Nodes {
-		parts := []string{"iptables -F " + Chain + " 2>/dev/null || true"}
+		var parts []string
+		if has[Partition] {
+			parts = append(parts, "iptables -F "+Chain+" 2>/dev/null || true")
+		}
 		if has[Latency] || has[Loss] {
 			parts = append(parts, fmt.Sprintf("tc qdisc del dev %s root 2>/dev/null || true", e.iface()))
 		}
@@ -241,7 +250,9 @@ func (e Env) Teardown(kinds []Kind) []Command {
 			// Interrupted mid-kill: bring the database back, but never twice.
 			parts = append(parts, "pgrep -f "+e.pgrepPattern()+" >/dev/null || ("+e.Start+")")
 		}
-		out = append(out, Command{Node: i, Script: strings.Join(parts, "; ")})
+		if len(parts) > 0 {
+			out = append(out, Command{Node: i, Script: strings.Join(parts, "; ")})
+		}
 		if has[Freeze] {
 			out = append(out, Command{Node: i, Host: true, Script: fmt.Sprintf("echo 0 > %s/cgroup.freeze || true", n.Cgroup)})
 		}

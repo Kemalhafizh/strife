@@ -80,7 +80,7 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	inj := &Injector{Transport: tr, Nodes: cfg.Nodes, Env: env}
 
 	logf("setup: preparing %d nodes via %s", len(cfg.Nodes), tr.Name())
-	if errs := inj.Exec(ctx, env.Setup()); len(errs) > 0 && len(cfg.Nemesis.Faults) > 0 {
+	if errs := inj.Exec(ctx, env.Setup(cfg.Nemesis.Faults)); len(errs) > 0 && len(cfg.Nemesis.Faults) > 0 {
 		return nil, fmt.Errorf("setup failed: %v", errs)
 	}
 	// Whatever happens, leave the cluster healed.
