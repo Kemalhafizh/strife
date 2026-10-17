@@ -1,0 +1,79 @@
+name: release
+
+# Pushing a tag vX.Y.Z publishes:
+#   - archives for Linux, macOS and Windows (amd64, arm64), SHA256SUMS and an
+#     SPDX SBOM, attached to a GitHub release;
+#   - an in-toto release attestation signed with Strife's own Ed25519 signing
+#     (when the STRIFE_RELEASE_KEY secret holds the private key);
+#   - multi-architecture images ghcr.io/<owner>/strife and strife-agent.
+# The GitHub Action downloads the archive of its tag instead of building.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  binaries:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: tests
+        run: go test -short ./...
+      - name: build archives, checksums and SBOM
+        run: scripts/release/build.sh "$GITHUB_REF_NAME"
+      - name: sign the release with Strife's own attestation
+        env:
+          STRIFE_RELEASE_KEY: ${{ secrets.STRIFE_RELEASE_KEY }}
+        run: |
+          if [ -z "$STRIFE_RELEASE_KEY" ]; then
+            echo "::notice::STRIFE_RELEASE_KEY is not set; the release is not signed"
+            exit 0
+          fi
+          go build -o "$RUNNER_TEMP/strife" ./cmd/strife
+          umask 077
+          printf '%s\n' "$STRIFE_RELEASE_KEY" > "$RUNNER_TEMP/release.key"
+          "$RUNNER_TEMP/strife" sign --release --key "$RUNNER_TEMP/release.key" \
+            --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --signer strife-release \
+            --builder "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --out "dist/strife_${GITHUB_REF_NAME}.intoto.json" dist/*.tar.gz dist/*.zip dist/*.spdx.json dist/SHA256SUMS
+          rm -f "$RUNNER_TEMP/release.key"
+          if [ -f release.pub ]; then
+            "$RUNNER_TEMP/strife" verify --bundle "dist/strife_${GITHUB_REF_NAME}.intoto.json" --key release.pub --release-dir dist
+          fi
+      - name: publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=$(awk -v v="${GITHUB_REF_NAME#v}" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md)
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Strife $GITHUB_REF_NAME" --notes "${notes:-See CHANGELOG.md}"
+
+  images:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: build and push strife and strife-agent
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          for image in strife:Dockerfile strife-agent:Dockerfile.agent; do
+            name=${image%%:*}
+            file=${image#*:}
+            docker buildx build --platform linux/amd64,linux/arm64 --file "$file" \
+              --build-arg VERSION="$GITHUB_REF_NAME" \
+              --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label org.opencontainers.image.version="$GITHUB_REF_NAME" \
+              --tag "$repo/$name:$GITHUB_REF_NAME" --tag "$repo/$name:latest" --push .
+          done

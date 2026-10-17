@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/kemalhafizh/strife/internal/stats"
+	"github.com/kemalhafizh/strife/internal/version"
 	"os"
 	"path/filepath"
 	"time"
@@ -26,7 +27,7 @@ import (
 )
 
 // Version is the Strife version stamped into reports.
-var Version = "0.1.0"
+var Version = version.Version
 
 // Kinds of runs.
 const (

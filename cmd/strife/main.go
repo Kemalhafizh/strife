@@ -1086,8 +1086,34 @@ func cmdSign(args []string, stdout, stderr io.Writer) (int, error) {
 	keyPath := fs.String("key", "", "path to ed25519 private key (.key)")
 	outPath := fs.String("out", "", "output bundle.json path (default: <report_dir>/bundle.json)")
 	signer := fs.String("signer", "strife-auditor", "signer identity or role name")
+	release := fs.Bool("release", false, "sign the files given as arguments (release artifacts) instead of a report")
+	version := fs.String("version", report.Version, "with --release: the version being released")
+	commit := fs.String("commit", "", "with --release: the source commit")
+	builder := fs.String("builder", "", "with --release: who built the files (e.g. a CI run URL)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
+	}
+	if *release {
+		if *keyPath == "" || *outPath == "" || fs.NArg() == 0 {
+			return exitUsage, fmt.Errorf("--release needs --key, --out and the files to sign")
+		}
+		priv, err := attest.LoadPrivateKey(*keyPath)
+		if err != nil {
+			return exitError, err
+		}
+		b, err := attest.SignRelease(fs.Args(), attest.ReleasePredicate{Version: *version, Commit: *commit, Builder: *builder, Signer: *signer}, priv)
+		if err != nil {
+			return exitError, err
+		}
+		data, err := json.MarshalIndent(b, "", "  ")
+		if err != nil {
+			return exitError, err
+		}
+		if err := os.WriteFile(*outPath, append(data, '\n'), 0o644); err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "signed %d files of %s with key %s: %s\n", len(b.Statement.Subject), *version, b.Signatures[0].KeyID, *outPath)
+		return exitOK, nil
 	}
 	if *reportPath == "" || *keyPath == "" {
 		return exitUsage, fmt.Errorf("both --report and --key are required")
@@ -1117,11 +1143,33 @@ func cmdVerify(args []string, stdout, stderr io.Writer) (int, error) {
 	bundlePath := fs.String("bundle", "", "path to bundle.json")
 	keyPath := fs.String("key", "", "path to ed25519 public key (.pub)")
 	histPath := fs.String("history", "", "optional: verify that this history.jsonl matches the signed digest")
+	releaseDir := fs.String("release-dir", "", "verify a release bundle against the files in this directory")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
 	if *bundlePath == "" || *keyPath == "" {
 		return exitUsage, fmt.Errorf("both --bundle and --key are required")
+	}
+	if *releaseDir != "" {
+		data, err := os.ReadFile(*bundlePath)
+		if err != nil {
+			return exitError, err
+		}
+		var b attest.ReleaseBundle
+		if err := json.Unmarshal(data, &b); err != nil {
+			return exitError, fmt.Errorf("%s: %w", *bundlePath, err)
+		}
+		pub, err := attest.LoadPublicKey(*keyPath)
+		if err != nil {
+			return exitError, err
+		}
+		st, err := attest.VerifyRelease(&b, pub, *releaseDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "verification FAILED: %v\n", err)
+			return exitViolation, err
+		}
+		fmt.Fprintf(stdout, "VERIFICATION: SUCCESS ✅ %s (commit %s), %d files match their signed SHA-256\n", st.Predicate.Version, st.Predicate.Commit, len(st.Subject))
+		return exitOK, nil
 	}
 
 	res, err := attest.VerifyBundleFile(*bundlePath, *keyPath, *histPath)
