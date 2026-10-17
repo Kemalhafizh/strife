@@ -33,6 +33,10 @@ registry.
   ID. Validated in kind: etcd stays linearizable under both.
 - `strife bench inject` measures any transport of the config, Kubernetes
   included.
+- `testdata/anomalies`: histories of anomalies found on real systems, with
+  their provenance, checked by the test suite. The first is a G2 among three
+  `SERIALIZABLE` transactions on PostgreSQL 17.11 whose commits raced within
+  0.2 ms; replayed one statement at a time, PostgreSQL aborts them correctly.
 - `strife bench inject`: measures how late faults land on a real cluster,
   per transport and fault kind, and for strife-agent also the time spent
   inside the agent; the live CI publishes the numbers, collected in
@@ -74,9 +78,9 @@ registry.
 
 ### Changed
 - strife-agent applies partitions through nf_tables over netlink, IPv4 and
-  IPv6, without forking a binary: 1.12 ms to inject and 0.99 ms to heal at
-  P50 end to end (4.02 ms and 7.44 ms through `iptables`), 140–150 µs inside
-  the agent. A heal inserts an accept rule instead of deleting (a deletion
+  IPv6, without forking a binary: 1.1–1.2 ms to inject and 1.0–1.3 ms to
+  heal at P50 end to end (4.02 ms and 7.44 ms through `iptables`), ~145 µs
+  inside the agent. A heal inserts an accept rule instead of deleting (a deletion
   waits for an RCU grace period, ~14 ms), and the chain is compacted when
   idle. `iptables` (IPv4) remains the fallback where nf_tables is missing.
 - strife-agent confirms signal faults the way it confirms freezes: a pause

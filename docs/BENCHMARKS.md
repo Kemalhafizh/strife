@@ -4,10 +4,10 @@ Every number in Strife's documentation comes from this page, and every number
 on this page comes with the command that produced it, the machine it ran on
 and the date. Numbers without a reproduction do not belong in the README.
 
-Measured on 2026-10-17 at commits `e5527d8` and `bd0fb99` (CI, named per
-table) and on the working tree of the same branch (local). Shared CI runners
-are noisy: treat a single run as a sample, not a specification. Where two
-runs differ, both are shown.
+Measured on 2026-10-17 at commits `e5527d8`, `bd0fb99` and `8f97abc` (CI,
+named per table) and on the working tree of the same branch (local). Shared
+CI runners are noisy: treat a single run as a sample, not a specification.
+Where two runs differ, both are shown.
 
 ## 1. Fault-injection latency
 
@@ -20,10 +20,8 @@ cluster in Docker, and records for each transition the time from the planned
 instant until every involved node confirmed the change. 50 cycles per row
 (inject and heal are separate rows), one transition every 300 ms.
 For `strife-agent`, "agent-side" is the time inside the agent from receiving
-the request until the kernel call returned (slowest node). The agent now
-also waits for a pause or kill to show in `/proc` (process stopped or
-exited); the run below predates that change and counts from `kill(2)`
-returning.
+the request until the kernel had applied the change (slowest node): for a
+pause or kill, until `/proc` shows the process stopped or exited.
 
 ```sh
 # .github/workflows/live.yml, job "agent"
@@ -32,29 +30,30 @@ bin/strife bench inject --config examples/etcd/strife-agent.json \
   --cycles 50 --period 300ms --markdown bench-inject.md --json bench-inject.json
 ```
 
-**Host:** GitHub-hosted `ubuntu-24.04`, 4 vCPU AMD EPYC 9V45, Linux
+**Host:** GitHub-hosted `ubuntu-24.04`, 4 vCPU AMD EPYC 7763, Linux
 6.17.0-1022-azure, Go 1.23.12. Run
-[39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049)
-at commit `bd0fb99`, the first with partitions through nf_tables.
+[39056797048](https://github.com/Kemalhafizh/strife/actions/runs/39056797048)
+at commit `8f97abc`: partitions through nf_tables, and pause and kill
+confirmed in `/proc`.
 
 | Transport | Fault | Edge | P50 | P95 | Max | Agent-side P50 / P95 | Errors |
 |---|---|---|---|---|---|---|---|
-| docker exec | partition | inject | 49.9 ms | 53.6 ms | 55.9 ms | – | 0 / 50 |
-| docker exec | partition | heal | 50.8 ms | 54.8 ms | 56.3 ms | – | 0 / 50 |
-| docker exec | pause | inject | 37.5 ms | 41.0 ms | 53.3 ms | – | 0 / 50 |
-| docker exec | kill | inject | 38.8 ms | 41.9 ms | 44.1 ms | – | 0 / 50 |
-| docker exec | latency | inject | 37.5 ms | 41.9 ms | 50.9 ms | – | 0 / 50 |
-| docker exec | loss | inject | 38.9 ms | 44.7 ms | 74.5 ms | – | 0 / 50 |
-| strife-agent | partition | inject | 1.12 ms | 1.69 ms | 1.99 ms | 149 µs / 264 µs | 0 / 50 |
-| strife-agent | partition | heal | 986 µs | 1.74 ms | 1.80 ms | 139 µs / 271 µs | 0 / 50 |
-| strife-agent | pause | inject | 1.37 ms | 1.94 ms | 2.97 ms | 348 µs / 380 µs | 0 / 50 |
-| strife-agent | pause | heal | 1.51 ms | 2.09 ms | 4.78 ms | 388 µs / 587 µs | 0 / 50 |
-| strife-agent | kill | inject | 1.59 ms | 2.28 ms | 2.83 ms | 476 µs / 985 µs | 0 / 50 |
-| strife-agent | kill | heal | 1.51 ms | 1.97 ms | 2.03 ms | 339 µs / 373 µs | 0 / 50 |
-| strife-agent | latency | inject | 50.6 ms ¹ | 60.3 ms ¹ | 61.1 ms ¹ | 163 µs / 218 µs | 0 / 50 |
-| strife-agent | latency | heal | 1.16 ms | 1.72 ms | 1.76 ms | 171 µs / 201 µs | 0 / 50 |
-| strife-agent | loss | inject | 1.15 ms | 260 ms ¹ | 859 ms ¹ | 161 µs / 189 µs | 0 / 50 |
-| strife-agent | loss | heal | 1.03 ms | 1.76 ms | 560 ms ¹ | 170 µs / 200 µs | 0 / 50 |
+| docker exec | partition | inject | 72.6 ms | 76.4 ms | 80.1 ms | – | 0 / 50 |
+| docker exec | partition | heal | 73.2 ms | 78.1 ms | 92.2 ms | – | 0 / 50 |
+| docker exec | pause | inject | 49.9 ms | 53.1 ms | 57.5 ms | – | 0 / 50 |
+| docker exec | kill | inject | 51.5 ms | 54.0 ms | 54.6 ms | – | 0 / 50 |
+| docker exec | latency | inject | 49.5 ms | 53.7 ms | 62.4 ms | – | 0 / 50 |
+| docker exec | loss | inject | 48.8 ms | 51.0 ms | 51.5 ms | – | 0 / 50 |
+| strife-agent | partition | inject | 1.22 ms | 1.77 ms | 1.96 ms | 147 µs / 294 µs | 0 / 50 |
+| strife-agent | partition | heal | 1.29 ms | 1.80 ms | 1.91 ms | 144 µs / 224 µs | 0 / 50 |
+| strife-agent | pause | inject | 1.64 ms | 2.96 ms | 3.49 ms | 546 µs / 1.64 ms | 0 / 50 |
+| strife-agent | pause | heal | 1.71 ms | 2.18 ms | 2.19 ms | 520 µs / 717 µs | 0 / 50 |
+| strife-agent | kill | inject | 1.67 ms | 4.14 ms | 4.48 ms | 664 µs / 2.85 ms | 0 / 50 |
+| strife-agent | kill | heal | 1.50 ms | 1.99 ms | 2.01 ms | 350 µs / 437 µs | 0 / 50 |
+| strife-agent | latency | inject | 49.0 ms ¹ | 59.3 ms ¹ | 61.7 ms ¹ | 171 µs / 232 µs | 0 / 50 |
+| strife-agent | latency | heal | 1.22 ms | 1.72 ms | 1.80 ms | 201 µs / 267 µs | 0 / 50 |
+| strife-agent | loss | inject | 1.31 ms | 219 ms ¹ | 419 ms ¹ | 169 µs / 212 µs | 0 / 50 |
+| strife-agent | loss | heal | 1.30 ms | 1.82 ms | 119 ms ¹ | 202 µs / 266 µs | 0 / 50 |
 
 ¹ The agent's confirmation leaves through the interface it has just impaired:
 with 50 ms ± 10 ms of netem delay the reply itself is delayed by ~50 ms, and
@@ -65,19 +64,27 @@ rows.
 
 **Reading it:**
 
-- `docker exec` costs ~38–51 ms per transition, almost all of it in the Docker
-  CLI and the exec round trip, with a tight spread (σ ≈ 1–5 ms).
-- `strife-agent` lands every fault in ~1.0–1.6 ms at P50 and under 5 ms at the
-  maximum: ~25–50× sooner than `docker exec`. Inside the agent the kernel
-  work is 140–270 µs for partitions, 330–500 µs for signals and ~160–220 µs
-  for netem changes.
+- `docker exec` costs ~49–73 ms per transition on this runner, almost all of
+  it in the Docker CLI and the exec round trip, with a tight spread
+  (σ ≈ 1–3 ms).
+- `strife-agent` lands every fault in ~1.2–1.7 ms at P50 and under 5 ms at
+  the maximum: ~30–60× sooner than `docker exec`. Inside the agent the
+  kernel work is ~145 µs for partitions and 170–200 µs for netem changes.
+  Pause and kill take 350–660 µs because the agent waits until `/proc`
+  shows each process stopped or exited (a signal is delivered when its
+  target is next scheduled, not when `kill(2)` returns).
 - Partitions go through nf_tables over netlink, one batch per change, with
-  no binary to fork. Run
-  [39039844498](https://github.com/Kemalhafizh/strife/actions/runs/39039844498)
-  (commit `e5527d8`, same job, EPYC 9V74) still shelled out to `iptables`:
-  4.02 ms inject and 7.44 ms heal at P50, 2.61 ms / 5.99 ms inside the agent.
-  Native partitions are 3.6× (inject) and 7.5× (heal) sooner end to end, and
-  17× / 43× inside the agent.
+  no binary to fork. The same job on earlier commits, P50 end to end and
+  inside the agent:
+
+  | Run | Commit | Runner | Partition inject | Partition heal |
+  |---|---|---|---|---|
+  | [39039844498](https://github.com/Kemalhafizh/strife/actions/runs/39039844498) | `e5527d8`, `iptables` | EPYC 9V74 | 4.02 ms (2.61 ms) | 7.44 ms (5.99 ms) |
+  | [39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049) | `bd0fb99`, nf_tables | EPYC 9V45 | 1.12 ms (149 µs) | 0.99 ms (139 µs) |
+  | 39056797048 (above) | `8f97abc`, nf_tables | EPYC 7763 | 1.22 ms (147 µs) | 1.29 ms (144 µs) |
+
+  Inside the agent, nf_tables is ~18× (inject) and ~40× (heal) faster than
+  forking `iptables`.
 - Inserting a rule costs the kernel ~40–60 µs; deleting one costs a
   synchronize-RCU grace period (~14 ms). So a heal inserts an `accept` for
   the address at the head of the chain instead of deleting its `drop`, and
@@ -90,9 +97,7 @@ rows.
   (and that the agent reports `filter:nftables`), then that the heal restores
   it.
 - The ordering is stable across runners; the absolute values move with them
-  (an earlier AMD EPYC 7763 run,
-  [39038949984](https://github.com/Kemalhafizh/strife/actions/runs/39038949984),
-  measured docker 51–76 ms).
+  (Docker partitions took 50 ms on the EPYC 9V45 and 73 ms on this 7763).
 
 **cgroup faults** (`freeze`, `io-stall`) run on the Docker host, not in the
 container, so they do not go through `docker exec`. Job `cgroup`, run
@@ -256,7 +261,7 @@ that does not produce the expected verdict fails the job.
 | kubernetes | same, through the node helper | freeze, io-stall ³ | linearizable | pass |
 | valkey | Valkey 8, primary + 2 async replicas | partition, pause | linearizable | **violation** (stale replica reads) |
 | valkey | Valkey 8, single primary, `appendfsync always` | kill -9 | linearizable | pass |
-| postgres | PostgreSQL 17 primary, SERIALIZABLE | kill -9, pause | strict serializable | pass |
+| postgres | PostgreSQL 17 primary, SERIALIZABLE | kill -9, pause | strict serializable | pass, except once: **G2** among three racing commits ⁴ |
 | postgres | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation | pass |
 | postgres | same history | – | serializable | **violation** (G2, write skew) |
 | postgres | async standbys | partition | strict serializable | **violation** (G-realtime); `shrink --live` reduces it to zero faults |
@@ -270,5 +275,17 @@ that does not produce the expected verdict fails the job.
 ³ When the kind node's cgroup delegates `io.max` (it has on every run so far);
 `scripts/live/kind-host-faults.sh` drops io-stall otherwise.
 
-Run [39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049)
-(commit `bd0fb99`) passed all ten jobs.
+⁴ Run [39056639380](https://github.com/Kemalhafizh/strife/actions/runs/39056639380)
+(PostgreSQL 17.11): three transactions that completed within 0.2 ms of each
+other formed an anti-dependency cycle, read directly from their results, with
+no fault active. The same statements replayed one at a time by three `psql`
+sessions are aborted as they should be, so it takes the commits racing.
+pgsql-bugs has [2026 reports](https://www.postgresql.org/message-id/165342c0-0c75-461e-b334-b997639ad48d%40aphyr.com)
+of SSI false negatives (`ON CONFLICT`, savepoints) with fixes in review;
+whether this one is among them is not established. The history is kept as
+[`testdata/anomalies/postgres-17.11-serializable-g2.jsonl`](../testdata/anomalies/README.md)
+and checked in `go test ./pkg/txn`.
+
+Runs [39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049)
+(commit `bd0fb99`) and [39056797048](https://github.com/Kemalhafizh/strife/actions/runs/39056797048)
+(commit `8f97abc`) passed all ten jobs.

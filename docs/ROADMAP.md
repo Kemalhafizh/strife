@@ -448,7 +448,7 @@ Measured in [`BENCHMARKS.md`](BENCHMARKS.md) §1–§3, run
 
 | Carried forward | Done |
 |---|---|
-| Partitions forked `iptables` (4.02 ms inject, 7.44 ms heal at P50) | nf_tables over netlink, IPv4 and IPv6, one batch per change: 1.12 ms inject and 0.99 ms heal end to end, ~145 µs inside the agent. Heals insert an accept instead of deleting (a deletion waits ~14 ms for an RCU grace period); the chain is compacted when idle. `scripts/live/check-agent-partition.sh` proves the traffic really stops and resumes. `iptables` stays as the fallback. |
+| Partitions forked `iptables` (4.02 ms inject, 7.44 ms heal at P50) | nf_tables over netlink, IPv4 and IPv6, one batch per change: 1.1–1.2 ms inject and 1.0–1.3 ms heal end to end over two runs, ~145 µs inside the agent. Heals insert an accept instead of deleting (a deletion waits ~14 ms for an RCU grace period); the chain is compacted when idle. `scripts/live/check-agent-partition.sh` proves the traffic really stops and resumes. `iptables` stays as the fallback. |
 | `freeze` and `io-stall` did not work on Kubernetes | A node helper DaemonSet finds the pod's cgroup and data disk on its node; etcd in kind stays linearizable under both. ~90 ms per transition, all of it `kubectl exec`. |
 | One key, ~50 concurrent processes: `unknown` after 50 M steps | Earliest-deadline-first candidates, one per class of interchangeable operations: 10,000 ops with 50 processes at 110 k ops/s, 100,000 at 18 k ops/s; 20 processes 2–4× faster. Brute force agrees on 400,000 random histories across four models. Splitting histories by key no longer copies each operation several times, which made easy histories 1.4–1.9× faster. |
 

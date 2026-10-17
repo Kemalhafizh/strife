@@ -29,6 +29,13 @@ is resolved at run time and reports show the reference, not the value.
 | same history | | serializable | | **violation**: write skew (G2) |
 | `strife-replicas.json` | `REPEATABLE READ` per standby | strict serializable | `partition` | **violation**: stale reads (G-realtime) |
 
+The first row has failed once: in one run, three `SERIALIZABLE`
+transactions whose commits raced within 0.2 ms formed an anti-dependency
+cycle (G2) that PostgreSQL 17.11 should have aborted. The history and the
+reasoning are in [`testdata/anomalies`](../../testdata/anomalies/README.md).
+If this job fails with a G2, keep the run's artifact: it is a finding, not a
+flake.
+
 The last row is not a PostgreSQL bug: asynchronous standbys replay the WAL
 behind the primary, so a client reading from one can miss a transaction that
 already committed. `strife shrink --live` confirms it needs no fault at all:

@@ -242,15 +242,15 @@ strife run  --config strife.json --faults none --expect linearizable   # fault-f
 
 | Fault | `docker exec` P50 / P95 | `strife-agent` P50 / P95 | Inside the agent (P50) |
 | :--- | ---: | ---: | ---: |
-| `partition` inject (nf_tables) | 49.9 / 53.6 ms | **1.12 / 1.69 ms** | 149 µs |
-| `partition` heal | 50.8 / 54.8 ms | **0.99 / 1.74 ms** | 139 µs |
-| `pause` (SIGSTOP) | 37.5 / 41.0 ms | **1.37 / 1.94 ms** | 348 µs |
-| `kill` (SIGKILL) | 38.8 / 41.9 ms | **1.59 / 2.28 ms** | 476 µs |
-| `latency` (netem) | 37.5 / 41.9 ms | 50.6 / 60.3 ms ¹ | **163 µs** |
+| `partition` inject (nf_tables) | 72.6 / 76.4 ms | **1.22 / 1.77 ms** | 147 µs |
+| `partition` heal | 73.2 / 78.1 ms | **1.29 / 1.80 ms** | 144 µs |
+| `pause` (SIGSTOP, confirmed stopped) | 49.9 / 53.1 ms | **1.64 / 2.96 ms** | 546 µs |
+| `kill` (SIGKILL, confirmed exited) | 51.5 / 54.0 ms | **1.67 / 4.14 ms** | 664 µs |
+| `latency` (netem) | 49.5 / 53.7 ms | 49.0 / 59.3 ms ¹ | **171 µs** |
 
-¹ The agent's reply crosses the interface it just slowed down, so the confirmation arrives late; the qdisc itself was installed 163 µs after the request reached the agent.
+¹ The agent's reply crosses the interface it just slowed down, so the confirmation arrives late; the qdisc itself was installed 171 µs after the request reached the agent.
 
-Every fault is a direct kernel call inside the agent, without forking a binary, and counts as applied only once the kernel shows it: a pause once `/proc` reports the process stopped, a kill once it has exited, a freeze once `cgroup.events` reports the cgroup frozen. Partitions are nf_tables rules sent over netlink in one batch per change (IPv4 and IPv6). Deleting a rule makes the kernel wait for an RCU grace period (~14 ms), so a heal inserts an `accept` ahead of the `drop` instead, and the chain is compacted after 250 ms without changes. Before this, the agent forked `iptables`: 4.02 ms to inject and 7.44 ms to heal. `iptables` (IPv4) is still the fallback on hosts without nf_tables, and the agent reports which one it used (`filter:nftables`) with every fault.
+Every fault is a direct kernel call inside the agent, without forking a binary, and counts as applied only once the kernel shows it: a pause once `/proc` reports the process stopped, a kill once it has exited, a freeze once `cgroup.events` reports the cgroup frozen. Partitions are nf_tables rules sent over netlink in one batch per change (IPv4 and IPv6). Deleting a rule makes the kernel wait for an RCU grace period (~14 ms), so a heal inserts an `accept` ahead of the `drop` instead, and the chain is compacted after 250 ms without changes. Before this, the agent forked `iptables`: 4.02 ms to inject and 7.44 ms to heal (2.6 ms and 6.0 ms inside the agent). `iptables` (IPv4) is still the fallback on hosts without nf_tables, and the agent reports which one it used (`filter:nftables`) with every fault.
 
 On Kubernetes, `freeze` and `io-stall` go through a privileged node helper DaemonSet that finds the pod's cgroup and data disk from its container ID: ~90 ms per transition, nearly all of it `kubectl exec`, with etcd verified linearizable under both in kind ([measured](docs/BENCHMARKS.md#1-fault-injection-latency)).
 
@@ -422,7 +422,7 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 | System | Faults | Verdict |
 | :--- | :--- | :--- |
 | etcd 3.5 (Docker, via `strife-agent`, and on Kubernetes in kind, host faults through the node helper) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable; transactions strictly serializable |
-| PostgreSQL 17, SERIALIZABLE primary | kill -9, pause | strictly serializable |
+| PostgreSQL 17, SERIALIZABLE primary | kill -9, pause | strictly serializable, except one run: a **G2 cycle among three racing commits** ([kept and explained](testdata/anomalies/README.md)) |
 | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation holds; **write skew (G2)** caught at serializable |
 | PostgreSQL 17, async standbys | partition | **stale reads** caught; `shrink --live` shows no fault is needed |
 | MySQL 8.4 | freeze | SERIALIZABLE strictly serializable; **REPEATABLE READ violates snapshot isolation** |
