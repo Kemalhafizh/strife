@@ -173,7 +173,7 @@ strife check --history txn.jsonl --model txn --isolation snapshot-isolation
 
 | Model | Operations | Verification Engine & Complexity |
 | :--- | :--- | :--- |
-| `kv` | `read`, `write`, `cas` | Wing & Gong / Lowe linearizability search with bitset state memoization, per-key P-compositionality, symmetry reduction, and $O(N \log N)$ stale-read diagnosis earliest-deadline-first candidate order with one candidate per class of interchangeable operations (~85k–470k ops/s per core on a single key with 5–50 concurrent processes; [measured](docs/BENCHMARKS.md#2-checker-throughput)). |
+| `kv` | `read`, `write`, `cas` | Wing & Gong / Lowe linearizability search with bitset state memoization, per-key P-compositionality, symmetry reduction, and $O(N \log N)$ stale-read diagnosis earliest-deadline-first candidate order with one candidate per class of interchangeable operations (~110k–710k ops/s per core on a 10,000-operation single-key history with 50 down to 5 concurrent processes; [measured](docs/BENCHMARKS.md#2-checker-throughput)). |
 | `set` | `add`, `read` | Grow-only set linearizability + missing-element counterexample witnesses. |
 | `queue` | `enqueue`, `dequeue` | FIFO queue linearizability; diagnoses phantom dequeues, FIFO order inversions, and premature empty returns. |
 | `counter` | `inc` / `add`, `read` | Shared integer counter linearizability; diagnoses lost increments and overstated reads. |

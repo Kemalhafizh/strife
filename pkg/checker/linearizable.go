@@ -193,9 +193,9 @@ type frame struct {
 	// forced frames linearize a read-only operation eagerly; there is no
 	// alternative worth trying at that level (see search).
 	forced bool
-	// cands are the level's candidates in the order tried, idx the next one.
-	cands []*entry
-	idx   int
+	// arena[lo:hi] are the level's candidates in the order tried, idx the
+	// next one.
+	lo, hi, idx int
 }
 
 type cacheEntry struct {
@@ -464,44 +464,41 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 	// point precedes this one's return, which precedes the other's; every
 	// state along the way is the same. So each level tries one operation
 	// per class.
+	//
+	// The levels' candidate lists live on one stack, arena: a level pushes
+	// its list when it starts and pops it when it fails, so a frame keeps
+	// only the bounds and nothing is allocated per level.
 	class := classes(ops)
 	seen := make([]int, len(ops)) // seen[class] == stamp: class tried at this level
 	stamp := 0
-	var pool [][]*entry
-	candidates := func() ([]*entry, *entry) {
-		var cs []*entry
-		if k := len(pool); k > 0 {
-			cs, pool = pool[k-1][:0], pool[:k-1]
-		}
+	var arena []*entry
+	candidates := func() (int, int, *entry) {
+		lo := len(arena)
 		e := head.next
 		for ; e != nil && e.call; e = e.next {
 			// Insertion keeps the list sorted by return time, stable for
 			// ties (calls arrive in call order); levels are small.
-			cs = append(cs, e)
+			arena = append(arena, e)
 			ret := ops[e.id].Return
-			for j := len(cs) - 1; j > 0 && ops[cs[j-1].id].Return > ret; j-- {
-				cs[j], cs[j-1] = cs[j-1], cs[j]
+			for j := len(arena) - 1; j > lo && ops[arena[j-1].id].Return > ret; j-- {
+				arena[j], arena[j-1] = arena[j-1], arena[j]
 			}
 		}
 		stamp++
-		kept := cs[:0]
-		for _, c := range cs {
+		hi := lo
+		for _, c := range arena[lo:] {
 			if seen[class[c.id]] != stamp {
 				seen[class[c.id]] = stamp
-				kept = append(kept, c)
+				arena[hi] = c
+				hi++
 			}
 		}
-		return kept, e
-	}
-	release := func(cs []*entry) {
-		if cs != nil {
-			pool = append(pool, cs)
-		}
+		arena = arena[:hi]
+		return lo, hi, e
 	}
 
-	var cands []*entry
 	var stuck *entry
-	idx, fresh := 0, true
+	lo, hi, idx, fresh := 0, 0, 0, true
 	for head.next != nil {
 		if fresh {
 			fresh = false
@@ -516,16 +513,16 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 				}
 				// Known dead end: the level fails without alternatives.
 				lin.clear(c.id)
-				cands, stuck = candidates()
-				idx = len(cands)
+				lo, hi, stuck = candidates()
+				idx = hi
 			} else {
-				cands, stuck = candidates()
-				idx = 0
+				lo, hi, stuck = candidates()
+				idx = lo
 			}
 		}
 		advanced := false
-		for idx < len(cands) {
-			c := cands[idx]
+		for idx < hi {
+			c := arena[idx]
 			idx++
 			if t := twin[c.id]; t >= 0 && !lin.has(t) {
 				continue
@@ -548,7 +545,7 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 				lin.clear(c.id)
 				continue
 			}
-			stack = append(stack, frame{e: c, state: state, cands: cands, idx: idx})
+			stack = append(stack, frame{e: c, state: state, lo: lo, hi: hi, idx: idx})
 			state = next
 			lift(c)
 			fresh, advanced = true, true
@@ -566,13 +563,13 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 			for _, f := range stack {
 				best.linearized = append(best.linearized, f.e.id)
 			}
-			for _, c := range cands {
+			for _, c := range arena[lo:hi] {
 				if c.id != stuck.id {
 					best.candidates = append(best.candidates, c.id)
 				}
 			}
 		}
-		release(cands)
+		arena = arena[:lo]
 		for {
 			if len(stack) == 0 {
 				res.Verdict = Violation
@@ -586,7 +583,7 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 			if top.forced {
 				continue
 			}
-			cands, idx = top.cands, top.idx
+			lo, hi, idx = top.lo, top.hi, top.idx
 			_, stuck = firstReturn(head)
 			break
 		}

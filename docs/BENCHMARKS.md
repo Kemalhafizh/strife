@@ -145,34 +145,38 @@ go test ./pkg/txn     -run '^$' -bench CheckAppend -benchtime 3x
 **Linearizability (WGL search with memoisation), one register, every
 operation on the same key** (the worst case for P-compositionality). The
 search tries candidates earliest deadline first and only one per class of
-interchangeable operations (same input and output); the "before" column is
-the plain call-order search at commit `640c9bc`, measured on the same host:
+interchangeable operations (same input and output), and splitting a history
+by key copies each operation once. "Before" is commit `640c9bc` (call-order
+search), measured on the same host in the same session. Each figure is the
+median of three runs; single runs vary by up to ±25 % on this host.
 
 | History | Concurrent processes | Indeterminate writes | Throughput | Steps / op | Before |
 |---|---|---|---|---|---|
-| 1,000 ops | 5 | 0 % | 465 k ops/s | 1.2 | 508 k ops/s |
-| 10,000 ops | 5 | 0 % | 364 k ops/s | 1.1 | 408 k ops/s |
-| 100,000 ops | 5 | 0 % | 258 k ops/s | 1.1 | 477 k ops/s |
-| 1,000 ops | 20 | 0 % | 268 k ops/s | 5.4 | 98 k ops/s |
-| 10,000 ops | 20 | 0 % | 201 k ops/s | 6.5 | 107 k ops/s |
-| 100,000 ops | 20 | 0 % | 151 k ops/s | 7.7 | 95 k ops/s |
-| 1,000 ops | 50 | 0 % | 328 k ops/s | 4.3 | 63 k ops/s |
-| 10,000 ops | 50 | 0 % | 85 k ops/s | 23 | **unknown** (50 M steps) |
-| 100,000 ops | 50 | 0 % | 16 k ops/s | 110 | **unknown** |
-| 10,000 ops | 10 | 1 % | 299 k ops/s | 1.9 | 301 k ops/s |
-| 10,000 ops | 10 | 5 % | 236 k ops/s | 3.5 | 344 k ops/s |
+| 1,000 ops | 5 | 0 % | 746 k ops/s | 1.2 | 549 k ops/s |
+| 10,000 ops | 5 | 0 % | 708 k ops/s | 1.1 | 375 k ops/s |
+| 100,000 ops | 5 | 0 % | 575 k ops/s | 1.1 | 368 k ops/s |
+| 1,000 ops | 20 | 0 % | 352 k ops/s | 5.4 | 92 k ops/s |
+| 10,000 ops | 20 | 0 % | 244 k ops/s | 6.5 | 95 k ops/s |
+| 100,000 ops | 20 | 0 % | 219 k ops/s | 7.7 | 106 k ops/s |
+| 1,000 ops | 50 | 0 % | 310 k ops/s | 4.3 | 63 k ops/s |
+| 10,000 ops | 50 | 0 % | 110 k ops/s | 23 | **unknown** (50 M steps) |
+| 100,000 ops | 50 | 0 % | 18 k ops/s | 110 | **unknown** |
+| 10,000 ops | 10 | 1 % | 614 k ops/s | 1.9 | 337 k ops/s |
+| 10,000 ops | 10 | 5 % | 437 k ops/s | 3.5 | 324 k ops/s |
 
 Every row now reaches a verdict within the default budget (`MaxSteps` = 50
 million per key); before, 50 processes racing on one key ran out and
-answered `unknown`. Concurrent histories got 2–5× faster; the easiest ones
-pay up to ~2× for sorting each level's candidates (100,000 ops, 5 processes:
-258 k against 477 k ops/s). An exhausted budget still answers `unknown`
-(exit code 3), never `linearizable`.
+answered `unknown`. Histories with 20 processes check 2–4× faster, and the
+easy ones (5 processes) 1.4–1.9× faster: most of their time went into
+copying operations while splitting the history by key, which the profile
+showed at 85 % of a 100,000-operation check (392 MB allocated, now
+100 MB). An exhausted budget still answers `unknown` (exit code 3), never
+`linearizable`.
 
 **Proving a violation:** a stale read is diagnosed directly, without
-exhausting the search: 1.25 M ops/s at 1,000 ops, 584 k ops/s at 100,000 ops
-(with or without indeterminate writes). The pure search, for comparison,
-refutes at ~50 k ops/s (35 k before).
+exhausting the search: 2.8 M ops/s at 1,000 ops, 1.6 M ops/s at 100,000
+ops (0.86 M and 0.53 M before), with or without indeterminate writes. The
+pure search, for comparison, refutes at ~57–63 k ops/s (30–37 k before).
 
 **List-append (Elle-style dependency graph), strict serializability, 10 keys,
 transactions of up to 8 micro-ops:** 41 k txns/s at 1,000 transactions,

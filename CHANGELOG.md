@@ -85,8 +85,12 @@ registry.
 - The linearizability search tries candidates earliest deadline first and
   only one per class of interchangeable operations. Single-register
   histories with 50 concurrent processes, which exhausted the default budget
-  and answered `unknown`, now finish (10,000 ops at 85 k ops/s); histories
-  with 20 processes check 2–2.7× faster.
+  and answered `unknown`, now finish (10,000 ops at 110 k ops/s); histories
+  with 20 processes check 2–4× faster.
+- Splitting a history by key copies each operation once, and the search
+  keeps its candidate lists on one stack: 5-process histories check
+  1.4–1.9× faster, a diagnosed violation is proved ~3× sooner, and a
+  100,000-operation check allocates 100 MB instead of 392 MB.
 - Compliance control IDs are now Strife labels (`dora.data-integrity`,
   `soc2.recovery`, `bi-ojk.jejak-audit`…) instead of strings that looked
   like official clause numbers. Scripts that match on the old IDs must be
