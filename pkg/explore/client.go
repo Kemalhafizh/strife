@@ -2,11 +2,13 @@ package explore
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kemalhafizh/strife/internal/rng"
 	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/sim"
+	"github.com/kemalhafizh/strife/pkg/workload"
 )
 
 // client is a simulated workload process. Like a Jepsen client it is bound to
@@ -22,6 +24,8 @@ type client struct {
 	rec     *history.Recorder
 	process int
 	guess   sim.NodeID
+	plugin  *workload.Plugin
+	step    int
 
 	busy    bool
 	reqID   uint64
@@ -38,21 +42,58 @@ func (c *client) next() {
 	if c.busy || c.w.Now() >= int64(c.cfg.Duration) {
 		return
 	}
-	key := fmt.Sprintf("k%d", c.rand.Intn(c.cfg.Keys))
-	inv := history.Op{Process: c.process, Type: history.Invoke, Key: key}
-	r := c.rand.Float64()
-	switch {
-	case r < c.cfg.ReadRatio:
-		c.op = sim.KVOp{F: history.FRead, Key: key}
-		inv.F = history.FRead
-	case r < c.cfg.ReadRatio+c.cfg.CasRatio:
-		old, nw := c.rand.Int64n(int64(c.cfg.Values)), c.rand.Int64n(int64(c.cfg.Values))
-		c.op = sim.KVOp{F: history.FCas, Key: key, Old: old, Value: nw}
-		inv.F, inv.Old, inv.Value = history.FCas, history.Int(old), history.Int(nw)
-	default:
-		v := c.rand.Int64n(int64(c.cfg.Values))
-		c.op = sim.KVOp{F: history.FWrite, Key: key, Value: v}
-		inv.F, inv.Value = history.FWrite, history.Int(v)
+	var inv history.Op
+	if c.plugin != nil {
+		genOp, err := c.plugin.NextOp(c.process, c.step, c.cfg.Keys, c.cfg.Values, c.rand)
+		c.step++
+		if err != nil {
+			return
+		}
+		inv = genOp
+		if !strings.HasPrefix(inv.Key, "k") {
+			inv.Key = fmt.Sprintf("k%d", c.step%c.cfg.Keys)
+		}
+		switch inv.F {
+		case history.FRead:
+			c.op = sim.KVOp{F: history.FRead, Key: inv.Key}
+		case history.FCas:
+			var oldV, newV int64
+			if inv.Old != nil {
+				oldV = *inv.Old
+			}
+			if inv.Value != nil {
+				newV = *inv.Value
+			}
+			c.op = sim.KVOp{F: history.FCas, Key: inv.Key, Old: oldV, Value: newV}
+			inv.Old, inv.Value = history.Int(oldV), history.Int(newV)
+		default:
+			var v int64
+			if inv.Value != nil {
+				v = *inv.Value
+			}
+			inv.F = history.FWrite
+			inv.Value = history.Int(v)
+			inv.Old = nil
+			inv.Txn = nil
+			c.op = sim.KVOp{F: history.FWrite, Key: inv.Key, Value: v}
+		}
+	} else {
+		key := fmt.Sprintf("k%d", c.rand.Intn(c.cfg.Keys))
+		inv = history.Op{Process: c.process, Type: history.Invoke, Key: key}
+		r := c.rand.Float64()
+		switch {
+		case r < c.cfg.ReadRatio:
+			c.op = sim.KVOp{F: history.FRead, Key: key}
+			inv.F = history.FRead
+		case r < c.cfg.ReadRatio+c.cfg.CasRatio:
+			old, nw := c.rand.Int64n(int64(c.cfg.Values)), c.rand.Int64n(int64(c.cfg.Values))
+			c.op = sim.KVOp{F: history.FCas, Key: key, Old: old, Value: nw}
+			inv.F, inv.Old, inv.Value = history.FCas, history.Int(old), history.Int(nw)
+		default:
+			v := c.rand.Int64n(int64(c.cfg.Values))
+			c.op = sim.KVOp{F: history.FWrite, Key: key, Value: v}
+			inv.F, inv.Value = history.FWrite, history.Int(v)
+		}
 	}
 	c.busy = true
 	c.invoked = c.rec.Record(inv)

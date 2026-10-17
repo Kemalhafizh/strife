@@ -304,7 +304,7 @@ flowchart LR
 ```
 
 ```
-cmd/strife        CLI: sim, campaign, shrink, check, plan, run, keygen, sign, verify, compliance, systems
+cmd/strife        CLI: sim, campaign, shrink, check, plan, run, workload, keygen, sign, verify, compliance, systems
 cmd/strife-agent  low-jitter per-node daemon (Linux RTNETLINK, syscalls, cgroup v2, /probes)
 internal/rng      pinned, forkable xoshiro256** PRNG
 pkg/history       Jepsen-style histories, JSONL, pairing
@@ -312,6 +312,7 @@ pkg/model         sequential specs: kv, set, queue, counter, idgen, txn
 pkg/txn           multi-key transaction graphs & Elle-style anomaly detection (G0..G2)
 pkg/checker       linearizability search and counterexamples
 pkg/nemesis       seeded fault schedules → shell commands
+pkg/workload      custom workload plugins, presets, and deterministic WebAssembly 1.0 (MVP) VM
 pkg/sim           discrete-event world: network, timers, disks, clocks
 pkg/sim/raft      reference system under test (+ bug switches)
 pkg/explore       simulated runs, seed exploration, determinism checks
@@ -353,11 +354,12 @@ history shrinking (`strife shrink --history`) & checker hardening (Phase 1.4),
 `strife-agent` with socket / RTNETLINK injection (Phase 2.1), sequential
 models (`queue`, `counter`, `idgen`) and transactional anomaly detection
 (Phase 2.2), PostgreSQL, Kafka, MySQL & TiDB targets (Phase 2.3), Server-Side
-Diagnostic Probe & Root-Cause Correlator (`pkg/probe`, Phase 2.4), Interactive
-Timeline Analyzer & Visualizer (Phase 3.1), Campaign Runner & Regression
-Dashboard (`strife campaign`, Phase 3.2), Cryptographic Report Attestation
-& Ed25519 Signing (Phase 4.1), and Regulatory Audit Mapping & Compliance
-Dossier (`strife compliance`, Phase 4.2).
+Diagnostic Probe & Root-Cause Correlator (`pkg/probe`, Phase 2.4), Custom
+Workload Plugins & Deterministic Wasm Runner (`pkg/workload`, Phase 2.5),
+Interactive Timeline Analyzer & Visualizer (Phase 3.1), Campaign Runner &
+Regression Dashboard (`strife campaign`, Phase 3.2), Cryptographic Report
+Attestation & Ed25519 Signing (Phase 4.1), and Regulatory Audit Mapping &
+Compliance Dossier (`strife compliance`, Phase 4.2).
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, the
 reasoning behind it, and the claims we will and won't make.
 

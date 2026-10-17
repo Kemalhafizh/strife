@@ -18,6 +18,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/sim"
 	"github.com/kemalhafizh/strife/pkg/sim/raft"
+	"github.com/kemalhafizh/strife/pkg/workload"
 )
 
 // System is a simulated system under test.
@@ -69,6 +70,7 @@ type Config struct {
 	Duration      time.Duration  `json:"duration"`
 	ReadRatio     float64        `json:"read_ratio"`
 	CasRatio      float64        `json:"cas_ratio"`
+	Workload      string         `json:"workload,omitempty"`
 	OpTimeout     time.Duration  `json:"op_timeout"`
 	Think         time.Duration  `json:"think"`
 	Faults        []nemesis.Kind `json:"faults"`
@@ -121,26 +123,40 @@ func (c Config) Validate() error {
 	case c.ReadRatio < 0 || c.CasRatio < 0 || c.ReadRatio+c.CasRatio > 1:
 		return fmt.Errorf("read_ratio + cas_ratio must be within [0, 1]")
 	}
+	if c.Workload != "" {
+		if _, err := workload.Load(c.Workload); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // Result is the outcome of one simulated test.
 type Result struct {
-	Config       Config           `json:"config"`
-	Schedule     nemesis.Schedule `json:"schedule"`
-	History      []history.Op     `json:"-"`
-	Check        checker.Report   `json:"check"`
-	TraceHash    string           `json:"trace_hash"`
-	HistoryHash  string           `json:"history_hash"`
-	ScheduleHash string           `json:"schedule_hash"`
-	Events       uint64           `json:"events"`
-	Elapsed      time.Duration    `json:"-"` // wall clock; not part of any hash
+	Config         Config           `json:"config"`
+	Schedule       nemesis.Schedule `json:"schedule"`
+	History        []history.Op     `json:"-"`
+	Check          checker.Report   `json:"check"`
+	TraceHash      string           `json:"trace_hash"`
+	HistoryHash    string           `json:"history_hash"`
+	ScheduleHash   string           `json:"schedule_hash"`
+	WorkloadSHA256 string           `json:"workload_sha256,omitempty"`
+	Events         uint64           `json:"events"`
+	Elapsed        time.Duration    `json:"-"` // wall clock; not part of any hash
 }
 
 // Run executes one deterministic simulation and checks it.
 func Run(cfg Config) (*Result, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+	var plug *workload.Plugin
+	if cfg.Workload != "" {
+		var err error
+		plug, err = workload.Load(cfg.Workload)
+		if err != nil {
+			return nil, err
+		}
 	}
 	start := time.Now()
 	sys, _ := LookupSystem(cfg.System)
@@ -160,8 +176,9 @@ func Run(cfg Config) (*Result, error) {
 		id := sim.ClientBase + sim.NodeID(i)
 		w.Add(id, &client{
 			w: w, id: id, idx: i, cfg: cfg, rec: rec, process: i,
-			rand:  root.Fork(fmt.Sprintf("client/%d", i)),
-			guess: sim.NodeID(i % cfg.Nodes),
+			rand:   root.Fork(fmt.Sprintf("client/%d", i)),
+			guess:  sim.NodeID(i % cfg.Nodes),
+			plugin: plug,
 		})
 	}
 
@@ -192,16 +209,21 @@ func Run(cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	var workloadSHA string
+	if plug != nil {
+		workloadSHA = plug.SHA256
+	}
 	return &Result{
-		Config:       cfg,
-		Schedule:     sched,
-		History:      ops,
-		Check:        rep,
-		TraceHash:    w.TraceHash(),
-		HistoryHash:  history.Hash(ops),
-		ScheduleHash: sched.Hash(),
-		Events:       w.Events(),
-		Elapsed:      time.Since(start),
+		Config:         cfg,
+		Schedule:       sched,
+		History:        ops,
+		Check:          rep,
+		TraceHash:      w.TraceHash(),
+		HistoryHash:    history.Hash(ops),
+		ScheduleHash:   sched.Hash(),
+		WorkloadSHA256: workloadSHA,
+		Events:         w.Events(),
+		Elapsed:        time.Since(start),
 	}, nil
 }
 

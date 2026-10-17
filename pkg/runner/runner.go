@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/probe"
 	"github.com/kemalhafizh/strife/pkg/report"
 	"github.com/kemalhafizh/strife/pkg/transport"
+	"github.com/kemalhafizh/strife/pkg/workload"
 )
 
 // Options control a live run.
@@ -197,13 +199,22 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	}()
 
 	// Workload: one goroutine per logical client slot.
+	var plug *workload.Plugin
+	if cfg.Workload.Plugin != "" {
+		var err error
+		plug, err = workload.Load(cfg.Workload.Plugin)
+		if err != nil {
+			return nil, err
+		}
+		logf("loaded workload plugin %q (%s, sha256=%s)", plug.Name, plug.Source, plug.SHA256[:12])
+	}
 	root := rng.New(cfg.Seed)
 	var wg sync.WaitGroup
 	for i := 0; i < cfg.Workload.Concurrency; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			worker(runCtx, cfg, i, root.Fork(fmt.Sprintf("workload/%d", i)), factory, rec, start.Add(duration), logf)
+			worker(runCtx, cfg, i, root.Fork(fmt.Sprintf("workload/%d", i)), plug, factory, rec, start.Add(duration), logf)
 		}(i)
 	}
 	wg.Wait()
@@ -250,7 +261,7 @@ func Namespace(cfg *Config, now time.Time) string {
 	return fmt.Sprintf("%s-%d-%s", cfg.Name, cfg.Seed, strconv.FormatInt(now.UnixNano(), 36))
 }
 
-func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, factory client.Factory, rec *history.Recorder, until time.Time, logf func(string, ...any)) {
+func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workload.Plugin, factory client.Factory, rec *history.Recorder, until time.Time, logf func(string, ...any)) {
 	w := cfg.Workload
 	node := slot % len(cfg.Nodes)
 	c, err := factory(node)
@@ -260,15 +271,47 @@ func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, factory cli
 	}
 	defer func() { _ = c.Close() }()
 	process := slot
+	step := 0
 	for time.Now().Before(until) && ctx.Err() == nil {
-		op := history.Op{Process: process, Type: history.Invoke, Key: fmt.Sprintf("k%d", r.Intn(w.Keys))}
-		switch x := r.Float64(); {
-		case x < w.ReadRatio:
-			op.F = history.FRead
-		case x < w.ReadRatio+w.CasRatio:
-			op.F, op.Old, op.Value = history.FCas, history.Int(r.Int64n(int64(w.Values))), history.Int(r.Int64n(int64(w.Values)))
-		default:
-			op.F, op.Value = history.FWrite, history.Int(r.Int64n(int64(w.Values)))
+		var op history.Op
+		if plug != nil {
+			genOp, err := plug.NextOp(process, step, w.Keys, w.Values, r)
+			step++
+			if err != nil {
+				logf("client %d: workload plugin: %v", slot, err)
+				return
+			}
+			op = genOp
+			if !strings.HasPrefix(op.Key, "k") {
+				op.Key = fmt.Sprintf("k%d", step%w.Keys)
+			}
+			switch op.F {
+			case history.FRead:
+				op.Value, op.Old, op.Txn = nil, nil, nil
+			case history.FCas:
+				if op.Old == nil {
+					op.Old = history.Int(0)
+				}
+				if op.Value == nil {
+					op.Value = history.Int(0)
+				}
+			default:
+				op.F = history.FWrite
+				if op.Value == nil {
+					op.Value = history.Int(0)
+				}
+				op.Old, op.Txn = nil, nil
+			}
+		} else {
+			op = history.Op{Process: process, Type: history.Invoke, Key: fmt.Sprintf("k%d", r.Intn(w.Keys))}
+			switch x := r.Float64(); {
+			case x < w.ReadRatio:
+				op.F = history.FRead
+			case x < w.ReadRatio+w.CasRatio:
+				op.F, op.Old, op.Value = history.FCas, history.Int(r.Int64n(int64(w.Values))), history.Int(r.Int64n(int64(w.Values)))
+			default:
+				op.F, op.Value = history.FWrite, history.Int(r.Int64n(int64(w.Values)))
+			}
 		}
 		inv := rec.Record(op)
 		octx, cancel := context.WithTimeout(ctx, time.Duration(w.Timeout))

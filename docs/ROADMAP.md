@@ -40,7 +40,7 @@ back up.
 | Raft demo | ✅ Done, with three bug switches that Strife catches |
 | `strife-shrink` (delta debugging) | ✅ Done in Phase 1.1: `strife shrink`, measured below |
 | `strife-agent` & netlink | ✅ Done in Phase 2.1: `cmd/strife-agent`, socket IPC, direct netlink & syscalls, measured below |
-| eBPF probes, Wasm workloads | ⏳ Phase 2+, scope narrowed (see below) |
+| Server-side probes & Wasm workloads | ✅ Done in Phase 2.4 (`pkg/probe`) & Phase 2.5 (`pkg/workload`, pure-Go Wasm 1.0 VM) |
 | Rust core daemon | ❎ Deferred: Go already meets the single-binary, zero-dependency goal |
 
 ## Phase 1: MVP completion (open source, Apache 2.0)
@@ -279,10 +279,17 @@ correlation** alongside the client history (`pkg/probe`):
   - Produces ranked root-cause attributions (`high` / `medium` / `low` confidence) explaining *why* a violation or indeterminate write occurred (e.g., *"the node's fsync stalled for 95ms during the violating read window"*),
   - Integrated into `strife check --probes probes.jsonl`, `strife run` (via `strife-agent`), and rendered in `report.md` and `report.json`.
 
-### 2.5 Wasm workloads: deferred
+### 2.5 Custom Workload Plugins & Wasm Runner (`pkg/workload` & `strife workload`) ✅ done
 
-Custom workloads go through a Go interface first. Wasm only comes in once
-there is real demand from users who are not writing Go.
+- **Zero-Dependency WebAssembly 1.0 (MVP) Stack Machine (`pkg/workload/wasm.go`)**:
+  - Pure Go standard library WebAssembly 1.0 binary (`\x00asm\x01\x00\x00\x00`) parser, validator, and bytecode interpreter with precomputed structured control-flow jump tables (`block`, `loop`, `if`, `else`, `br`, `br_if`, `call`, `select`, 32/64-bit integer arithmetic/comparisons, globals, and linear memory).
+  - **Fuel-Metered Sandbox**: Enforces a per-invocation instruction budget (`DefaultMaxFuel = 10,000`) and call-depth cap (`32`), guaranteeing that an untrusted or buggy `.wasm` workload with an infinite loop traps cleanly without hanging the simulator or live runner.
+  - **100% Deterministic ABI**: Invokes exported `next_op(process: i32, step: i32, rand_u64: i64, keys: i32, values: i32) -> i64` fed exclusively from each client's forked `xoshiro256**` PRNG stream, preserving bit-for-bit replay (`--determinism`) and SHA-256 module digest tracking.
+- **Declarative Workload Spec & Wasm Compiler (`pkg/workload/workload.go`)**:
+  - Compiles declarative JSON workload definitions (`CompileSpecToWasm`) and 6 built-in enterprise presets (`preset:kv-balanced`, `preset:read-heavy`, `preset:write-heavy`, `preset:cas-hotspot`, `preset:sequential-scan`, `preset:si-write-skew`) directly into standalone `.wasm` binaries.
+  - Supports `uniform`, `hotspot` (e.g., 80% traffic concentrated on 20% hot keys), `sequential`, and `partitioned` key distributions.
+- **CLI & Runner Integration (`strife workload`, `strife sim --workload`, `strife campaign --workload`, `strife run`)**:
+  - `strife workload --list`, `strife workload --compile <spec.json|preset:name> --out <plugin.wasm>`, and `strife workload --inspect <plugin.wasm>`.
 
 ## Phase 3: Cloud runner & Visualizer (open-core SaaS)
 

@@ -383,3 +383,29 @@ func TestComplianceCLIAndDossier(t *testing.T) {
 		t.Fatalf("expected 12 passing JUnit control cases, got %+v", d)
 	}
 }
+
+func TestWasmWorkloadCompileAndDeterminism(t *testing.T) {
+	dir := t.TempDir()
+	wasmPath := filepath.Join(dir, "cas-hotspot.wasm")
+	simDir := filepath.Join(dir, "sim")
+
+	code, out := runCLI(t, "workload", "--list")
+	if code != exitOK || !strings.Contains(out, "preset:cas-hotspot") {
+		t.Fatalf("workload --list failed (%d):\n%s", code, out)
+	}
+
+	code, out = runCLI(t, "workload", "--compile", "preset:cas-hotspot", "--out", wasmPath)
+	if code != exitOK || !strings.Contains(out, "compiled workload plugin") {
+		t.Fatalf("workload --compile failed (%d):\n%s", code, out)
+	}
+
+	code, out = runCLI(t, "workload", "--inspect", wasmPath, "--sample", "4")
+	if code != exitOK || !strings.Contains(out, "source: wasm") {
+		t.Fatalf("workload --inspect failed (%d):\n%s", code, out)
+	}
+
+	code, out = runCLI(t, "sim", "--system", "raft", "--seed", "7", "--duration", "2s", "--workload", wasmPath, "--determinism", "--out", simDir)
+	if code != exitOK || !strings.Contains(out, "determinism: ✓ identical executions") {
+		t.Fatalf("sim with wasm workload failed (%d):\n%s", code, out)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/kemalhafizh/strife/internal/rng"
 	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
@@ -30,6 +31,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/runner"
 	"github.com/kemalhafizh/strife/pkg/shrink"
 	"github.com/kemalhafizh/strife/pkg/transport"
+	"github.com/kemalhafizh/strife/pkg/workload"
 )
 
 // Exit codes.
@@ -50,6 +52,7 @@ Usage:
   strife check      [flags]   check a recorded history (JSONL) for linearizability
   strife plan       [flags]   print a seeded fault schedule and its shell commands
   strife run        [flags]   run a live test against a real cluster
+  strife workload   [flags]   list, inspect, or compile custom Wasm workload plugins
   strife keygen     [flags]   generate an Ed25519 signing keypair for compliance audits
   strife sign       [flags]   cryptographically sign a report artifact (in-toto attestation)
   strife verify     [flags]   verify a signed compliance bundle against a public key
@@ -85,6 +88,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdPlan(rest, stdout, stderr)
 	case "run":
 		code, err = cmdRun(rest, stdout, stderr)
+	case "workload":
+		code, err = cmdWorkload(rest, stdout, stderr)
 	case "keygen":
 		code, err = cmdKeygen(rest, stdout, stderr)
 	case "sign":
@@ -149,6 +154,7 @@ func scenarioFlags(fs *flag.FlagSet) func() (explore.Config, error) {
 	duration := fs.Duration("duration", d.Duration, "simulated test length")
 	readRatio := fs.Float64("read-ratio", d.ReadRatio, "fraction of reads")
 	casRatio := fs.Float64("cas-ratio", d.CasRatio, "fraction of compare-and-sets")
+	workloadPath := fs.String("workload", "", "custom workload plugin (.wasm, .json spec, or preset:<name>)")
 	opTimeout := fs.Duration("op-timeout", d.OpTimeout, "client operation timeout (simulated)")
 	faults := fs.String("faults", "all", "comma separated fault kinds, \"all\" or \"none\"")
 	interval := fs.Duration("fault-interval", d.FaultInterval, "mean time between faults")
@@ -164,6 +170,7 @@ func scenarioFlags(fs *flag.FlagSet) func() (explore.Config, error) {
 		cfg := d
 		cfg.System, cfg.Seed, cfg.Nodes, cfg.Clients, cfg.Keys, cfg.Values = *system, *seed, *nodes, *clients, *keys, *values
 		cfg.Duration, cfg.ReadRatio, cfg.CasRatio, cfg.OpTimeout = *duration, *readRatio, *casRatio, *opTimeout
+		cfg.Workload = *workloadPath
 		cfg.Faults, cfg.FaultInterval, cfg.FaultLength, cfg.MaxSteps = kinds, *interval, *length, *maxSteps
 		cfg.CheckTimeout = *checkTimeout
 		if *planPath != "" {
@@ -259,6 +266,13 @@ func reproduce(c explore.Config, planPath string) string {
 	fmt.Fprintf(&b, "strife sim --system %s --seed %d --nodes %d --clients %d --keys %d --values %d --duration %v --op-timeout %v",
 		c.System, c.Seed, c.Nodes, c.Clients, c.Keys, c.Values, c.Duration, c.OpTimeout)
 	fmt.Fprintf(&b, " --read-ratio %g --cas-ratio %g --fault-interval %v --fault-length %v", c.ReadRatio, c.CasRatio, c.FaultInterval, c.FaultLength)
+	if c.Workload != "" {
+		wArg := c.Workload
+		if strings.ContainsAny(wArg, " \t'\"$`\\;&|<>()*?[]{}!#~") {
+			wArg = transport.Quote(wArg)
+		}
+		fmt.Fprintf(&b, " --workload %s", wArg)
+	}
 	ks := make([]string, len(c.Faults))
 	for i, k := range c.Faults {
 		ks[i] = string(k)
@@ -1324,4 +1338,73 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 		code = exitViolation
 	}
 	return emitCI(*ci, code, nil, compliance.Suite(dossier, *strict))
+}
+
+func cmdWorkload(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("workload", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	list := fs.Bool("list", false, "list built-in workload presets")
+	compileSrc := fs.String("compile", "", "compile a workload spec (.json or preset:<name>) into a WebAssembly 1.0 (.wasm) plugin")
+	inspectSrc := fs.String("inspect", "", "inspect and validate a workload plugin (.wasm, .json, or preset:<name>)")
+	outPath := fs.String("out", "", "output .wasm file path for --compile")
+	sample := fs.Int("sample", 8, "number of deterministic sample operations to preview with --inspect")
+	seed := fs.Uint64("seed", 1, "seed for --inspect operation preview")
+	keys := fs.Int("keys", 4, "key count for --inspect operation preview")
+	values := fs.Int("values", 5, "value range for --inspect operation preview")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+
+	if *compileSrc != "" {
+		if *outPath == "" {
+			return exitUsage, fmt.Errorf("--out <file.wasm> is required with --compile")
+		}
+		plug, err := workload.Load(*compileSrc)
+		if err != nil {
+			return exitError, err
+		}
+		if err := os.MkdirAll(filepath.Dir(*outPath), 0o755); err != nil {
+			return exitError, err
+		}
+		if err := os.WriteFile(*outPath, plug.WasmBytes, 0o644); err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "compiled workload plugin %q → %s (%d bytes, sha256=%s)\n",
+			plug.Name, *outPath, len(plug.WasmBytes), plug.SHA256)
+		return exitOK, nil
+	}
+
+	if *inspectSrc != "" {
+		plug, err := workload.Load(*inspectSrc)
+		if err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "workload: %s   source: %s   wasm: %d bytes   sha256: %s\n",
+			plug.Name, plug.Source, len(plug.WasmBytes), plug.SHA256)
+		if plug.Spec != nil {
+			fmt.Fprintf(stdout, "dist:     %s   description: %s\n", plug.Spec.Distribution, plug.Spec.Description)
+		}
+		if *sample > 0 {
+			r := rng.New(*seed)
+			fmt.Fprintf(stdout, "sample operations (seed=%d, keys=%d, values=%d):\n", *seed, *keys, *values)
+			for i := 0; i < *sample; i++ {
+				op, err := plug.NextOp(i%2, i, *keys, *values, r)
+				if err != nil {
+					return exitError, err
+				}
+				fmt.Fprintf(stdout, "  step %-3d  %s\n", i, op.String())
+			}
+		}
+		return exitOK, nil
+	}
+
+	_ = *list
+	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "PRESET\tDISTRIBUTION\tWASM BYTES\tDESCRIPTION")
+	for _, s := range workload.Presets() {
+		wasmBytes, _ := workload.CompileSpecToWasm(s)
+		fmt.Fprintf(tw, "preset:%s\t%s\t%d\t%s\n", s.Name, s.Distribution, len(wasmBytes), s.Description)
+	}
+	tw.Flush()
+	return exitOK, nil
 }

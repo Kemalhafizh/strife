@@ -14,6 +14,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/client"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/transport"
+	"github.com/kemalhafizh/strife/pkg/workload"
 )
 
 // Duration is a time.Duration that reads and writes "10s" style JSON.
@@ -66,6 +67,7 @@ type WorkloadConfig struct {
 	CasRatio    float64  `json:"cas_ratio"`
 	Think       Duration `json:"think"`   // max pause between ops per process
 	Timeout     Duration `json:"timeout"` // per-operation timeout
+	Plugin      string   `json:"plugin,omitempty"`
 }
 
 // NemesisConfig shapes the fault schedule.
@@ -155,6 +157,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Workload.Concurrency < 1 || c.Workload.Keys < 1 || c.Workload.Values < 1 {
 		return fmt.Errorf("workload.concurrency, keys and values must be positive")
+	}
+	if c.Workload.Plugin != "" {
+		if _, err := workload.Load(c.Workload.Plugin); err != nil {
+			return err
+		}
 	}
 	for _, k := range c.Nemesis.Faults {
 		if k == nemesis.ClockSkew && c.Transport.Type == "docker" {
