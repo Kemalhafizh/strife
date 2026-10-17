@@ -1251,6 +1251,7 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 	frameworksStr := fs.String("frameworks", "all", "comma-separated frameworks: dora,soc2,iso27001,bi-ojk,all")
 	out := fs.String("out", "strife-compliance", "directory to write dossier.json, dossier.md, and dossier.html (\"\" to disable)")
 	strict := fs.Bool("strict", false, "exit with non-zero status if any control is PARTIAL (not just FAIL)")
+	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
@@ -1318,11 +1319,9 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 		fmt.Fprintf(stdout, "dossier:   %s\n", filepath.Join(*out, "dossier.html"))
 	}
 
-	if dossier.Overall == compliance.StatusFail {
-		return exitViolation, nil
+	code := exitOK
+	if dossier.Overall == compliance.StatusFail || (*strict && dossier.Overall != compliance.StatusPass) {
+		code = exitViolation
 	}
-	if *strict && dossier.Overall != compliance.StatusPass {
-		return exitViolation, nil
-	}
-	return exitOK, nil
+	return emitCI(*ci, code, nil, compliance.Suite(dossier, *strict))
 }

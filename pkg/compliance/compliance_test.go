@@ -138,13 +138,63 @@ func TestEvaluatePartialAndViolation(t *testing.T) {
 		t.Fatalf("expected PARTIAL for unsigned partition-only run, got %s", dPartial.Overall)
 	}
 
-	// Violation -> should be StatusFail
+	// Violation -> should be StatusFail (recompute fingerprint so it is a genuine violating report, not a tampered one)
 	rep.Verdict = checker.Violation
+	rep.Check.Verdict = checker.Violation
+	rep.Fingerprint = report.Fingerprint(rep)
 	dFail, err := Evaluate(Options{Report: rep})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if dFail.Overall != StatusFail {
 		t.Fatalf("expected FAIL for violating report, got %s", dFail.Overall)
+	}
+
+	suite := Suite(dFail, true)
+	if len(suite.Cases) != 12 {
+		t.Fatalf("expected 12 JUnit cases, got %d", len(suite.Cases))
+	}
+}
+
+func TestEvaluateRejectsTamperedReportOrMismatchedBundle(t *testing.T) {
+	v := int64(1)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: 100},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: 200},
+	}
+	repA, _ := report.New(
+		report.KindSimulation,
+		"raft-a",
+		1,
+		nil,
+		nemesis.Schedule{Nodes: 3},
+		ops,
+		checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 1},
+		"trace-a",
+	)
+	repB, _ := report.New(
+		report.KindSimulation,
+		"raft-b",
+		2,
+		nil,
+		nemesis.Schedule{Nodes: 3},
+		ops,
+		checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 1},
+		"trace-b",
+	)
+
+	pub, priv, _ := attest.GenerateKeyPair()
+	bundleB, _ := attest.Sign(repB, priv, "auditor")
+	verB, _ := attest.Verify(bundleB, pub)
+
+	// 1. Supplying valid bundle for repB against repA must fail cross-binding check.
+	if _, err := Evaluate(Options{Report: repA, Verification: verB}); err == nil {
+		t.Fatalf("expected error when attaching bundle from a different report")
+	}
+
+	// 2. Tampering with repA's verdict without updating its fingerprint must fail integrity check.
+	repA.Check.Verdict = checker.Violation
+	if _, err := Evaluate(Options{Report: repA}); err == nil {
+		t.Fatalf("expected error when report fingerprint does not match contents")
 	}
 }

@@ -158,6 +158,38 @@ func Evaluate(opts Options) (*Dossier, error) {
 	if opts.Report == nil && opts.Campaign == nil {
 		return nil, fmt.Errorf("compliance: either Report or Campaign is required")
 	}
+	if opts.Report != nil {
+		recomputed := report.Fingerprint(opts.Report)
+		if opts.Report.Fingerprint != "" && opts.Report.Fingerprint != recomputed {
+			return nil, fmt.Errorf("compliance: report fingerprint integrity mismatch: recorded %q vs recomputed %q",
+				opts.Report.Fingerprint, recomputed)
+		}
+		if opts.Report.Fingerprint == "" {
+			opts.Report.Fingerprint = recomputed
+		}
+		if opts.Verification != nil {
+			if !opts.Verification.Valid {
+				return nil, fmt.Errorf("compliance: attestation verification is invalid")
+			}
+			if opts.Verification.Fingerprint != opts.Report.Fingerprint {
+				return nil, fmt.Errorf("compliance: attestation bundle fingerprint %q does not match report fingerprint %q",
+					opts.Verification.Fingerprint, opts.Report.Fingerprint)
+			}
+			if opts.Verification.Target != opts.Report.Target || opts.Verification.Verdict != opts.Report.Verdict {
+				return nil, fmt.Errorf("compliance: attestation bundle subject/verdict mismatch")
+			}
+		}
+	}
+	if opts.Campaign != nil {
+		recomputed := opts.Campaign.ComputeFingerprint()
+		if opts.Campaign.Fingerprint != "" && opts.Campaign.Fingerprint != recomputed {
+			return nil, fmt.Errorf("compliance: campaign fingerprint integrity mismatch: recorded %q vs recomputed %q",
+				opts.Campaign.Fingerprint, recomputed)
+		}
+		if opts.Campaign.Fingerprint == "" {
+			opts.Campaign.Fingerprint = recomputed
+		}
+	}
 	fws := opts.Frameworks
 	if len(fws) == 0 {
 		fws = AllFrameworks()
@@ -667,4 +699,52 @@ func WriteDir(dir string, d *Dossier) ([]string, error) {
 		}
 	}
 	return written, nil
+}
+
+// Suite converts a compliance Dossier into a CI report.Suite suitable for
+// JUnit XML and GitHub Step Summary output.
+func Suite(d *Dossier, strict bool) report.Suite {
+	props := []report.Property{
+		{Name: "strife.version", Value: d.Version},
+		{Name: "dossier.sha256", Value: d.DossierHash},
+		{Name: "fingerprint", Value: d.Summary.Fingerprint},
+		{Name: "target", Value: d.Summary.Target},
+		{Name: "overall", Value: string(d.Overall)},
+		{Name: "attested", Value: fmt.Sprint(d.Summary.Attested)},
+	}
+	if d.Summary.Signer != "" {
+		props = append(props, report.Property{Name: "signer", Value: d.Summary.Signer})
+	}
+
+	s := report.Suite{
+		Name:       fmt.Sprintf("compliance · %s", d.Summary.Target),
+		Properties: props,
+		Headline: fmt.Sprintf("Compliance dossier for `%s` (%s): overall **%s** (`%s`)",
+			d.Summary.Target, d.Summary.RunKind, strings.ToUpper(string(d.Overall)), shortHash(d.DossierHash)),
+	}
+
+	for _, c := range d.Controls {
+		tc := report.Case{
+			Name:   fmt.Sprintf("[%s] %s — %s", strings.ToUpper(string(c.Framework)), c.ControlID, c.Title),
+			Class:  string(c.Framework),
+			Status: report.Passed,
+			Output: c.Evidence,
+		}
+		switch c.Status {
+		case StatusFail:
+			tc.Status = report.Failed
+			tc.Message = c.Gap
+			tc.Detail = c.Evidence + "\n\nGap: " + c.Gap
+		case StatusPartial:
+			if strict {
+				tc.Status = report.Failed
+				tc.Message = "PARTIAL (strict mode): " + c.Gap
+				tc.Detail = c.Evidence + "\n\nGap: " + c.Gap
+			} else {
+				tc.Output = c.Evidence + " (Gap: " + c.Gap + ")"
+			}
+		}
+		s.Cases = append(s.Cases, tc)
+	}
+	return s
 }

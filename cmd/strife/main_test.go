@@ -316,6 +316,13 @@ func TestCheckWithProbesCorrelation(t *testing.T) {
 	if !strings.Contains(string(mdBytes), "Server-Side Probes & Root-Cause Attribution") {
 		t.Fatalf("expected probe section in report.md:\n%s", string(mdBytes))
 	}
+	htmlBytes, err := os.ReadFile(filepath.Join(outDir, "report.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(htmlBytes), "Server-Side Probes &amp; Root-Cause Attribution") {
+		t.Fatalf("expected probe section in report.html")
+	}
 }
 
 func TestComplianceCLIAndDossier(t *testing.T) {
@@ -325,6 +332,8 @@ func TestComplianceCLIAndDossier(t *testing.T) {
 	keyPrefix := filepath.Join(dir, "auditor")
 	bundlePath := filepath.Join(dir, "bundle.json")
 	dossierDir := filepath.Join(dir, "dossier")
+	jPath := filepath.Join(dir, "compliance-junit.xml")
+	sumPath := filepath.Join(dir, "compliance-summary.md")
 
 	planJSON := `{
   "seed": 3,
@@ -357,7 +366,7 @@ func TestComplianceCLIAndDossier(t *testing.T) {
 		t.Fatalf("sign failed (%d):\n%s", code, out)
 	}
 
-	code, out = runCLI(t, "compliance", "--report", repPath, "--bundle", bundlePath, "--key", keyPrefix+".pub", "--out", dossierDir, "--strict")
+	code, out = runCLI(t, "compliance", "--report", repPath, "--bundle", bundlePath, "--key", keyPrefix+".pub", "--out", dossierDir, "--strict", "--junit", jPath, "--summary", sumPath)
 	if code != exitOK {
 		t.Fatalf("compliance failed (%d):\n%s", code, out)
 	}
@@ -368,5 +377,9 @@ func TestComplianceCLIAndDossier(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dossierDir, f)); err != nil {
 			t.Fatalf("missing %s: %v", f, err)
 		}
+	}
+	d := readJUnit(t, jPath)
+	if d.Tests != 12 || d.Failures != 0 || d.Errors != 0 {
+		t.Fatalf("expected 12 passing JUnit control cases, got %+v", d)
 	}
 }
