@@ -551,13 +551,17 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	if *live {
 		budget := 40
+		var liveDuration time.Duration
 		fs.Visit(func(f *flag.Flag) {
-			if f.Name == "max-runs" {
+			switch f.Name {
+			case "max-runs":
 				budget = *maxRuns
+			case "duration": // overrides the config's for every live run
+				liveDuration = f.Value.(flag.Getter).Get().(time.Duration)
 			}
 		})
 		return cmdShrinkLive(liveShrinkArgs{config: *cfgPath, report: *from, out: *out, attempts: *attempts,
-			verify: *verify, maxRuns: budget, dry: *dry}, *ci, stdout)
+			verify: *verify, maxRuns: budget, dry: *dry, duration: liveDuration}, *ci, stdout)
 	}
 
 	if *historyPath != "" {
@@ -608,6 +612,7 @@ type liveShrinkArgs struct {
 	config, report, out       string
 	attempts, verify, maxRuns int
 	dry                       bool
+	duration                  time.Duration
 }
 
 // cmdShrinkLive delta-debugs a live run's fault schedule on the real
@@ -621,6 +626,9 @@ func cmdShrinkLive(a liveShrinkArgs, ci report.Outputs, stdout io.Writer) (int, 
 		return exitUsage, err
 	}
 	name += " · " + cfg.Name
+	if a.duration > 0 {
+		cfg.Duration = runner.Duration(a.duration)
+	}
 	sched := cfg.Schedule()
 	if a.report != "" {
 		data, err := os.ReadFile(a.report)

@@ -64,6 +64,9 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 			return nil, err
 		}
 	}
+	if cfg, err = ResolveNodes(ctx, cfg, tr); err != nil {
+		return nil, err
+	}
 	if cfg, err = ResolveHost(ctx, cfg, tr); err != nil {
 		return nil, err
 	}
@@ -222,6 +225,47 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 // ReasonNoSuccess explains an unknown verdict for a run in which no
 // operation succeeded.
 const ReasonNoSuccess = "no operation succeeded"
+
+// ResolveNodes replaces "auto" node IPs with what the transport discovers
+// (pod IPs on Kubernetes) and expands db.endpoints entries containing {ip}
+// into one endpoint per node. It returns a copy: the caller's config is
+// untouched.
+func ResolveNodes(ctx context.Context, cfg *Config, tr transport.Transport) (*Config, error) {
+	c := *cfg
+	c.Nodes = append([]transport.Node(nil), cfg.Nodes...)
+	for i, n := range c.Nodes {
+		if n.IP != transport.Auto {
+			continue
+		}
+		ir, ok := tr.(transport.IPResolver)
+		if !ok {
+			return nil, fmt.Errorf("node %s: \"ip\": \"auto\" needs the kubernetes transport, not %s", n.Name, tr.Name())
+		}
+		ip, err := ir.ResolveIP(ctx, n)
+		if err != nil {
+			return nil, fmt.Errorf("node %s: %w", n.Name, err)
+		}
+		c.Nodes[i].IP = ip
+	}
+	c.DB.Config.Endpoints = ExpandEndpoints(cfg.DB.Config.Endpoints, c.Nodes)
+	return &c, nil
+}
+
+// ExpandEndpoints turns each endpoint containing {ip} into one endpoint per
+// node, in node order, so a client endpoint follows the node's address.
+func ExpandEndpoints(endpoints []string, nodes []transport.Node) []string {
+	var out []string
+	for _, e := range endpoints {
+		if !strings.Contains(e, "{ip}") {
+			out = append(out, e)
+			continue
+		}
+		for _, n := range nodes {
+			out = append(out, strings.ReplaceAll(e, "{ip}", n.IP))
+		}
+	}
+	return out
+}
 
 // ResolveHost replaces "auto" cgroups and io_device with what the transport
 // discovers on the host. It returns a copy: the caller's config is untouched.

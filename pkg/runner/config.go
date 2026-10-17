@@ -206,15 +206,38 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	k8s := c.Transport.Type == "kubernetes" || c.Transport.Type == "k8s"
 	for _, k := range c.Nemesis.Faults {
 		if k == nemesis.ClockSkew && c.Transport.Type == "docker" {
 			return fmt.Errorf("clock-skew is refused with the docker transport: containers share the host clock, so it would skew the docker host itself")
+		}
+		if k8s {
+			switch k {
+			case nemesis.ClockSkew:
+				return fmt.Errorf("clock-skew is refused with the kubernetes transport: pods share their node's clock")
+			case nemesis.Freeze, nemesis.IOStall:
+				return fmt.Errorf("%s needs host access, which the kubernetes transport does not have: run strife-agent on the nodes (transport \"agent\")", k)
+			}
+		}
+	}
+	for _, n := range c.Nodes {
+		if n.IP == transport.Auto && !k8s {
+			return fmt.Errorf("node %s: \"ip\": \"auto\" needs the kubernetes transport", n.Name)
+		}
+		if k8s && n.Pod == "" {
+			return fmt.Errorf("node %s: the kubernetes transport needs a pod", n.Name)
 		}
 	}
 	if _, err := nemesis.ParseKinds(joinKinds(c.Nemesis.Faults)); err != nil {
 		return err
 	}
-	return c.Env().Validate(c.Nemesis.Faults)
+	env := c.Env()
+	for i := range env.Nodes {
+		if env.Nodes[i].IP == transport.Auto {
+			env.Nodes[i].IP = "192.0.2.1" // resolved when the run starts
+		}
+	}
+	return env.Validate(c.Nemesis.Faults)
 }
 
 func joinKinds(ks []nemesis.Kind) string {

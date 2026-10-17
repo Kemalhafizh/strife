@@ -1,0 +1,58 @@
+# A three-member etcd cluster for Strife's kubernetes transport.
+#
+# Each pod runs the same image as examples/etcd: PID 1 is a sleep, so the kill
+# nemesis can SIGKILL etcd and restart it without Kubernetes recreating the
+# container (which would reset the fault). NET_ADMIN lets the nemesis use
+# iptables and tc inside the pod's network namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: strife
+---
+# Headless service: stable DNS names etcd-0.etcd.strife.svc for peer URLs,
+# published before the pods are ready so the members can find each other.
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: strife
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: etcd }
+  ports:
+    - { name: client, port: 2379 }
+    - { name: peer, port: 2380 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  namespace: strife
+spec:
+  serviceName: etcd
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: { app: etcd }
+  template:
+    metadata:
+      labels: { app: etcd }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: etcd
+          image: strife-etcd:local
+          imagePullPolicy: Never
+          securityContext:
+            capabilities: { add: [NET_ADMIN] }
+          env:
+            - name: STRIFE_NODE
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: STRIFE_PEER_URL
+              value: http://$(STRIFE_NODE).etcd.strife.svc.cluster.local:2380
+            - name: STRIFE_CLUSTER
+              value: etcd-0=http://etcd-0.etcd.strife.svc.cluster.local:2380,etcd-1=http://etcd-1.etcd.strife.svc.cluster.local:2380,etcd-2=http://etcd-2.etcd.strife.svc.cluster.local:2380
+          ports:
+            - { containerPort: 2379, name: client }
+            - { containerPort: 2380, name: peer }

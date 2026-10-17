@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,5 +204,94 @@ func TestScheduleOverrideIsReplayed(t *testing.T) {
 	bad := nemesis.Schedule{Nodes: 5}
 	if _, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Schedule: &bad}); err == nil {
 		t.Fatal("a schedule for another cluster size was accepted")
+	}
+}
+
+type podIPs struct{ transport.DryRun }
+
+func (p *podIPs) ResolveIP(_ context.Context, n transport.Node) (string, error) {
+	return map[string]string{"etcd-0": "10.244.0.5", "etcd-1": "10.244.0.6"}[n.Pod], nil
+}
+
+func TestKubernetesNodesResolve(t *testing.T) {
+	cfg := &Config{
+		Nodes: []transport.Node{
+			{Name: "n1", IP: "auto", Pod: "etcd-0"},
+			{Name: "n2", IP: "auto", Pod: "etcd-1"},
+		},
+		Transport: transport.Config{Type: "kubernetes", Namespace: "strife"},
+		DB:        DBConfig{Config: client.Config{Kind: "etcd", Endpoints: []string{"http://{ip}:2379"}}, Process: "etcd", Start: "/start.sh"},
+		Nemesis:   NemesisConfig{Faults: []nemesis.Kind{nemesis.Partition, nemesis.Kill}},
+	}
+	cfg.Defaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveNodes(context.Background(), cfg, &podIPs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Nodes[1].IP != "10.244.0.6" || cfg.Nodes[1].IP != "auto" {
+		t.Fatalf("resolved %+v, original %+v", got.Nodes, cfg.Nodes)
+	}
+	if e := got.DB.Config.Endpoints; len(e) != 2 || e[0] != "http://10.244.0.5:2379" || e[1] != "http://10.244.0.6:2379" {
+		t.Fatalf("endpoints %v", e)
+	}
+	if _, err := ResolveNodes(context.Background(), cfg, &transport.DryRun{}); err == nil {
+		t.Fatal("auto IPs resolved without a resolver")
+	}
+	for _, k := range []nemesis.Kind{nemesis.Freeze, nemesis.ClockSkew} {
+		bad := *cfg
+		bad.Nemesis.Faults = []nemesis.Kind{k}
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("%s accepted on kubernetes", k)
+		}
+	}
+	bad := *cfg
+	bad.Transport.Type = "docker"
+	if err := bad.Validate(); err == nil {
+		t.Fatal("auto IPs accepted with docker")
+	}
+}
+
+// TestKubernetesRunThroughKubectl drives a whole run through the kubernetes
+// transport with a stand-in kubectl that records its arguments.
+func TestKubernetesRunThroughKubectl(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "kubectl.log")
+	fake := filepath.Join(dir, "kubectl")
+	script := "#!/bin/sh\necho \"$*\" >> " + log + "\ncase \"$*\" in *'get pod'*) echo 10.244.0.$(echo \"$*\" | sed 's/.*etcd-\\([0-9]\\).*/\\1/');; esac\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.Transport = transport.Config{Type: "kubernetes", Kubectl: fake, Namespace: "strife", Context: "kind-strife"}
+	for i := range cfg.Nodes {
+		cfg.Nodes[i].IP, cfg.Nodes[i].Pod, cfg.Nodes[i].Container = "auto", fmt.Sprintf("etcd-%d", i), "etcd"
+	}
+	cfg.Nemesis.Faults = []nemesis.Kind{nemesis.Partition, nemesis.Kill, nemesis.Latency}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Verdict != checker.Linearizable {
+		t.Fatalf("verdict %s", res.Check.Verdict)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		"--context kind-strife --namespace strife get pod etcd-2 -o jsonpath={.status.podIP}",
+		"--context kind-strife --namespace strife exec etcd-0 --container etcd -- sh -c iptables -N STRIFE",
+		"-s 10.244.0.1 -j DROP",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("kubectl never ran %q:\n%s", want, got)
+		}
 	}
 }

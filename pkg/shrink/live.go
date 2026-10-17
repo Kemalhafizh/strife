@@ -113,7 +113,7 @@ func Live(ctx context.Context, sched nemesis.Schedule, o LiveOptions) (*LiveResu
 
 func with(sched nemesis.Schedule, faults []nemesis.Fault) nemesis.Schedule {
 	out := sched
-	out.Faults = append([]nemesis.Fault(nil), faults...)
+	out.Faults = append(make([]nemesis.Fault, 0, len(faults)), faults...)
 	return out
 }
 
