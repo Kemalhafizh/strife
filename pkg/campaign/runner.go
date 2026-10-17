@@ -147,7 +147,7 @@ func Run(ctx context.Context, opts Options) (*Manifest, error) {
 					rec.ElapsedMs = res.Elapsed.Milliseconds()
 
 					if res.Check.Verdict == checker.Violation {
-						_ = checker.AddWitnesses(model.KV{}, res.History, &res.Check, checker.WitnessOptions{MaxWitnessLen: 8})
+						_ = checker.AddWitnesses(model.KV{}, res.History, &res.Check, checker.WitnessOptions{})
 						for _, k := range res.Check.Failures() {
 							if k.Counterexample != nil {
 								rec.Explanation = fmt.Sprintf("key %s: %s", k.Key, k.Counterexample.Summary())
@@ -212,7 +212,7 @@ func Run(ctx context.Context, opts Options) (*Manifest, error) {
 				shrunkCount++
 				if opts.OutDir != "" && sres.Final != nil {
 					minDir := filepath.Join(opts.OutDir, fmt.Sprintf("%s-seed%d-min", res.Config.System, res.Config.Seed))
-					_ = checker.AddWitnesses(model.KV{}, sres.Final.History, &sres.Final.Check, checker.WitnessOptions{MaxWitnessLen: 8})
+					_ = checker.AddWitnesses(model.KV{}, sres.Final.History, &sres.Final.Check, checker.WitnessOptions{})
 					rep, err := report.New(report.KindSimulation, sres.Minimal.System, sres.Minimal.Seed, sres.Minimal, sres.Final.Schedule, sres.Final.History, sres.Final.Check, sres.Final.TraceHash)
 					if err == nil {
 						rep.Events = sres.Final.Events
