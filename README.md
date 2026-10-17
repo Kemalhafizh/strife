@@ -349,8 +349,10 @@ history shrinking (`strife shrink --history`) & checker hardening (Phase 1.4),
 `strife-agent` with socket / RTNETLINK injection (Phase 2.1), sequential
 models (`queue`, `counter`, `idgen`) and transactional anomaly detection
 (Phase 2.2), PostgreSQL, Kafka, MySQL & TiDB targets (Phase 2.3), Interactive
-Timeline Analyzer & Visualizer (Phase 3.1), and Cryptographic Report Attestation
-& Ed25519 Signing (Phase 4.1). Next up: Cloud runner or Server-side diagnostic probes.
+Timeline Analyzer & Visualizer (Phase 3.1), Campaign Runner & Regression
+Dashboard (`strife campaign`, Phase 3.2), and Cryptographic Report Attestation
+& Ed25519 Signing (Phase 4.1). Next up: Server-side diagnostic probes (Phase 2.4)
+or Regulatory Audit Dossier (Phase 4.2).
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, the
 reasoning behind it, and the claims we will and won't make.
 

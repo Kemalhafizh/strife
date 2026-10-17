@@ -35,7 +35,7 @@ rest=("${args[@]:1}")
 # the user later on still win because the last occurrence of a flag counts.
 extra=()
 case $sub in
-sim | shrink | check | run)
+sim | campaign | shrink | check | run)
   if [ -n "$junit" ]; then
     mkdir -p "$(dirname "$junit")"
     extra+=(--junit "$junit")

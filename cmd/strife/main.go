@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/attest"
+	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/explore"
 	"github.com/kemalhafizh/strife/pkg/history"
@@ -41,15 +42,16 @@ const (
 const usage = `Strife — deterministic chaos testing & linearizability checking
 
 Usage:
-  strife sim     [flags]   run systems in the deterministic simulator
-  strife shrink  [flags]   minimise a failing simulation to its essential faults
-  strife check   [flags]   check a recorded history (JSONL) for linearizability
-  strife plan    [flags]   print a seeded fault schedule and its shell commands
-  strife run     [flags]   run a live test against a real cluster
-  strife keygen  [flags]   generate an Ed25519 signing keypair for compliance audits
-  strife sign    [flags]   cryptographically sign a report artifact (in-toto attestation)
-  strife verify  [flags]   verify a signed compliance bundle against a public key
-  strife systems           list the built-in simulated systems
+  strife sim      [flags]   run systems in the deterministic simulator
+  strife campaign [flags]   run parallel seed campaigns & track regressions across commits
+  strife shrink   [flags]   minimise a failing simulation to its essential faults
+  strife check    [flags]   check a recorded history (JSONL) for linearizability
+  strife plan     [flags]   print a seeded fault schedule and its shell commands
+  strife run      [flags]   run a live test against a real cluster
+  strife keygen   [flags]   generate an Ed25519 signing keypair for compliance audits
+  strife sign     [flags]   cryptographically sign a report artifact (in-toto attestation)
+  strife verify   [flags]   verify a signed compliance bundle against a public key
+  strife systems            list the built-in simulated systems
   strife version
 
 Run "strife <command> -h" for flags.
@@ -70,6 +72,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch cmd {
 	case "sim":
 		code, err = cmdSim(rest, stdout, stderr)
+	case "campaign":
+		code, err = cmdCampaign(rest, stdout, stderr)
 	case "shrink":
 		code, err = cmdShrink(rest, stdout, stderr)
 	case "check":
@@ -1090,4 +1094,113 @@ func cmdVerify(args []string, stdout, stderr io.Writer) (int, error) {
 		fmt.Fprintf(stdout, "  history file: %s (VERIFIED bit-for-bit ✅)\n", *histPath)
 	}
 	return exitOK, nil
+}
+
+func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("campaign", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	scenario := scenarioFlags(fs)
+	seeds := fs.String("seeds", "1..100", "seed range or list: \"1..1000\" or \"3,7,9\"")
+	out := fs.String("out", "strife-campaign", "directory for campaign.html, campaign.json, and failing seed reports (\"\" to disable)")
+	baseline := fs.String("baseline", "", "previous campaign.json / baseline.json to compare against for regressions")
+	saveBaseline := fs.String("save-baseline", "", "write or update baseline campaign manifest at this path")
+	replayFailing := fs.Bool("replay-failing", true, "automatically re-run any seed that failed in --baseline")
+	commit := fs.String("commit", "", "commit SHA or version label recorded in the campaign manifest")
+	branch := fs.String("branch", "", "branch name recorded in the campaign manifest")
+	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
+	keep := fs.Int("keep", 5, "write detailed report.html for up to this many violating seeds")
+	shrinkCount := fs.Int("shrink", 0, "minimise up to this many violating seeds")
+	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
+	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-regression\"")
+	ci := ciFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	cfg, err := scenario()
+	if err != nil {
+		return exitUsage, err
+	}
+	switch *expect {
+	case "", string(checker.Linearizable), string(checker.Violation), "no-regression":
+	default:
+		return exitUsage, fmt.Errorf("--expect must be linearizable, violation, or no-regression")
+	}
+	seedList, err := explore.ParseSeeds(*seeds)
+	if err != nil {
+		return exitUsage, err
+	}
+
+	suiteName := fmt.Sprintf("campaign · %s", cfg.System)
+	m, err := campaign.Run(context.Background(), campaign.Options{
+		BaseConfig:       cfg,
+		Seeds:            seedList,
+		Workers:          *workers,
+		Commit:           *commit,
+		Branch:           *branch,
+		OutDir:           *out,
+		BaselinePath:     *baseline,
+		SaveBaselinePath: *saveBaseline,
+		ReplayFailing:    *replayFailing,
+		KeepReports:      *keep,
+		ShrinkFirst:      *shrinkCount,
+		Determinism:      *determinism,
+	})
+	if err != nil {
+		return emitCI(*ci, exitError, err, report.ErrorSuite(suiteName, err))
+	}
+
+	fmt.Fprintf(stdout, "campaign: %s   system: %s   seeds: %d   events: %d   ops: %d   wall: %dms\n",
+		m.CampaignID, m.System, m.TotalSeeds, m.TotalEvents, m.TotalOps, m.DurationMs)
+	fmt.Fprintf(stdout, "results:  %d linearizable, %d violations, %d unknown, %d errors\n",
+		m.Passed, m.Violations, m.Unknown, m.Errors)
+
+	if comp := m.Comparison; comp != nil {
+		fmt.Fprintf(stdout, "baseline: %d regressed, %d fixed, %d persistent, %d new failures, %d trace drifts\n",
+			len(comp.Regressed), len(comp.Fixed), len(comp.PersistentFailures), len(comp.NewFailures), len(comp.TraceDrifts))
+		for _, d := range comp.Regressed {
+			fmt.Fprintf(stdout, "  REGRESSED seed %d (%s → %s): %s\n", d.Seed, d.PrevVerdict, d.CurrVerdict, d.Explanation)
+			fmt.Fprintf(stdout, "    reproduce: %s\n", d.Reproduce)
+		}
+		for _, d := range comp.Fixed {
+			fmt.Fprintf(stdout, "  FIXED     seed %d (%s → %s)\n", d.Seed, d.PrevVerdict, d.CurrVerdict)
+		}
+	}
+	if *out != "" {
+		fmt.Fprintf(stdout, "dashboard: %s\n", filepath.Join(*out, "campaign.html"))
+		fmt.Fprintf(stdout, "manifest:  %s\n", filepath.Join(*out, "campaign.json"))
+	}
+	if *saveBaseline != "" {
+		fmt.Fprintf(stdout, "baseline saved: %s\n", *saveBaseline)
+	}
+
+	suite := campaign.Suite(m, *expect)
+	var code int
+	var verr error
+	switch {
+	case m.Errors > 0:
+		code, verr = exitError, fmt.Errorf("%d seeds failed to run", m.Errors)
+	case *expect == string(checker.Violation):
+		if m.Violations == 0 {
+			code, verr = exitViolation, fmt.Errorf("expected a violation, none found")
+		}
+	case *expect == "no-regression":
+		if m.Comparison != nil && (len(m.Comparison.Regressed) > 0 || len(m.Comparison.NewFailures) > 0) {
+			code = exitViolation
+			verr = fmt.Errorf("regression detected: %d regressed, %d new failing seeds",
+				len(m.Comparison.Regressed), len(m.Comparison.NewFailures))
+		} else if m.Comparison == nil && m.Violations > 0 {
+			code, verr = exitViolation, fmt.Errorf("%d violating seeds (no baseline provided)", m.Violations)
+		}
+	case *expect == string(checker.Linearizable):
+		if m.Violations > 0 || m.Unknown > 0 {
+			code, verr = exitViolation, fmt.Errorf("expected every seed to be linearizable")
+		}
+	case m.Comparison != nil && m.Comparison.HasRegressions():
+		code = exitViolation
+	case m.Violations > 0:
+		code = exitViolation
+	case m.Unknown > 0:
+		code = exitUnknown
+	}
+	return emitCI(*ci, code, verr, suite)
 }

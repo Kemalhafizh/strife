@@ -245,3 +245,33 @@ func TestCIOutputsOnErrors(t *testing.T) {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 }
+
+func TestCampaignCLIAndRegression(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "baseline.json")
+	outPass := filepath.Join(dir, "pass")
+	outReg := filepath.Join(dir, "reg")
+	jPath := filepath.Join(dir, "campaign.xml")
+
+	// 1. Run baseline campaign on correct Raft
+	code, out := runCLI(t, "campaign", "--system", "raft", "--faults", "partition", "--seeds", "1..4", "--duration", "3s", "--commit", "v1.0", "--out", outPass, "--save-baseline", basePath, "--expect", "linearizable")
+	if code != exitOK {
+		t.Fatalf("baseline campaign failed (exit %d):\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(outPass, "campaign.html")); err != nil {
+		t.Fatalf("missing campaign.html: %v", err)
+	}
+
+	// 2. Run stale-reads against baseline -> must detect regression and fail --expect no-regression
+	code, out = runCLI(t, "campaign", "--system", "raft-stale-reads", "--faults", "partition", "--seeds", "1..4", "--duration", "10s", "--commit", "v1.1-bug", "--out", outReg, "--baseline", basePath, "--expect", "no-regression", "--junit", jPath)
+	if code != exitViolation {
+		t.Fatalf("expected exit %d on regression, got %d:\n%s", exitViolation, code, out)
+	}
+	if !strings.Contains(out, "REGRESSED") {
+		t.Fatalf("expected REGRESSED in output:\n%s", out)
+	}
+	d := readJUnit(t, jPath)
+	if d.Tests != 4 || d.Failures == 0 {
+		t.Fatalf("expected failing JUnit cases in campaign, got %+v", d)
+	}
+}

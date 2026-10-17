@@ -307,11 +307,18 @@ there is real demand from users who are not writing Go.
 - **Resilient Fallback**:
   - Accessible `<noscript>` block preserves the server-rendered SVG timeline and audit tables for headless CI viewers and text browsers.
 
-### 3.2 Cloud runner & Regression Dashboard
+### 3.2 Campaign Runner & Regression Dashboard (`pkg/campaign` & `strife campaign`) ✅ done
 
-- A cloud runner: thousands of seeds in parallel, a dashboard of results per
-  commit, and regression tracking ("this seed used to pass").
-- Integration with the GitHub Action from 1.2.
+- **Parallel Multi-Seed Campaign Engine (`pkg/campaign/runner.go`)**:
+  - Executes hundreds or thousands of deterministic seeds in parallel across worker goroutines with deterministic ordering and aggregate SHA-256 campaign fingerprinting.
+  - Automatically generates detailed per-seed timeline reports (`--keep`) and optionally shrinks violating seeds (`--shrink`) within the campaign run.
+- **Commit-to-Commit Regression & Drift Tracker (`pkg/campaign/diff.go`)**:
+  - Compares current seed outcomes against a baseline manifest (`--baseline` / `--save-baseline`) to classify transitions into `regressed` (`linearizable → violation`), `fixed` (`violation → linearizable`), `persistent_failure`, `new_failure`, and `trace_drift` (identical verdict with altered execution trace hash).
+  - Priority corpus replay (`--replay-failing`): automatically merges previously failing seeds from the baseline into subsequent campaign runs so regressions cannot slip past a shifted seed window.
+- **Self-Contained Campaign & Regression Dashboard (`campaign.html`)**:
+  - Interactive dark-theme HTML5 dashboard with KPI cards, clickable per-seed heatmap tiles, status/delta filter pills (`All`, `Violations`, `Regressed`, `Fixed`, `Trace Drift`, `Linearizable`), live search, and one-line reproduction commands.
+- **CI & GitHub Action Integration (`pkg/campaign/suite.go` & `scripts/github-action.sh`)**:
+  - Supports `--expect no-regression`, `--junit`, and `--summary` (`$GITHUB_STEP_SUMMARY`), surfacing seed regressions directly in pull request checks and step summaries.
 
 ## Phase 4: Compliance & Attestation (Enterprise Audit Ready)
 
