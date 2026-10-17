@@ -54,6 +54,8 @@ Usage:
   strife run        [flags]   run a live test against a real cluster
   strife workload   [flags]   list, inspect, or compile custom Wasm workload plugins
   strife bench inject [flags] measure fault-injection precision on a real cluster
+  strife server     [flags]   run the self-hosted run registry and dashboard
+  strife push       [flags]   push a run or campaign to a strife server
   strife keygen     [flags]   generate an Ed25519 signing keypair for compliance audits
   strife sign       [flags]   cryptographically sign a report artifact (in-toto attestation)
   strife verify     [flags]   verify a signed compliance bundle against a public key
@@ -93,6 +95,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdWorkload(rest, stdout, stderr)
 	case "bench":
 		code, err = cmdBench(rest, stdout, stderr)
+	case "server":
+		code, err = cmdServer(rest, stdout, stderr)
+	case "push":
+		code, err = cmdPush(rest, stdout, stderr)
 	case "keygen":
 		code, err = cmdKeygen(rest, stdout, stderr)
 	case "sign":

@@ -40,6 +40,21 @@ inputs:
     description: Go version used to build Strife. Defaults to the version in Strife's go.mod.
     required: false
     default: ""
+  push-server:
+    description: >
+      URL of a strife server (the self-hosted run registry). When set, the
+      run's reports (or its campaign.json) are pushed there after the run,
+      with the commit, branch and a link to this job.
+    required: false
+    default: ""
+  push-project:
+    description: Project on the strife server to push to.
+    required: false
+    default: ""
+  push-token-env:
+    description: Name of the environment variable holding the project's write token.
+    required: false
+    default: STRIFE_TOKEN
 
 outputs:
   exit-code:
@@ -119,6 +134,32 @@ runs:
         STRIFE_JUNIT: ${{ inputs.junit }}
         STRIFE_SUMMARY: ${{ inputs.summary }}
       run: STRIFE_BIN="$RUNNER_TEMP/strife-bin/strife" "$GITHUB_ACTION_PATH/scripts/github-action.sh"
+
+    - name: Push to the run registry
+      if: ${{ always() && inputs.push-server != '' && inputs.out != '' }}
+      shell: bash
+      env:
+        OUT: ${{ inputs.out }}
+        SERVER: ${{ inputs.push-server }}
+        PROJECT: ${{ inputs.push-project }}
+        TOKEN_ENV: ${{ inputs.push-token-env }}
+      run: |
+        # A campaign is pushed as one manifest; otherwise every run directory.
+        strife="$RUNNER_TEMP/strife-bin/strife"
+        [ -d "$OUT" ] || { echo "::notice::nothing to push: $OUT does not exist"; exit 0; }
+        targets=$(find "$OUT" -maxdepth 1 -name campaign.json)
+        [ -n "$targets" ] || targets=$(find "$OUT" -name report.json -exec dirname {} \; | sort -u | head -n 50)
+        status=0
+        for t in $targets; do
+          if ! out=$("$strife" push --server "$SERVER" --project "$PROJECT" --token "env:$TOKEN_ENV" --fail-on none "$t" 2>&1); then
+            echo "::warning title=Strife push failed::$out"
+            status=1
+            continue
+          fi
+          echo "$out"
+          case "$out" in *"change: regression"*) echo "::error title=Strife regression::$(echo "$out" | head -n1)";; esac
+        done
+        exit $status
 
     - name: Upload reports
       if: ${{ always() && inputs.upload == 'true' }}
