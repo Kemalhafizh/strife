@@ -3,20 +3,14 @@
   "seed": 42,
   "duration": "60s",
   "nodes": [
-    {
-      "name": "n1",
-      "ip": "172.31.1.11",
-      "container": "strife-postgres1"
-    }
+    { "name": "n1", "ip": "172.31.1.11", "container": "strife-postgres1" }
   ],
   "transport": {
     "type": "docker"
   },
   "db": {
     "kind": "postgres",
-    "endpoints": [
-      "172.31.1.11:5432"
-    ],
+    "endpoints": ["172.31.1.11:5432"],
     "user": "postgres",
     "password": "env:STRIFE_PG_PASSWORD",
     "tls": "require",
@@ -34,10 +28,7 @@
     "timeout": "5s"
   },
   "nemesis": {
-    "faults": [
-      "kill",
-      "pause"
-    ],
+    "faults": ["kill", "pause"],
     "interval": "10s",
     "length": "4s",
     "interface": "eth0"

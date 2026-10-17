@@ -3,12 +3,7 @@
   "seed": 7,
   "duration": "60s",
   "nodes": [
-    {
-      "name": "n1",
-      "ip": "172.31.4.11",
-      "container": "strife-mysql1",
-      "cgroup": "auto"
-    }
+    { "name": "n1", "ip": "172.31.4.11", "container": "strife-mysql1", "cgroup": "auto" }
   ],
   "transport": {
     "type": "docker",
@@ -16,9 +11,7 @@
   },
   "db": {
     "kind": "mysql",
-    "endpoints": [
-      "172.31.4.11:3306"
-    ],
+    "endpoints": ["172.31.4.11:3306"],
     "user": "root",
     "password": "env:STRIFE_MYSQL_PASSWORD",
     "database": "strife"

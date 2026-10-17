@@ -3,12 +3,7 @@
   "seed": 42,
   "duration": "60s",
   "nodes": [
-    {
-      "name": "n1",
-      "ip": "172.31.3.11",
-      "container": "strife-tidb1",
-      "cgroup": "auto"
-    }
+    { "name": "n1", "ip": "172.31.3.11", "container": "strife-tidb1", "cgroup": "auto" }
   ],
   "transport": {
     "type": "docker",
@@ -16,9 +11,7 @@
   },
   "db": {
     "kind": "tidb",
-    "endpoints": [
-      "172.31.3.11:4000"
-    ],
+    "endpoints": ["172.31.3.11:4000"],
     "user": "root",
     "database": "test",
     "init_sql": "SET SESSION tidb_txn_mode = 'optimistic'"
@@ -34,9 +27,7 @@
     "timeout": "5s"
   },
   "nemesis": {
-    "faults": [
-      "freeze"
-    ],
+    "faults": ["freeze"],
     "interval": "10s",
     "length": "3s"
   }

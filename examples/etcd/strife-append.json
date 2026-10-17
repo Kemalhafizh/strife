@@ -3,32 +3,16 @@
   "seed": 42,
   "duration": "120s",
   "nodes": [
-    {
-      "name": "n1",
-      "ip": "172.30.0.11",
-      "container": "strife-etcd1"
-    },
-    {
-      "name": "n2",
-      "ip": "172.30.0.12",
-      "container": "strife-etcd2"
-    },
-    {
-      "name": "n3",
-      "ip": "172.30.0.13",
-      "container": "strife-etcd3"
-    }
+    { "name": "n1", "ip": "172.30.0.11", "container": "strife-etcd1" },
+    { "name": "n2", "ip": "172.30.0.12", "container": "strife-etcd2" },
+    { "name": "n3", "ip": "172.30.0.13", "container": "strife-etcd3" }
   ],
   "transport": {
     "type": "docker"
   },
   "db": {
     "kind": "etcd",
-    "endpoints": [
-      "http://172.30.0.11:2379",
-      "http://172.30.0.12:2379",
-      "http://172.30.0.13:2379"
-    ],
+    "endpoints": ["http://172.30.0.11:2379", "http://172.30.0.12:2379", "http://172.30.0.13:2379"],
     "process": "etcd --name",
     "start": "/usr/local/bin/start-etcd.sh"
   },
@@ -43,13 +27,7 @@
     "timeout": "2s"
   },
   "nemesis": {
-    "faults": [
-      "partition",
-      "kill",
-      "pause",
-      "latency",
-      "loss"
-    ],
+    "faults": ["partition", "kill", "pause", "latency", "loss"],
     "interval": "10s",
     "length": "8s",
     "interface": "eth0"
