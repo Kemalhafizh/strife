@@ -303,7 +303,7 @@ func TestCheckWithProbesCorrelation(t *testing.T) {
 	if code != exitViolation {
 		t.Fatalf("expected exit %d, got %d:\n%s", exitViolation, code, out)
 	}
-	if !strings.Contains(out, "root-cause [high]") || !strings.Contains(out, "fsync_stall") {
+	if !strings.Contains(out, "root-cause [high]") || !strings.Contains(out, "fsync stalled for 95ms") {
 		t.Fatalf("expected high-confidence root-cause attribution in output, got:\n%s", out)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "probes.jsonl")); err != nil {
@@ -321,15 +321,31 @@ func TestCheckWithProbesCorrelation(t *testing.T) {
 func TestComplianceCLIAndDossier(t *testing.T) {
 	dir := t.TempDir()
 	simDir := filepath.Join(dir, "sim")
+	planPath := filepath.Join(dir, "plan.json")
 	keyPrefix := filepath.Join(dir, "auditor")
 	bundlePath := filepath.Join(dir, "bundle.json")
 	dossierDir := filepath.Join(dir, "dossier")
 
-	code, out := runCLI(t, "sim", "--system", "raft", "--seed", "3", "--faults", "all", "--duration", "12s", "--out", simDir)
+	planJSON := `{
+  "seed": 3,
+  "nodes": 5,
+  "duration": 4000000000,
+  "faults": [
+    {"id": 1, "kind": "partition", "nodes": [0, 1], "start": 500000000, "end": 1200000000},
+    {"id": 2, "kind": "kill", "nodes": [2], "start": 1300000000, "end": 2000000000},
+    {"id": 3, "kind": "io-stall", "nodes": [3], "start": 2100000000, "end": 2800000000},
+    {"id": 4, "kind": "clock-skew", "nodes": [4], "start": 2900000000, "end": 3500000000, "offset": 50000000}
+  ]
+}`
+	if err := os.WriteFile(planPath, []byte(planJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "sim", "--system", "raft", "--seed", "3", "--duration", "4s", "--plan", planPath, "--out", simDir)
 	if code != exitOK {
 		t.Fatalf("sim failed (%d):\n%s", code, out)
 	}
-	repPath := filepath.Join(simDir, "report.json")
+	repPath := filepath.Join(simDir, "raft-seed3", "report.json")
 
 	code, out = runCLI(t, "keygen", "--out", keyPrefix)
 	if code != exitOK {
