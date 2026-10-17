@@ -28,14 +28,36 @@ const (
 	tcaOptions = 2          // TCA_OPTIONS
 )
 
-// tcNetemQopt matches Linux kernel struct tc_netem_qopt.
+// tcNetemQopt matches the kernel's struct tc_netem_qopt, field for field
+// (include/uapi/linux/pkt_sched.h). Latency and jitter are in psched
+// ticks, which are nanoseconds on every kernel since 2.6.3x; the exact
+// 64-bit values also go in TCA_NETEM_LATENCY64/JITTER64.
 type tcNetemQopt struct {
-	Latency   uint32 // in microseconds
-	Jitter    uint32 // in microseconds
-	Limit     uint32 // FIFO queue length limit
-	Loss      uint32 // random packet loss (0 to 2^32 - 1)
-	Gap       uint32 // packet reordering gap
-	Duplicate uint32 // packet duplication rate
+	Latency   uint32 // ticks (ns)
+	Limit     uint32 // queue length in packets; 0 would drop everything
+	Loss      uint32 // random loss probability, 0..2^32-1
+	Gap       uint32 // re-ordering gap, 0 = none
+	Duplicate uint32 // duplication probability
+	Jitter    uint32 // ticks (ns)
+}
+
+// Netem attributes that follow the qopt struct inside TCA_OPTIONS.
+const (
+	tcaNetemLatency64 = 10
+	tcaNetemJitter64  = 11
+)
+
+// netlinkTimeout bounds how long the agent waits for the kernel's ack.
+var netlinkTimeout = syscall.Timeval{Sec: 2}
+
+func clampU32(ns int64) uint32 {
+	if ns < 0 {
+		return 0
+	}
+	if ns > int64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(ns)
 }
 
 // LinuxNetlink implements NetlinkEngine for Linux.
@@ -88,20 +110,25 @@ func (n *LinuxNetlink) setNetemNetlink(iface string, delay, jitter time.Duration
 		return err
 	}
 	defer syscall.Close(fd)
+	if err := syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &netlinkTimeout); err != nil {
+		return err
+	}
 
 	qopt := tcNetemQopt{
-		Latency: uint32(delay.Microseconds()),
-		Jitter:  uint32(jitter.Microseconds()),
+		Latency: clampU32(delay.Nanoseconds()),
+		Jitter:  clampU32(jitter.Nanoseconds()),
 		Limit:   1000,
 	}
 	if loss > 0 {
-		qopt.Loss = uint32(loss * float64(^uint32(0)))
+		qopt.Loss = uint32(min(loss, 1) * float64(^uint32(0)))
 	}
 
 	var optBuf bytes.Buffer
 	if err := binary.Write(&optBuf, binary.LittleEndian, qopt); err != nil {
 		return err
 	}
+	writeAttr(&optBuf, tcaNetemLatency64, binary.LittleEndian.AppendUint64(nil, uint64(delay.Nanoseconds())))
+	writeAttr(&optBuf, tcaNetemJitter64, binary.LittleEndian.AppendUint64(nil, uint64(jitter.Nanoseconds())))
 
 	var attrBuf bytes.Buffer
 	writeAttr(&attrBuf, tcaKind, append([]byte("netem"), 0))
@@ -179,6 +206,9 @@ func (n *LinuxNetlink) delNetemNetlink(iface string) error {
 		return err
 	}
 	defer syscall.Close(fd)
+	if err := syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &netlinkTimeout); err != nil {
+		return err
+	}
 
 	tcHdr := struct {
 		Family  uint8
@@ -223,7 +253,7 @@ func (n *LinuxNetlink) delNetemNetlink(iface string) error {
 	rb := make([]byte, 4096)
 	nr, _, err := syscall.Recvfrom(fd, rb, 0)
 	if err != nil {
-		return nil // Non-fatal on delete
+		return fmt.Errorf("netlink: no ack for qdisc delete: %w", err)
 	}
 	if nr >= syscall.SizeofNlMsghdr+4 {
 		respHdr := (*syscall.NlMsghdr)(unsafe.Pointer(&rb[0]))

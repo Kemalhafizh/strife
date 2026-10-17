@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -123,8 +122,7 @@ func (p *Postgres) readMsg() (byte, []byte, error) {
 	if n < 4 || n > 1<<30 {
 		return 0, nil, fmt.Errorf("postgres: bad message length %d", n)
 	}
-	body := make([]byte, n-4)
-	_, err = io.ReadFull(p.rd, body)
+	body, err := readN(p.rd, int(n-4))
 	return typ, body, err
 }
 

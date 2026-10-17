@@ -150,9 +150,7 @@ func (m *MySQL) readPacket() ([]byte, error) {
 	}
 	n := int(hdr[0]) | int(hdr[1])<<8 | int(hdr[2])<<16
 	m.seq = hdr[3] + 1
-	p := make([]byte, n)
-	_, err := io.ReadFull(m.rd, p)
-	return p, err
+	return readN(m.rd, n)
 }
 
 func parseMySQLError(p []byte) *mysqlError {
@@ -517,6 +515,9 @@ func (m *MySQL) readResult() (result, bool, error) {
 	if err != nil {
 		return result{}, false, err
 	}
+	if cols == 0 || cols > 4096 {
+		return result{}, false, fmt.Errorf("mysql: implausible column count %d", cols)
+	}
 	for i := uint64(0); i < cols; i++ { // column definitions
 		if _, err := m.readPacket(); err != nil {
 			return result{}, false, err
@@ -549,7 +550,7 @@ func (m *MySQL) readResult() (result, bool, error) {
 				vals = append(vals, nil)
 				continue
 			}
-			if off+int(l) > len(row) {
+			if l > uint64(len(row)-off) { // also rejects lengths that overflow int
 				return result{}, false, io.ErrUnexpectedEOF
 			}
 			v := string(row[off : off+int(l)])

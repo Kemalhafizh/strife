@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -140,7 +141,27 @@ func (r *Redis) do(ctx context.Context, args ...string) (any, error) {
 
 // readReply parses one RESP2 value: string, error, integer, bulk (nil-able)
 // or array.
-func readReply(rd *bufio.Reader) (any, error) {
+func readReply(rd *bufio.Reader) (any, error) { return readReplyDepth(rd, 0) }
+
+// readN reads exactly n bytes, allocating as data arrives rather than
+// trusting a length announced by the server.
+func readN(r io.Reader, n int) ([]byte, error) {
+	if n <= 64<<10 {
+		buf := make([]byte, n)
+		_, err := io.ReadFull(r, buf)
+		return buf, err
+	}
+	var b bytes.Buffer
+	if _, err := io.CopyN(&b, r, int64(n)); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+func readReplyDepth(rd *bufio.Reader, depth int) (any, error) {
 	line, err := rd.ReadString('\n')
 	if err != nil {
 		return nil, err
@@ -168,8 +189,8 @@ func readReply(rd *bufio.Reader) (any, error) {
 		if n == -1 {
 			return nil, nil
 		}
-		buf := make([]byte, n+2)
-		if _, err := io.ReadFull(rd, buf); err != nil {
+		buf, err := readN(rd, n+2)
+		if err != nil {
 			return nil, err
 		}
 		return string(buf[:n]), nil
@@ -181,11 +202,16 @@ func readReply(rd *bufio.Reader) (any, error) {
 		if n == -1 {
 			return nil, nil
 		}
-		out := make([]any, n)
-		for i := range out {
-			if out[i], err = readReply(rd); err != nil {
+		if depth >= 16 {
+			return nil, fmt.Errorf("redis: replies nested deeper than 16")
+		}
+		out := make([]any, 0, min(n, 1024)) // grows with what actually arrives
+		for i := 0; i < n; i++ {
+			v, err := readReplyDepth(rd, depth+1)
+			if err != nil {
 				return nil, err
 			}
+			out = append(out, v)
 		}
 		return out, nil
 	}

@@ -80,6 +80,9 @@ jobs:
           for ip in 11 12 13; do
             curl -fsS -m 2 -H "Authorization: Bearer $STRIFE_AGENT_TOKEN" "http://172.30.0.$ip:9292/health"; echo
           done
+      - name: the agent's netem parameters are what the kernel holds
+        if: contains(steps.faults.outputs.faults, 'latency')
+        run: scripts/live/check-agent-netem.sh strife-etcd1
       - name: measure injection latency (docker exec vs strife-agent)
         run: |
           mkdir -p live-out

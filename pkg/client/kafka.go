@@ -141,7 +141,7 @@ type kreader struct {
 func (r *kreader) take(n int) []byte {
 	if r.err != nil || n < 0 || len(r.b) < n {
 		r.err = io.ErrUnexpectedEOF
-		return make([]byte, max(n, 0))
+		return make([]byte, 8) // enough for any fixed-size read; r.err is set
 	}
 	out := r.b[:n]
 	r.b = r.b[n:]
@@ -271,8 +271,8 @@ func (k *Kafka) request(ctx context.Context, c *kafkaConn, api, version int16, b
 		k.forget(c.addr)
 		return nil, &sentError{fmt.Errorf("kafka: bad response length %d", n)}
 	}
-	resp := make([]byte, n)
-	if _, err := io.ReadFull(c.rd, resp); err != nil {
+	resp, err := readN(c.rd, int(n))
+	if err != nil {
 		k.forget(c.addr)
 		return nil, &sentError{err}
 	}
