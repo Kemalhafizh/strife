@@ -113,7 +113,7 @@ func Correlate(ops []history.Op, check checker.Report, sched nemesis.Schedule, e
 		return nil
 	}
 	for _, p := range paired {
-		if p.Status != history.Info {
+		if p.Status() != history.Info {
 			continue
 		}
 		winStart := p.Call
@@ -130,7 +130,7 @@ func Correlate(ops []history.Op, check checker.Report, sched nemesis.Schedule, e
 			continue
 		}
 		matchedFaults := overlappingFaults(sched, searchStart, winEnd)
-		opDesc := fmt.Sprintf("p%d %s(%s) -> info", p.Process, p.F, p.Key)
+		opDesc := fmt.Sprintf("p%d %s(%s) -> info", p.Process, p.Input.F, p.Input.Key)
 		var evSummaries []string
 		for _, ev := range matchedEvents {
 			evSummaries = append(evSummaries, ev.Summary())
@@ -138,7 +138,7 @@ func Correlate(ops []history.Op, check checker.Report, sched nemesis.Schedule, e
 		hyp := fmt.Sprintf("indeterminate operation %s [%s → %s] coincided with server-side probe telemetry: %s",
 			opDesc, fmtNs(winStart), fmtNs(winEnd), strings.Join(evSummaries, "; "))
 		findings = append(findings, Finding{
-			Key:         p.Key,
+			Key:         p.Input.Key,
 			Operation:   opDesc,
 			Confidence:  "medium",
 			ServerEvent: matchedEvents[0],
