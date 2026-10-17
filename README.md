@@ -10,7 +10,7 @@
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20(stdlib%20only)-2ea44f)](go.mod)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-[Quick Start](#quick-start) · [Interactive Demos](site/index.html) · [Shrinking](#shrinking-failures) · [Models & Checkers](#consistency-models--anomaly-detection) · [Live Clusters & Agent](#live-clusters--strife-agent) · [Benchmarks](docs/BENCHMARKS.md) · [Wasm Workloads](#custom-workloads--wasm-vm) · [Campaigns](#regression-campaigns) · [Attestation & Compliance](#cryptographic-attestation--compliance-dossiers) · [Architecture](#architecture)
+[Quick Start](#quick-start) · [Interactive Demos](site/index.html) · [Shrinking](#shrinking-failures) · [Models & Checkers](#consistency-models--anomaly-detection) · [Live Clusters & Agent](#live-clusters--strife-agent) · [Benchmarks](docs/BENCHMARKS.md) · [Wasm Workloads](#custom-workloads--wasm-vm) · [Campaigns](#regression-campaigns) · [Attestation & Compliance](#cryptographic-attestation--compliance-dossiers) · [Run Registry](#run-registry-strife-server) · [Architecture](#architecture)
 
 </div>
 
@@ -43,7 +43,7 @@ In the trace above, a Raft implementation acknowledges log appends before `fsync
 
 ## Design Constraints
 
-- **Zero external dependencies.** Both `strife` and `strife-agent` compile from the Go 1.23 standard library alone (`go.mod` has no `require` block). Wire protocols for etcd v3, Redis/Valkey (RESP2), PostgreSQL (v3 protocol with SCRAM-SHA-256 and TLS), MySQL/TiDB (`caching_sha2_password`, TLS), Kafka (Produce v3 / Fetch v4, RecordBatch v2 with CRC-32C), Linux `AF_NETLINK` route sockets, Ed25519 `in-toto` signing, and the WebAssembly 1.0 bytecode interpreter are implemented in-tree.
+- **Zero external dependencies.** Both `strife` and `strife-agent` compile from the Go 1.23 standard library alone (`go.mod` has no `require` block). Wire protocols for etcd v3, Redis/Valkey (RESP2), PostgreSQL (v3 protocol with SCRAM-SHA-256 and TLS), MySQL/TiDB (`caching_sha2_password`, TLS), Kafka (Produce v3 / Fetch v4, RecordBatch v2 with CRC-32C), Linux `AF_NETLINK` route and netfilter (`nf_tables`) sockets, Ed25519 `in-toto` signing, and the WebAssembly 1.0 bytecode interpreter are implemented in-tree.
 - **Pinned randomness.** Standard `math/rand` algorithms are not guaranteed to stay identical across Go releases. Strife uses a self-contained `xoshiro256**` PRNG seeded via `SplitMix64` ([`internal/rng`](internal/rng/rng.go)) with per-actor FNV-1a stream forking (`root.Fork("client/3")`), so adding a client or node does not perturb another actor's random draws.
 - **Honest verdicts.** When a checker exhausts its step or wall-clock budget without finding either a valid linearization or a proof of impossibility, the verdict is `unknown` (exit code `3`), never a false `linearizable`. A live run in which no operation succeeded is `unknown` too.
 - **Measured claims.** Every performance or detection number in this README links to [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), which gives the command, machine and date that produced it.
@@ -173,7 +173,7 @@ strife check --history txn.jsonl --model txn --isolation snapshot-isolation
 
 | Model | Operations | Verification Engine & Complexity |
 | :--- | :--- | :--- |
-| `kv` | `read`, `write`, `cas` | Wing & Gong / Lowe linearizability search with bitset state memoization, per-key P-compositionality, symmetry reduction, and $O(N \log N)$ stale-read diagnosis (~95k–500k ops/s per core on a single key depending on concurrency; [measured](docs/BENCHMARKS.md#2-checker-throughput)). |
+| `kv` | `read`, `write`, `cas` | Wing & Gong / Lowe linearizability search with bitset state memoization, per-key P-compositionality, symmetry reduction, and $O(N \log N)$ stale-read diagnosis earliest-deadline-first candidate order with one candidate per class of interchangeable operations (~85k–470k ops/s per core on a single key with 5–50 concurrent processes; [measured](docs/BENCHMARKS.md#2-checker-throughput)). |
 | `set` | `add`, `read` | Grow-only set linearizability + missing-element counterexample witnesses. |
 | `queue` | `enqueue`, `dequeue` | FIFO queue linearizability; diagnoses phantom dequeues, FIFO order inversions, and premature empty returns. |
 | `counter` | `inc` / `add`, `read` | Shared integer counter linearizability; diagnoses lost increments and overstated reads. |
@@ -217,8 +217,8 @@ strife run  --config strife.json --faults none --expect linearizable   # fault-f
 | :--- | :--- | :--- |
 | `docker` | `docker exec` per command; host commands on the Docker host (optionally `sudo -n`). `"cgroup": "auto"` and `"io_device": "auto"` are discovered at run time. | yes |
 | `ssh` | system `ssh` (keys, agents, jump hosts and `known_hosts` as configured), optional `sudo -n` | yes |
-| `kubernetes` | `kubectl exec` into pods; `"ip": "auto"` reads pod IPs at run time and `{ip}` endpoints expand per node ([example](examples/kubernetes)) | no: use the agent |
-| `agent` | `strife-agent` on each node: persistent HTTP, netlink for netem, direct signals and cgroup v2, token authentication | yes |
+| `kubernetes` | `kubectl exec` into pods; `"ip": "auto"` reads pod IPs at run time and `{ip}` endpoints expand per node ([example](examples/kubernetes)) | yes, with the node helper DaemonSet ([`node-helper.yaml`](examples/kubernetes/node-helper.yaml), `transport.node_helper`) |
+| `agent` | `strife-agent` on each node: persistent HTTP, nf_tables over netlink for partitions, netlink for netem, direct signals and cgroup v2, token authentication | yes |
 | `dry-run` | logs the commands | – |
 
 **Clients** (`db.kind`) are implemented in-tree, with credentials given as `env:NAME` or `file:PATH` references so that secrets never land in configs or reports:
@@ -242,12 +242,17 @@ strife run  --config strife.json --faults none --expect linearizable   # fault-f
 
 | Fault | `docker exec` P50 / P95 | `strife-agent` P50 / P95 | Inside the agent (P50) |
 | :--- | ---: | ---: | ---: |
-| `pause` (SIGSTOP) | 43.7 / 45.1 ms | **1.36 / 1.90 ms** | 372 µs |
-| `kill` (SIGKILL) | 44.4 / 46.1 ms | **1.58 / 1.99 ms** | 495 µs |
-| `partition` (iptables) | 57.9 / 61.3 ms | **4.02 / 4.29 ms** | 2.61 ms |
-| `latency` (netem) | 42.8 / 44.1 ms | 48.1 / 59.5 ms ¹ | **159 µs** |
+| `partition` inject (nf_tables) | 49.9 / 53.6 ms | **1.12 / 1.69 ms** | 149 µs |
+| `partition` heal | 50.8 / 54.8 ms | **0.99 / 1.74 ms** | 139 µs |
+| `pause` (SIGSTOP) | 37.5 / 41.0 ms | **1.37 / 1.94 ms** | 348 µs |
+| `kill` (SIGKILL) | 38.8 / 41.9 ms | **1.59 / 2.28 ms** | 476 µs |
+| `latency` (netem) | 37.5 / 41.9 ms | 50.6 / 60.3 ms ¹ | **163 µs** |
 
-¹ The agent's reply crosses the interface it just slowed down, so the confirmation arrives late; the qdisc itself was installed 159 µs after the request reached the agent. Partitions still shell out to `iptables` inside the agent; signals, netem and cgroup writes are direct syscalls.
+¹ The agent's reply crosses the interface it just slowed down, so the confirmation arrives late; the qdisc itself was installed 163 µs after the request reached the agent.
+
+Every fault is a direct kernel call inside the agent, without forking a binary. Partitions are nf_tables rules sent over netlink in one batch per change (IPv4 and IPv6). Deleting a rule makes the kernel wait for an RCU grace period (~14 ms), so a heal inserts an `accept` ahead of the `drop` instead, and the chain is compacted after 250 ms without changes. Before this, the agent forked `iptables`: 4.02 ms to inject and 7.44 ms to heal. `iptables` (IPv4) is still the fallback on hosts without nf_tables, and the agent reports which one it used (`filter:nftables`) with every fault.
+
+On Kubernetes, `freeze` and `io-stall` go through a privileged node helper DaemonSet that finds the pod's cgroup and data disk from its container ID: ~90 ms per transition, nearly all of it `kubectl exec`, with etcd verified linearizable under both in kind ([measured](docs/BENCHMARKS.md#1-fault-injection-latency)).
 
 ### Server-Side Diagnostic Probes & Root-Cause Correlation
 
@@ -379,6 +384,26 @@ Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` wh
 
 ---
 
+## Run Registry (`strife server`)
+
+`strife server` keeps every run your CI produces, inside your own network: one binary, a data directory instead of a database, per-project tokens. CI pushes runs to it with `strife push`:
+
+```sh
+strife server --config server.json          # dashboard and API on :8080
+
+# in CI, after a run or a campaign (the commit, branch and job link come from the CI variables)
+strife sign --report strife-out/run/report.json --key ci.key --signer ci --out strife-out/run/bundle.json
+STRIFE_TOKEN=... strife push --server https://strife.internal --project payments strife-out/run
+```
+
+- **Verified on arrival.** The server recomputes the report's fingerprint, hashes `history.jsonl` against the digest in the report, and checks the attestation against the project's trusted Ed25519 keys. A run that does not verify is refused (`422`), never stored with a warning; a project can require a signature.
+- **Regressions per series.** Runs of the same kind, target and fault kinds form a series. Each run is compared with the previous one and recorded as a regression, a fix, still failing or still passing; campaigns are compared seed by seed. `strife push` fails the CI job on a regression (`--fail-on regression|violation|none`), and a Slack-compatible webhook hears about regressions and fixes.
+- **Everything an auditor asks for.** A dashboard (no JavaScript, strict CSP), a JSON API, the original artifacts, the interactive timeline, and compliance dossiers generated on demand with the signature re-verified.
+
+The Action pushes with `push-server` and `push-project`; CI dogfoods this on every commit by pushing a campaign to a live server and checking the API and dashboard. Configuration, API and limits: [`docs/server.md`](docs/server.md).
+
+---
+
 ## Empirical Validation
 
 Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
@@ -396,7 +421,7 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 
 | System | Faults | Verdict |
 | :--- | :--- | :--- |
-| etcd 3.5 (Docker, via `strife-agent`, and on Kubernetes in kind) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable; transactions strictly serializable |
+| etcd 3.5 (Docker, via `strife-agent`, and on Kubernetes in kind, host faults through the node helper) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable; transactions strictly serializable |
 | PostgreSQL 17, SERIALIZABLE primary | kill -9, pause | strictly serializable |
 | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation holds; **write skew (G2)** caught at serializable |
 | PostgreSQL 17, async standbys | partition | **stale reads** caught; `shrink --live` shows no fault is needed |
@@ -405,7 +430,7 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 | Valkey 8 | partition, pause, kill -9 | **stale replica reads** caught; single primary with `appendfsync always` linearizable |
 | Kafka 3.9.1 and 4.1.0 (KRaft) | partition, kill -9, pause | no acknowledged record lost or reordered; stale reads after leader changes reported |
 
-**Checker correctness:** in brute-force cross-checks the list-append checker flagged none of 150,030 valid histories and caught 99.81 % of 49,970 invalid ones; the register-transaction checker flagged none of 40,000. Every parser of untrusted bytes (wire protocols, JSONL, Wasm) is fuzzed in CI.
+**Checker correctness:** in brute-force cross-checks the linearizability search disagreed with exhaustive enumeration on none of 400,000 random histories (kv, counter, queue, set), the list-append checker flagged none of 150,030 valid histories and caught 99.81 % of 49,970 invalid ones, and the register-transaction checker flagged none of 40,000. Every parser of untrusted bytes (wire protocols, JSONL, Wasm) is fuzzed in CI.
 
 ---
 
@@ -417,7 +442,7 @@ flowchart LR
   seed --> wl["pkg/workload<br/>PRNG / Wasm 1.0 VM"]
   sched --> simw["pkg/sim<br/>Discrete-Event Simulator"]
   wl --> simw
-  sched --> live["pkg/runner + strife-agent<br/>RTNETLINK · cgroup v2 · Signals"]
+  sched --> live["pkg/runner + strife-agent<br/>nf_tables · RTNETLINK · cgroup v2 · Signals"]
   wl --> live
   simw --> hist[("history.jsonl")]
   live --> hist
@@ -427,11 +452,12 @@ flowchart LR
   chk --> corr
   corr --> rep["pkg/report<br/>HTML5 Studio · JUnit · JSON"]
   rep --> att["pkg/attest + pkg/compliance<br/>Ed25519 in-toto · Audit Dossier"]
+  att --> reg["pkg/server<br/>Run Registry · Regressions · Webhooks"]
 ```
 
 ```text
-cmd/strife        CLI: sim, campaign, shrink, check, plan, run, bench, workload, keygen, sign, verify, compliance, systems, version
-cmd/strife-agent  Per-node daemon: Linux AF_NETLINK netem, direct signals, cgroup v2, /probes telemetry, token auth
+cmd/strife        CLI: sim, campaign, shrink, check, plan, run, bench, workload, keygen, sign, verify, compliance, server, push, systems, version
+cmd/strife-agent  Per-node daemon: nf_tables partitions and netem over AF_NETLINK, direct signals, cgroup v2, /probes telemetry, token auth
 internal/rng      Pinned, forkable xoshiro256** PRNG seeded with SplitMix64
 internal/stats    Nearest-rank percentiles and latency summaries
 internal/secret   env:/file: secret references and redaction
@@ -439,7 +465,7 @@ internal/jsonschema  JSON Schema generation, validation and compatibility checks
 pkg/history       Jepsen-style operation histories, JSONL codec, SHA-256 hashing
 pkg/model         Sequential specifications: kv, set, queue, counter, idgen, txn, append
 pkg/txn           Dependency-graph checkers: register txns and Elle-style list-append (G0, G1a/b/c, G-single, G2, G-realtime, lost appends)
-pkg/checker       Wing & Gong / Lowe linearizability solver, P-compositionality, witness diagnosis
+pkg/checker       Wing & Gong / Lowe linearizability solver (earliest deadline first, interchangeable-operation reduction), P-compositionality, witness diagnosis
 pkg/nemesis       Deterministic fault schedule generator & command lowering
 pkg/workload      Declarative workload compiler, presets, and fuel-metered WebAssembly 1.0 stack machine
 pkg/sim           Discrete-event simulation world (network, timers, disk flushes, local clocks)
@@ -447,8 +473,8 @@ pkg/sim/raft      Reference Raft consensus implementation with configurable safe
 pkg/explore       Parallel seed exploration & bit-for-bit determinism verification
 pkg/campaign      Multi-seed campaign runner, baseline regression tracker, HTML heatmap dashboard
 pkg/shrink        1-minimal scenario & history delta debugging; live schedule shrinking with reproduction rates
-pkg/transport     Execution transports: docker exec, ssh, kubectl exec, strife-agent HTTP/Unix socket, dry-run
-pkg/agent         Agent HTTP server, Linux RTNETLINK encoder, cgroup v2 controller, apply-latency collector
+pkg/transport     Execution transports: docker exec, ssh, kubectl exec (with a node helper for host faults), strife-agent HTTP/Unix socket, dry-run
+pkg/agent         Agent HTTP server, nf_tables and RTNETLINK encoders, cgroup v2 controller, apply-latency collector
 pkg/probe         Server-side telemetry collector (fsync canary, Linux PSI, OOM, clock jumps) & correlator
 pkg/client        Zero-dependency clients: etcd v3, Redis/Valkey, PostgreSQL (SCRAM, TLS), Kafka, MySQL/TiDB (caching_sha2, TLS)
 pkg/runner        Live cluster test orchestrator, fault injector & per-run namespace isolation
@@ -456,6 +482,7 @@ pkg/bench         Fault-injection latency benchmark (strife bench inject)
 pkg/report        Interactive HTML5/Canvas timeline studio, Markdown/JUnit exporters, fingerprints
 pkg/attest        in-toto v0.1 statements, Ed25519 signing/verification, release attestations
 pkg/compliance    Regulatory control evaluator (EU DORA, SOC 2, ISO 27001, OJK) with citations & HTML/MD/JSON dossiers
+pkg/server        Self-hosted run registry: verified ingest, series and regressions, webhooks, dashboard, on-demand dossiers
 schemas/          Versioned JSON Schemas for report.json, history.jsonl and dossier.json
 site/             Interactive product showcase & standalone HTML5 demos (timeline, campaign, dossier)
 ```
@@ -473,12 +500,14 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife check [flags]` | Verify a recorded `history.jsonl` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`) and optional `--probes` |
 | `strife plan [flags]` | Print the seeded fault schedule and exact host/container commands without executing them |
 | `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`) |
-| `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent`, `--json`, `--markdown`) |
+| `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent,kubernetes`, `--json`, `--markdown`) |
 | `strife workload [flags]` | List presets (`--list`), compile specs to `.wasm` (`--compile --out`), or inspect `.wasm` plugins (`--inspect`) |
 | `strife keygen [flags]` | Generate an Ed25519 signing keypair (`<prefix>.key` and `<prefix>.pub`) |
 | `strife sign [flags]` | Sign a `report.json` into an `in-toto` v0.1 attestation bundle, or release artifacts (`--release`) |
 | `strife verify [flags]` | Verify a signed `bundle.json` (and optional `history.jsonl`) or a release directory (`--release-dir`) against an Ed25519 public key |
 | `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk` |
+| `strife server [flags]` | Run the self-hosted run registry (`--config server.json`, `--listen`, `--data`, `--tls-cert`/`--tls-key`) |
+| `strife push [flags] PATH` | Push a run directory, `report.json` or `campaign.json` to the registry (`--server`, `--project`, `$STRIFE_TOKEN`, `--fail-on`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 
@@ -501,6 +530,14 @@ Use the composite GitHub Action (see [`docs/github-action.md`](docs/github-actio
 - uses: kemalhafizh/strife@v0.2.0   # a release tag downloads the checksum-verified binary
   with:
     command: sim --system raft --seeds 1..500 --determinism --expect linearizable
+
+- uses: kemalhafizh/strife@v0.2.0   # keep the history and catch regressions across commits
+  env:
+    STRIFE_TOKEN: ${{ secrets.STRIFE_TOKEN }}
+  with:
+    command: campaign --system raft --seeds 1..200
+    push-server: https://strife.internal
+    push-project: payments
 ```
 
 Reports follow versioned JSON Schemas in [`schemas/`](schemas) (`report.v1.json`, `history.v1.json`, `dossier.v1.json`); CI rejects any change that would break them.

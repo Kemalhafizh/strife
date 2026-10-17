@@ -41,6 +41,7 @@ back up.
 | `strife-shrink` (delta debugging) | ✅ Done in Phase 1.1: `strife shrink`, measured below |
 | `strife-agent` & netlink | ✅ Done in Phase 2.1: `cmd/strife-agent`, socket IPC, direct netlink & syscalls, measured below |
 | Server-side probes & Wasm workloads | ✅ Done in Phase 2.4 (`pkg/probe`) & Phase 2.5 (`pkg/workload`, pure-Go Wasm 1.0 VM) |
+| Cloud runner & regression dashboard | 🟡 Self-hosted registry (`strife server`) in Phase 6.1; the hosted option is next |
 | Rust core daemon | ❎ Deferred: Go already meets the single-binary, zero-dependency goal |
 
 ## Phase 1: MVP completion (open source, Apache 2.0)
@@ -427,7 +428,7 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
   `kubectl exec`, discovers pod IPs (`"ip": "auto"`) and expands `{ip}`
   endpoints; `examples/kubernetes` runs etcd as a StatefulSet and the
   `kubernetes` job validates it in kind under partition, kill, pause,
-  latency and loss. Host faults on Kubernetes still need the agent (see 5.5).
+  latency and loss. Host faults on Kubernetes came in 5.5.
 
 ### 5.4 Correctness safety net ✅
 
@@ -440,32 +441,75 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
   real-time edges at plain serializability.
 - Wasm workload determinism is checked in CI.
 
-### 5.5 Carried forward
+### 5.5 Native fault paths ✅ (PR #9)
 
-- Native netfilter in the agent (partitions still fork `iptables`: 4 ms vs
-  1.4 ms for signals).
-- `strife-agent` as a DaemonSet with host access, so `freeze` and `io-stall`
-  work on Kubernetes.
+Measured in [`BENCHMARKS.md`](BENCHMARKS.md) §1–§3, run
+[39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049).
+
+| Carried forward | Done |
+|---|---|
+| Partitions forked `iptables` (4.02 ms inject, 7.44 ms heal at P50) | nf_tables over netlink, IPv4 and IPv6, one batch per change: 1.12 ms inject and 0.99 ms heal end to end, ~145 µs inside the agent. Heals insert an accept instead of deleting (a deletion waits ~14 ms for an RCU grace period); the chain is compacted when idle. `scripts/live/check-agent-partition.sh` proves the traffic really stops and resumes. `iptables` stays as the fallback. |
+| `freeze` and `io-stall` did not work on Kubernetes | A node helper DaemonSet finds the pod's cgroup and data disk on its node; etcd in kind stays linearizable under both. ~90 ms per transition, all of it `kubectl exec`. |
+| One key, ~50 concurrent processes: `unknown` after 50 M steps | Earliest-deadline-first candidates, one per class of interchangeable operations: 10,000 ops with 50 processes at 85 k ops/s, 100,000 at 16 k ops/s; 20 processes 2–2.7× faster. Brute force agrees on 400,000 random histories across four models. |
+
+Found on the way: the agent reported partitions as applied on hosts without
+`iptables` and always advertised it. It now fails such a partition and
+reports the filter it actually uses.
+
+### 5.6 Still open
+
 - One practising auditor reviews the compliance citations before the
   mapping is sold.
 - Tag `v0.2.0`, set `STRIFE_RELEASE_KEY`, list the Action on the
   Marketplace.
-- The WGL search on one key with ~50 concurrent processes exceeds its
-  default budget; a smarter search (or a P-compositional split by value)
-  would move that limit.
+- `strife-agent` as a DaemonSet with the pod network namespaces at hand, so
+  Kubernetes faults land in ~1.5 ms instead of ~90 ms through `kubectl
+  exec`.
+- The easiest single-key histories (5 processes, 100,000 ops) check ~2×
+  slower than before the class reduction (258 k vs 477 k ops/s): skip the
+  sort when a level has one candidate class.
 
-## Phase 6: Commercial layer (next)
+## Phase 6: Commercial layer (in progress)
+
+The blueprint's cloud runner, built in the order customers can adopt it:
+first something they run themselves, inside their network, that CI feeds.
+
+### 6.1 Self-hosted run registry (`strife server`) ✅ foundation (PR #9)
+
+- **Ingest that verifies:** `strife push` (and the Action's `push-server`)
+  sends a report with its history and attestation bundle, or a campaign
+  manifest. The server recomputes the report fingerprint, hashes the
+  history against the report and checks the Ed25519 signature against the
+  project's trusted keys; anything that does not verify is refused (`422`),
+  never stored with a warning. A project can require signatures.
+- **Regression tracking:** runs form series (kind, target, fault kinds);
+  each run is compared with the previous one of its series and recorded as
+  a regression, a fix, still failing or still passing. Campaigns are
+  compared seed by seed. `strife push` fails the CI job on a regression.
+- **Alerts:** a Slack-compatible webhook on regressions and fixes.
+- **Reading:** a dashboard (no JavaScript, strict CSP), the JSON API, the
+  original artifacts, the interactive report, and compliance dossiers
+  generated on demand with the signature re-verified.
+- **Operations:** one binary, a directory instead of a database, writes are
+  atomic, per-project write and read tokens compared in constant time,
+  retention, TLS, the same container image. The `action` CI job pushes a
+  campaign to a live server on every commit and checks the API and the
+  dashboard.
+
+### 6.2 Next
 
 - **Design partners:** 2–3 Indonesian fintechs or banks (the `bi-ojk`
-  mapping is the hook) running Strife on staging. Success means one dossier
-  used in a real audit.
-- **Cloud runner (3.3, not built yet):** hosted campaigns against a
-  customer's staging, with a run history, regression alerts and dossiers
-  signed with a per-tenant key. Start single-tenant, and with the
-  customer's own runner (like a self-hosted GitHub runner) so their data
-  never leaves their network.
-- **Pricing experiment:** free CLI and Action. Paid plans cover hosted
-  campaigns, signed dossiers and support SLAs.
+  mapping is the hook) running Strife on staging with the registry. Success
+  means one dossier used in a real audit.
+- **Registry depth:** signed campaigns, SSO (OIDC) instead of shared tokens,
+  object storage for artifacts, trend charts per series, and scheduled
+  campaigns run by a customer-side runner (like a self-hosted GitHub
+  runner) so data never leaves their network.
+- **Hosted option:** the same registry multi-tenant, with per-tenant signing
+  keys, for teams that do not want to run it.
+- **Pricing experiment:** free CLI, Action and self-hosted registry for one
+  project. Paid plans cover multiple projects with SSO, signed dossiers,
+  the hosted option and support SLAs.
 
 ## Wording guidelines
 

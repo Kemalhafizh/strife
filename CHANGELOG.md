@@ -8,11 +8,31 @@ only gain optional fields.
 
 ## [0.2.0] - Unreleased
 
-Phase 5 of the [roadmap](docs/ROADMAP.md): every published claim now has a
-job that reproduces it, the clients work against current database versions
-with their default security, and Strife ships as signed releases.
+Phases 5 and 5.5 of the [roadmap](docs/ROADMAP.md): every published claim
+now has a job that reproduces it, the clients work against current database
+versions with their default security, every fault kind lands natively, and
+Strife ships as signed releases. Phase 6 starts with a self-hosted run
+registry.
 
 ### Added
+- `strife server`: a self-hosted run registry for CI. It verifies every
+  push (report fingerprint, history digest, Ed25519 signature against the
+  project's trusted keys) and refuses what does not verify, compares each
+  run with the previous run of its series (campaigns seed by seed), records
+  regressions and fixes, alerts a Slack-compatible webhook, and serves a
+  dashboard, the original artifacts, the report timeline and compliance
+  dossiers generated on demand. Per-project write and read tokens, retention,
+  no database. See [`docs/server.md`](docs/server.md).
+- `strife push` sends a run directory, a `report.json` or a `campaign.json`
+  to the registry with the commit, branch and CI job link, and fails the job
+  on a regression (or on any violation, or never). The Action gains
+  `push-server`, `push-project` and `push-token-env`.
+- `freeze` and `io-stall` on Kubernetes, through a node helper DaemonSet
+  (`examples/kubernetes/node-helper.yaml`, `transport.node_helper`): the
+  pod's cgroup and its data disk are found on its node from the container
+  ID. Validated in kind: etcd stays linearizable under both.
+- `strife bench inject` measures any transport of the config, Kubernetes
+  included.
 - `strife bench inject`: measures how late faults land on a real cluster,
   per transport and fault kind, and for strife-agent also the time spent
   inside the agent; the live CI publishes the numbers, collected in
@@ -53,6 +73,20 @@ with their default security, and Strife ships as signed releases.
   list-append.
 
 ### Changed
+- strife-agent applies partitions through nf_tables over netlink, IPv4 and
+  IPv6, without forking a binary: 1.12 ms to inject and 0.99 ms to heal at
+  P50 end to end (4.02 ms and 7.44 ms through `iptables`), 140–150 µs inside
+  the agent. A heal inserts an accept rule instead of deleting (a deletion
+  waits for an RCU grace period, ~14 ms), and the chain is compacted when
+  idle. `iptables` (IPv4) remains the fallback where nf_tables is missing.
+- strife-agent sets up its packet filter on the first partition instead of
+  at start, and reports the filter it uses (`filter:nftables`,
+  `filter:iptables`) in its capabilities and in each fault's method.
+- The linearizability search tries candidates earliest deadline first and
+  only one per class of interchangeable operations. Single-register
+  histories with 50 concurrent processes, which exhausted the default budget
+  and answered `unknown`, now finish (10,000 ops at 85 k ops/s); histories
+  with 20 processes check 2–2.7× faster.
 - Compliance control IDs are now Strife labels (`dora.data-integrity`,
   `soc2.recovery`, `bi-ojk.jejak-audit`…) instead of strings that looked
   like official clause numbers. Scripts that match on the old IDs must be
@@ -66,6 +100,9 @@ with their default security, and Strife ships as signed releases.
   at strict serializability, and reads results from completions.
 
 ### Fixed
+- strife-agent reported partitions as applied on hosts without `iptables`
+  (no rule was installed) and always advertised `iptables`; such a partition
+  now fails with an error.
 - Agent "jitter" statistics were Unix timestamps, not durations, and the
   published 0.28 ms figure had no benchmark behind it; it is replaced by
   measurements.
@@ -92,5 +129,5 @@ JUnit and job-summary output with a GitHub Action, strife-agent, server
 probes, Wasm workloads, campaigns with regression tracking, in-toto report
 attestation and compliance dossiers.
 
-[0.2.0]: https://github.com/kemalhafizh/strife/compare/main...phase-5/proof-and-reach
+[0.2.0]: https://github.com/kemalhafizh/strife/compare/22a3dff...main
 [0.1.0]: https://github.com/kemalhafizh/strife/tree/22a3dff
