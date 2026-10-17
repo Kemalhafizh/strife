@@ -77,7 +77,6 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.filters != nil {
 		s.filter.backends = cfg.filters
 	}
-	_ = s.filter.Setup()
 	return s
 }
 

@@ -44,8 +44,12 @@ func (f *fakeFilter) Teardown() error { f.torndown++; return nil }
 func TestFilterEngineBatchesAndRollsBack(t *testing.T) {
 	nft := &fakeFilter{name: "nftables", usable: true}
 	e := &FilterEngine{dropped: map[string]net.IP{}, backends: []filterBackend{nft, &fakeFilter{name: "iptables", usable: true}}}
-	if err := e.Setup(); err != nil || e.Method() != "filter:nftables" {
-		t.Fatalf("setup %v, method %s", err, e.Method())
+	// Nothing is set up until the first use.
+	if e.probed {
+		t.Fatal("backend probed before any use")
+	}
+	if e.Method() != "filter:nftables" {
+		t.Fatalf("method %s", e.Method())
 	}
 	if err := e.Drop("10.0.0.3", "10.0.0.2", "10.0.0.2"); err != nil {
 		t.Fatal(err)
@@ -70,8 +74,12 @@ func TestFilterEngineBatchesAndRollsBack(t *testing.T) {
 	if err := e.Flush(); err != nil || len(e.Dropped()) != 0 || len(nft.syncs[len(nft.syncs)-1]) != 0 {
 		t.Fatalf("flush: %v %v %v", err, e.Dropped(), nft.syncs)
 	}
-	if err := e.Close(); err != nil || nft.torndown != 1 || e.Method() != "filter:none" {
-		t.Fatalf("close: %v %d %s", err, nft.torndown, e.Method())
+	if err := e.Close(); err != nil || nft.torndown != 1 || len(e.Dropped()) != 0 {
+		t.Fatalf("close: %v %d %v", err, nft.torndown, e.Dropped())
+	}
+	// The next use sets the backend up again.
+	if err := e.Drop("10.0.0.4"); err != nil || !slices.Equal(nft.syncs[len(nft.syncs)-1], []string{"10.0.0.4"}) {
+		t.Fatalf("drop after close: %v %v", err, nft.syncs)
 	}
 }
 
@@ -82,6 +90,9 @@ func TestFilterEngineFallsBackAndRefusesToPretend(t *testing.T) {
 		t.Fatalf("fallback: %v %s", err, e.Method())
 	}
 	none := &FilterEngine{dropped: map[string]net.IP{}, backends: []filterBackend{&fakeFilter{name: "nftables"}, &fakeFilter{name: "iptables"}}}
+	if none.Method() != "filter:none" {
+		t.Fatalf("method without any filter: %s", none.Method())
+	}
 	if err := none.Setup(); !errors.Is(err, ErrNoFilter) {
 		t.Fatalf("setup without any filter: %v", err)
 	}

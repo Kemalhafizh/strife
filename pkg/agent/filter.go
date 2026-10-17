@@ -42,6 +42,7 @@ type FilterEngine struct {
 	dropped  map[string]net.IP
 	backend  filterBackend
 	backends []filterBackend
+	probed   bool // Setup ran: backend is the choice, nil if none works
 	compact  *time.Timer
 }
 
@@ -55,10 +56,16 @@ func NewFilterEngine() *FilterEngine {
 
 // Setup selects the first usable backend. It is not an error for none to be
 // usable: partitions then fail with ErrNoFilter, other faults still work.
+// The engine calls it on first use, so an agent that never partitions never
+// touches the node's packet filter.
 func (f *FilterEngine) Setup() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.backend = nil
+	return f.setup()
+}
+
+func (f *FilterEngine) setup() error {
+	f.probed, f.backend = true, nil
 	for _, b := range f.backends {
 		if b.Available() {
 			f.backend = b
@@ -68,10 +75,17 @@ func (f *FilterEngine) Setup() error {
 	return ErrNoFilter
 }
 
+func (f *FilterEngine) ensure() {
+	if !f.probed {
+		_ = f.setup()
+	}
+}
+
 // Method names the backend in use, e.g. "filter:nftables".
 func (f *FilterEngine) Method() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ensure()
 	if f.backend == nil {
 		return "filter:none"
 	}
@@ -79,6 +93,7 @@ func (f *FilterEngine) Method() string {
 }
 
 func (f *FilterEngine) sync() error {
+	f.ensure()
 	if f.backend == nil {
 		return ErrNoFilter
 	}
@@ -173,7 +188,7 @@ func (f *FilterEngine) Close() error {
 		return nil
 	}
 	err := f.backend.Teardown()
-	f.backend = nil
+	f.backend, f.probed = nil, false
 	return err
 }
 
