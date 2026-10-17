@@ -2,7 +2,9 @@ package txn
 
 import (
 	"fmt"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -228,6 +230,46 @@ func TestAppendAgainstBruteForce(t *testing.T) {
 	}
 	if verdicts[true] < 200 || verdicts[false] < 200 {
 		t.Fatalf("random histories not diverse enough: %v", verdicts)
+	}
+}
+
+// TestAppendCompleteness measures how many histories with no valid strict
+// serial order the checker flags. Unlike soundness this cannot be total: a
+// cycle can hide behind an indeterminate transaction or a read the
+// generator corrupted into something still explainable by a different
+// version order. STRIFE_APPEND_ITERS raises the count for BENCHMARKS.md.
+func TestAppendCompleteness(t *testing.T) {
+	iters := 20000
+	if testing.Short() {
+		iters = 2000
+	}
+	if v, err := strconv.Atoi(os.Getenv("STRIFE_APPEND_ITERS")); err == nil && v > 0 {
+		iters = v
+	}
+	r := rng.New(99)
+	invalid, caught, valid, flagged := 0, 0, 0, 0
+	for iter := 0; iter < iters; iter++ {
+		ops, _ := randomAppendHistory(r, 2+r.Intn(4))
+		v := CheckAppend(ops, LevelStrictSerializable).Verdict == Violation
+		if bruteStrict(ops) {
+			valid++
+			if v {
+				flagged++
+			}
+			continue
+		}
+		invalid++
+		if v {
+			caught++
+		}
+	}
+	rate := float64(caught) / float64(invalid)
+	t.Logf("invalid histories caught: %d/%d (%.2f%%); valid histories flagged: %d/%d", caught, invalid, 100*rate, flagged, valid)
+	if flagged > 0 {
+		t.Fatalf("%d valid histories flagged", flagged)
+	}
+	if rate < 0.99 {
+		t.Fatalf("completeness %.2f%% below 99%%", 100*rate)
 	}
 }
 

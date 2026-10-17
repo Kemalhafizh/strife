@@ -317,6 +317,13 @@ jobs:
           out: live-out/mysql
           junit: live-out/mysql.xml
           artifact-name: live-mysql
+      - name: REPEATABLE READ is caught violating snapshot isolation (no fault needed)
+        uses: ./
+        with:
+          command: run --config examples/mysql/strife-repeatable-read.json --duration 30s --expect violation --quiet
+          out: live-out/mysql-rr
+          junit: live-out/mysql-rr.xml
+          artifact-name: live-mysql-rr
       - name: stop
         if: always()
         working-directory: examples/mysql

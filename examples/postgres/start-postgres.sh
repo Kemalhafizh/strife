@@ -21,10 +21,19 @@ ssl = on
 ssl_cert_file = '/etc/ssl/certs/ssl-cert-snakeoil.pem'
 ssl_key_file = '/etc/ssl/private/ssl-cert-snakeoil.key'
 max_connections = 200
+# Keep WAL around for standbys that are still copying the primary: without
+# it a checkpoint during pg_basebackup can recycle a segment it needs.
+wal_keep_size = '512MB'
 CONF
   else
     until gosu postgres pg_isready -q -h "$STRIFE_PRIMARY"; do sleep 1; done
-    PGPASSWORD="$STRIFE_PG_PASSWORD" gosu postgres pg_basebackup -h "$STRIFE_PRIMARY" -U postgres -D "$PGDATA" -X stream -R
+    for attempt in 1 2 3 4 5; do
+      PGPASSWORD="$STRIFE_PG_PASSWORD" gosu postgres pg_basebackup -h "$STRIFE_PRIMARY" -U postgres -D "$PGDATA" -X stream -R && break
+      [ "$attempt" = 5 ] && exit 1
+      echo "pg_basebackup failed (attempt $attempt), retrying" >&2
+      find "$PGDATA" -mindepth 1 -delete
+      sleep 2
+    done
   fi
 fi
 # After SIGKILL the pid file and socket lock remain; nothing else can be
