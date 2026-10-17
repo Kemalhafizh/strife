@@ -107,7 +107,16 @@ func (g *Graph) Subgraph(kinds ...EdgeKind) *Graph {
 //   - rw edges (anti-dependencies: T1 read version V of key K, and T2 wrote a later version of K);
 //   - so edges (session order within the same process);
 //   - ro edges (real-time order where T1 completed before T2 started).
-func BuildGraph(txns []Txn) *Graph {
+//
+// Version order is inferred only in ways that are sound for the level being
+// checked: from real time (a writer that completed before another began)
+// only for strict serializability, where the serial order must respect real
+// time; under weaker levels such an order is not implied and would produce
+// false anti-dependency cycles. Values written by more than one transaction
+// are ambiguous and never used for inference.
+func BuildGraph(txns []Txn) *Graph { return buildGraph(txns, true) }
+
+func buildGraph(txns []Txn, realtime bool) *Graph {
 	g := NewGraph()
 	for _, t := range txns {
 		g.AddTxn(t)
@@ -120,6 +129,7 @@ func BuildGraph(txns []Txn) *Graph {
 	}
 	writesByKey := make(map[string][]writeEntry)
 	writerOfVal := make(map[string]map[int64]int) // key -> val -> txnID
+	ambiguous := make(map[string]map[int64]bool)  // values with several writers
 
 	for _, t := range txns {
 		if t.Status == history.Fail {
@@ -131,6 +141,10 @@ func BuildGraph(txns []Txn) *Graph {
 				v := *op.Value
 				if writerOfVal[k] == nil {
 					writerOfVal[k] = make(map[int64]int)
+					ambiguous[k] = make(map[int64]bool)
+				}
+				if prev, dup := writerOfVal[k][v]; dup && prev != t.ID {
+					ambiguous[k][v] = true
 				}
 				writerOfVal[k][v] = t.ID
 				writesByKey[k] = append(writesByKey[k], writeEntry{txnID: t.ID, val: v})
@@ -147,7 +161,7 @@ func BuildGraph(txns []Txn) *Graph {
 			if op.Kind == OpRead && op.Value != nil {
 				k := op.Key
 				v := *op.Value
-				if writerID, ok := writerOfVal[k][v]; ok && writerID != reader.ID {
+				if writerID, ok := writerOfVal[k][v]; ok && !ambiguous[k][v] && writerID != reader.ID {
 					g.AddEdge(Edge{
 						From:  writerID,
 						To:    reader.ID,
@@ -189,7 +203,33 @@ func BuildGraph(txns []Txn) *Graph {
 		}
 	}
 
+	// c) Write-follows-read inside one transaction, sound at every level: a
+	//    transaction that read version v of k and then wrote k installed a
+	//    later version than v.
+	for _, t := range txns {
+		if t.Status == history.Fail {
+			continue
+		}
+		readFrom := map[string]int{}
+		for _, op := range t.Ops {
+			if op.Value == nil {
+				continue
+			}
+			k, v := op.Key, *op.Value
+			if op.Kind == OpRead {
+				if w, ok := writerOfVal[k][v]; ok && !ambiguous[k][v] && w != t.ID {
+					readFrom[k] = w
+				}
+			} else if w, ok := readFrom[k]; ok {
+				recordWW(k, w, t.ID)
+			}
+		}
+	}
+
 	for k, entries := range writesByKey {
+		if !realtime {
+			break
+		}
 		for i := 0; i < len(entries); i++ {
 			for j := 0; j < len(entries); j++ {
 				if i == j {
@@ -211,9 +251,12 @@ func BuildGraph(txns []Txn) *Graph {
 	// Also infer WW from observed reader sequences:
 	// If r1 read k=v1 (from w1) and r2 read k=v2 (from w2), and r1.Return < r2.Call, then w1 -> w2
 	for k, vMap := range writerOfVal {
+		if !realtime {
+			break
+		}
 		for v1, w1 := range vMap {
 			for v2, w2 := range vMap {
-				if w1 == w2 || v1 == v2 {
+				if w1 == w2 || v1 == v2 || ambiguous[k][v1] || ambiguous[k][v2] {
 					continue
 				}
 				// Find readers of v1 and v2
@@ -263,7 +306,10 @@ func BuildGraph(txns []Txn) *Graph {
 				}
 			} else {
 				v := *op.Value
-				w1 := writerOfVal[k][v]
+				w1, ok := writerOfVal[k][v]
+				if !ok || ambiguous[k][v] {
+					continue
+				}
 				// Reader read from w1. For any w2 such that w1 ->ww w2 on key k, add reader ->rw w2.
 				if wwPairs[k] != nil && wwPairs[k][w1] != nil {
 					for w2 := range wwPairs[k][w1] {

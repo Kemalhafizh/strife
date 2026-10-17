@@ -119,6 +119,10 @@ func Classify(op history.Op, err error) history.Type {
 
 func complete(op history.Op, t history.Type) history.Op {
 	out := history.Op{Process: op.Process, Type: t, F: op.F, Key: op.Key, Value: op.Value, Old: op.Old}
+	if op.F == history.FTxn && t == history.OK {
+		// Callers fill in read results; appends are echoed.
+		out.Txn = append([]history.MicroOp(nil), op.Txn...)
+	}
 	if op.F == history.FRead {
 		out.Value = nil
 	}
@@ -130,12 +134,15 @@ func complete(op history.Op, t history.Type) history.Op {
 // MemoryStore is a linearizable in-process store, the reference
 // implementation used for self-tests and dry runs.
 type MemoryStore struct {
-	mu   sync.Mutex
-	data map[string]int64
+	mu    sync.Mutex
+	data  map[string]int64
+	lists map[string][]int64
 }
 
 // NewMemoryStore returns an empty store.
-func NewMemoryStore() *MemoryStore { return &MemoryStore{data: map[string]int64{}} }
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{data: map[string]int64{}, lists: map[string][]int64{}}
+}
 
 // Client returns a client for the store.
 func (s *MemoryStore) Client() Client { return &memClient{s: s} }
@@ -168,6 +175,18 @@ func (c *memClient) Invoke(ctx context.Context, op history.Op) history.Op {
 			c.s.data[op.Key] = *op.Value
 		} else {
 			out.Type = history.Fail
+		}
+	case history.FTxn:
+		// Strictly serializable: the whole transaction runs under the lock.
+		out.Txn = make([]history.MicroOp, len(op.Txn))
+		for i, m := range op.Txn {
+			out.Txn[i] = m
+			switch m.F {
+			case history.MicroAppend:
+				c.s.lists[m.Key] = append(c.s.lists[m.Key], *m.Value)
+			case history.MicroRead:
+				out.Txn[i].Values = append([]int64{}, c.s.lists[m.Key]...)
+			}
 		}
 	default:
 		out.Type = history.Fail

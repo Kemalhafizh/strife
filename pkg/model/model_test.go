@@ -10,7 +10,7 @@ import (
 var v = history.Int
 
 func TestByNameAndNames(t *testing.T) {
-	expectedNames := []string{"kv", "set", "queue", "counter", "idgen", "txn"}
+	expectedNames := []string{"kv", "set", "queue", "counter", "idgen", "txn", "append"}
 	names := Names()
 	if !reflect.DeepEqual(names, expectedNames) {
 		t.Fatalf("expected names %v, got %v", expectedNames, names)

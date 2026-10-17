@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kemalhafizh/strife/internal/stats"
 	"github.com/kemalhafizh/strife/pkg/agent"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/probe"
@@ -20,7 +21,8 @@ type FaultApplier interface {
 	InjectFault(ctx context.Context, n Node, f nemesis.Fault, env nemesis.Env) (string, error)
 	HealFault(ctx context.Context, n Node, f nemesis.Fault, env nemesis.Env) (string, error)
 	TeardownNode(ctx context.Context, n Node) error
-	JitterSummary() agent.JitterSummary
+	// LatencySummary summarises the round trip of every transition sent.
+	LatencySummary() stats.Summary
 }
 
 // ProbeCollector is an optional interface implemented by transports that can
@@ -37,7 +39,7 @@ type Agent struct {
 	port      int
 	token     string
 	clients   map[string]*agent.Client
-	collector *agent.JitterCollector
+	collector *agent.LatencyCollector
 }
 
 // NewAgent creates an Agent transport.
@@ -50,7 +52,7 @@ func NewAgent(c Config) *Agent {
 		port:      port,
 		token:     c.Token,
 		clients:   make(map[string]*agent.Client),
-		collector: agent.NewJitterCollector(),
+		collector: agent.NewLatencyCollector(),
 	}
 }
 
@@ -147,23 +149,7 @@ func (a *Agent) InjectFault(ctx context.Context, n Node, f nemesis.Fault, env ne
 		}
 	}
 
-	t0 := time.Now()
-	resp, err := c.Apply(ctx, req)
-	duration := time.Since(t0)
-
-	if resp != nil {
-		a.collector.Record(agent.JitterSample{
-			FaultID:      f.ID,
-			Kind:         f.Kind,
-			Node:         n.Name,
-			Start:        true,
-			DispatchedAt: time.Duration(t0.UnixNano()),
-			AppliedAt:    time.Duration(resp.KernelAtNs),
-			Duration:     duration,
-			Method:       resp.Method,
-		})
-	}
-
+	resp, err := a.timedApply(ctx, c, n, f, true, req)
 	if err != nil {
 		return "", fmt.Errorf("agent inject on %s: %w", n.Name, err)
 	}
@@ -185,27 +171,29 @@ func (a *Agent) HealFault(ctx context.Context, n Node, f nemesis.Fault, env neme
 		Offset:   f.Offset,
 	}
 
-	t0 := time.Now()
-	resp, err := c.Apply(ctx, req)
-	duration := time.Since(t0)
-
-	if resp != nil {
-		a.collector.Record(agent.JitterSample{
-			FaultID:      f.ID,
-			Kind:         f.Kind,
-			Node:         n.Name,
-			Start:        false,
-			DispatchedAt: time.Duration(t0.UnixNano()),
-			AppliedAt:    time.Duration(resp.KernelAtNs),
-			Duration:     duration,
-			Method:       resp.Method,
-		})
-	}
-
+	resp, err := a.timedApply(ctx, c, n, f, false, req)
 	if err != nil {
 		return "", fmt.Errorf("agent heal on %s: %w", n.Name, err)
 	}
 	return resp.Applied, nil
+}
+
+// timedApply sends one transition and records how long it took.
+func (a *Agent) timedApply(ctx context.Context, c *agent.Client, n Node, f nemesis.Fault, start bool, req agent.ApplyRequest) (*agent.ApplyResponse, error) {
+	t0 := time.Now()
+	resp, err := c.Apply(ctx, req)
+	if resp != nil {
+		a.collector.Record(agent.LatencySample{
+			FaultID:   f.ID,
+			Kind:      f.Kind,
+			Node:      n.Name,
+			Start:     start,
+			RoundTrip: time.Since(t0),
+			Server:    time.Duration(resp.KernelAtNs - resp.ReceivedAtNs),
+			Method:    resp.Method,
+		})
+	}
+	return resp, err
 }
 
 // TeardownNode resets all faults on node n.
@@ -214,15 +202,11 @@ func (a *Agent) TeardownNode(ctx context.Context, n Node) error {
 	return c.Teardown(ctx)
 }
 
-// JitterSummary returns aggregated jitter metrics recorded by this transport.
-func (a *Agent) JitterSummary() agent.JitterSummary {
-	return a.collector.Summary()
-}
+// LatencySummary implements FaultApplier.
+func (a *Agent) LatencySummary() stats.Summary { return a.collector.Summary() }
 
-// Collector returns the underlying JitterCollector.
-func (a *Agent) Collector() *agent.JitterCollector {
-	return a.collector
-}
+// Collector returns the underlying sample collector.
+func (a *Agent) Collector() *agent.LatencyCollector { return a.collector }
 
 // CollectProbes harvests server-side diagnostic probe events from all target nodes.
 func (a *Agent) CollectProbes(ctx context.Context, nodes []Node, reset bool) ([]probe.Event, error) {

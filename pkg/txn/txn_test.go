@@ -121,7 +121,12 @@ func TestG0DirtyWriteCycle(t *testing.T) {
 		},
 	}
 
-	rep := Check(txns, LevelReadUncommitted)
+	// The version orders come from real time (T3 finished before T4 began,
+	// T5 before T6), which only strict serializability lets us assume.
+	if rep := Check(txns, LevelReadUncommitted); rep.Verdict != Pass {
+		t.Fatalf("without real-time order the register version order is unknown; got %s", rep.FullReport())
+	}
+	rep := Check(txns, LevelStrictSerializable)
 	if rep.Verdict != Violation {
 		t.Fatal("expected G0 dirty write violation")
 	}

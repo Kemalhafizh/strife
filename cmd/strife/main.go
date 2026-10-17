@@ -53,6 +53,7 @@ Usage:
   strife plan       [flags]   print a seeded fault schedule and its shell commands
   strife run        [flags]   run a live test against a real cluster
   strife workload   [flags]   list, inspect, or compile custom Wasm workload plugins
+  strife bench inject [flags] measure fault-injection precision on a real cluster
   strife keygen     [flags]   generate an Ed25519 signing keypair for compliance audits
   strife sign       [flags]   cryptographically sign a report artifact (in-toto attestation)
   strife verify     [flags]   verify a signed compliance bundle against a public key
@@ -90,6 +91,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdRun(rest, stdout, stderr)
 	case "workload":
 		code, err = cmdWorkload(rest, stdout, stderr)
+	case "bench":
+		code, err = cmdBench(rest, stdout, stderr)
 	case "keygen":
 		code, err = cmdKeygen(rest, stdout, stderr)
 	case "sign":
@@ -982,7 +985,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return emitCI(*ci, exitError, err, report.ErrorSuite("live · "+cfg.Name, err))
 	}
-	addWitnesses(model.KV{}, res.History, &res.Check)
+	addWitnesses(cfg.Model(), res.History, &res.Check)
 	res.Findings = probe.Correlate(res.History, res.Check, res.Schedule, res.Probes)
 	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg, res.Schedule, res.History, res.Check, "")
 	if err != nil {

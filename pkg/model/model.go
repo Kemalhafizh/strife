@@ -49,6 +49,15 @@ type Diagnoser interface {
 	Diagnose(ops []history.Operation) (witness []int, diagnosis string, ok bool)
 }
 
+// Decider is implemented by models that are not checked by searching for a
+// linearization at all but by a direct decision procedure, such as Elle's
+// dependency-graph analysis of list-append transactions. Decide must be
+// sound: a reported violation is a proof. A model that implements Decider is
+// never searched, so a pass means "no anomaly found".
+type Decider interface {
+	Decide(ops []history.Operation) (violation bool, witness []int, diagnosis string)
+}
+
 // ReadOnly is implemented by models whose some operations never change the
 // state (reads). The checker linearizes such operations eagerly, which prunes
 // the search without losing any solution.
@@ -71,12 +80,14 @@ func ByName(name string) (Model, error) {
 		return IDGen{}, nil
 	case "txn", "transaction", "transactional":
 		return TxnModel{}, nil
+	case "append", "list-append", "elle":
+		return Append{}, nil
 	}
-	return nil, fmt.Errorf("model: unknown model %q (want kv, set, queue, counter, idgen, or txn)", name)
+	return nil, fmt.Errorf("model: unknown model %q (want %s)", name, strings.Join(Names(), ", "))
 }
 
 // Names lists the built-in models.
-func Names() []string { return []string{"kv", "set", "queue", "counter", "idgen", "txn"} }
+func Names() []string { return []string{"kv", "set", "queue", "counter", "idgen", "txn", "append"} }
 
 func partitionByKey(ops []history.Operation) ([]string, [][]history.Operation) {
 	idx := map[string]int{}
@@ -1085,11 +1096,10 @@ func (TxnModel) Partition(ops []history.Operation) ([]string, [][]history.Operat
 // Diagnose implements Diagnoser for TxnModel.
 func (m TxnModel) Diagnose(ops []history.Operation) ([]int, string, bool) {
 	txns := txn.FromOperations(ops)
-	level := txn.LevelSerializable
-	if m.Level != "" {
-		level = txn.IsolationLevel(m.Level)
-	}
-	rep := txn.Check(txns, level)
+	// The search checks strict serializability (Step applies transactions
+	// atomically in real-time order), so the fast path must not claim more:
+	// strict is the level whose anomalies are all proofs against it.
+	rep := txn.Check(txns, txn.LevelStrictSerializable)
 	if rep.Verdict != txn.Violation || len(rep.Anomalies) == 0 {
 		return nil, "", false
 	}

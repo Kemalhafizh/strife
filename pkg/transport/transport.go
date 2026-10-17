@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/kemalhafizh/strife/internal/secret"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -39,9 +40,9 @@ type Config struct {
 	User      string `json:"user,omitempty"`
 	Port      int    `json:"port,omitempty"`
 	Key       string `json:"key,omitempty"`
-	Sudo      bool   `json:"sudo,omitempty"`
+	Sudo      bool   `json:"sudo,omitempty"`       // ssh: remote sudo; docker: sudo for host commands (cgroup faults)
 	AgentPort int    `json:"agent_port,omitempty"` // strife-agent port, default 9292
-	Token     string `json:"token,omitempty"`      // strife-agent authorization token
+	Token     string `json:"token,omitempty"`      // strife-agent token; "env:NAME" or "file:PATH" keeps it out of the config
 }
 
 // New builds the configured transport.
@@ -52,10 +53,15 @@ func New(c Config) (Transport, error) {
 		if bin == "" {
 			bin = "docker"
 		}
-		return &Docker{Binary: bin}, nil
+		return &Docker{Binary: bin, Sudo: c.Sudo}, nil
 	case "ssh":
 		return &SSH{User: c.User, Port: c.Port, Key: c.Key, Sudo: c.Sudo}, nil
 	case "agent":
+		token, err := secret.Resolve(c.Token)
+		if err != nil {
+			return nil, fmt.Errorf("transport.token: %w", err)
+		}
+		c.Token = token
 		return NewAgent(c), nil
 	case "dry-run", "dryrun", "":
 		return &DryRun{}, nil
@@ -80,8 +86,12 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 }
 
 // Docker runs scripts with `docker exec` and host scripts locally, so Strife
-// must run on the docker host (as root for cgroup faults).
-type Docker struct{ Binary string }
+// must run on the docker host. Host scripts (the cgroup faults) need root:
+// run Strife as root or set Sudo to wrap them in `sudo -n`.
+type Docker struct {
+	Binary string
+	Sudo   bool
+}
 
 // Name implements Transport.
 func (d *Docker) Name() string { return "docker" }
@@ -96,7 +106,42 @@ func (d *Docker) Exec(ctx context.Context, n Node, script string) (string, error
 
 // HostExec implements Transport.
 func (d *Docker) HostExec(ctx context.Context, n Node, script string) (string, error) {
+	if d.Sudo {
+		return run(ctx, "sudo", "-n", "sh", "-c", script)
+	}
 	return run(ctx, "sh", "-c", script)
+}
+
+// ResolveCgroup implements HostResolver: the cgroup of the container's init
+// process, which with Docker's default settings holds every process of the
+// container.
+func (d *Docker) ResolveCgroup(ctx context.Context, n Node) (string, error) {
+	if n.Container == "" {
+		return "", fmt.Errorf("docker transport: node %s has no container", n.Name)
+	}
+	out, err := run(ctx, d.Binary, "inspect", "-f", "{{.State.Pid}}", n.Container)
+	if err != nil {
+		return "", err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || pid <= 0 {
+		return "", fmt.Errorf("docker transport: container %s is not running (pid %q)", n.Container, out)
+	}
+	return cgroupOfPID("/proc", "/sys/fs/cgroup", pid)
+}
+
+// ResolveIODevice implements HostResolver: the disk under Docker's data
+// root, where container filesystems and volumes live.
+func (d *Docker) ResolveIODevice(ctx context.Context) (string, error) {
+	root, err := run(ctx, d.Binary, "info", "-f", "{{.DockerRootDir}}")
+	if err != nil {
+		return "", err
+	}
+	dev, err := deviceOf(strings.TrimSpace(root))
+	if err != nil {
+		return "", err
+	}
+	return wholeDisk("/sys", dev)
 }
 
 // SSH runs scripts through the system ssh client, so keys, agents, jump

@@ -88,7 +88,7 @@ func Check(txns []Txn, level IsolationLevel) *Report {
 		totalOps += len(t.Ops)
 	}
 
-	g := BuildGraph(txns)
+	g := buildGraph(txns, level == LevelStrictSerializable)
 	rep := &Report{
 		Verdict:      Pass,
 		Level:        level,

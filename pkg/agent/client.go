@@ -116,6 +116,9 @@ func (c *Client) Apply(ctx context.Context, applyReq ApplyRequest) (*ApplyRespon
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("agent apply %s: unauthorized (check the transport token)", c.addr)
+	}
 	var applyResp ApplyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&applyResp); err != nil {
 		return nil, fmt.Errorf("agent apply %s decode: %w", c.addr, err)
@@ -149,6 +152,10 @@ func (c *Client) Exec(ctx context.Context, script string) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("agent exec %s returned status %d: %s", c.addr, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var execResp ExecResponse
 	if err := json.NewDecoder(resp.Body).Decode(&execResp); err != nil {
 		return "", fmt.Errorf("agent exec %s decode: %w", c.addr, err)
@@ -174,6 +181,9 @@ func (c *Client) Teardown(ctx context.Context) error {
 		return fmt.Errorf("agent teardown %s: %w", c.addr, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("agent teardown %s returned status %d", c.addr, resp.StatusCode)
+	}
 	return nil
 }
 

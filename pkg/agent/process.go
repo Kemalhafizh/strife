@@ -133,5 +133,11 @@ func (p *ProcessEngine) Restart(startCmd string) error {
 		return fmt.Errorf("process: restart start_cmd cannot be empty")
 	}
 	cmd := exec.Command("sh", "-c", startCmd)
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Reap the shell once the start script returns; the database it
+	// launched in the background is re-parented and keeps running.
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/kemalhafizh/strife/internal/stats"
 	"os"
 	"path/filepath"
 	"time"
@@ -42,9 +43,26 @@ type Applied struct {
 	Start   bool          `json:"start"`
 	Planned time.Duration `json:"planned"`
 	Actual  time.Duration `json:"actual"`
-	Jitter  time.Duration `json:"jitter,omitempty"`
+	// Jitter is |Actual - Planned|: how late the scheduler woke up.
+	Jitter time.Duration `json:"jitter,omitempty"`
+	// Landed is when every node had confirmed the transition, and Latency
+	// is Landed - Planned: how late the fault actually took effect.
+	Landed  time.Duration `json:"landed,omitempty"`
+	Latency time.Duration `json:"latency,omitempty"`
 	Method  string        `json:"method,omitempty"`
 	Errors  []string      `json:"errors,omitempty"`
+}
+
+// InjectionTiming summarises how late fault transitions took effect.
+// Transitions that reported errors are excluded: they did not land.
+func InjectionTiming(applied []Applied) stats.Summary {
+	var d []time.Duration
+	for _, a := range applied {
+		if len(a.Errors) == 0 && a.Landed > 0 {
+			d = append(d, a.Latency)
+		}
+	}
+	return stats.Summarize(d)
 }
 
 // Report is the complete outcome of a run.

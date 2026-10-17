@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/client"
+	"github.com/kemalhafizh/strife/pkg/model"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/transport"
+	"github.com/kemalhafizh/strife/pkg/txn"
 	"github.com/kemalhafizh/strife/pkg/workload"
 )
 
@@ -59,7 +61,10 @@ type DBConfig struct {
 
 // WorkloadConfig shapes the generated operations.
 type WorkloadConfig struct {
-	Model       string   `json:"model"`       // kv
+	// Model is "kv" (single-key reads, writes and compare-and-sets, checked
+	// for linearizability) or "append" (list-append transactions, checked
+	// Elle-style at Isolation).
+	Model       string   `json:"model"`
 	Keys        int      `json:"keys"`        // independent registers
 	Values      int      `json:"values"`      // values drawn from [0, values)
 	Concurrency int      `json:"concurrency"` // client processes
@@ -68,6 +73,17 @@ type WorkloadConfig struct {
 	Think       Duration `json:"think"`   // max pause between ops per process
 	Timeout     Duration `json:"timeout"` // per-operation timeout
 	Plugin      string   `json:"plugin,omitempty"`
+	// TxnLen is the maximum number of micro-operations per transaction
+	// (append only; 1 makes every operation a single append or read, e.g.
+	// for Kafka, where a key is a partition log).
+	TxnLen int `json:"txn_len,omitempty"`
+	// WritesPerKey retires a key after about this many appends, so lists,
+	// and with them reads and checking, stay small (append only).
+	WritesPerKey int `json:"writes_per_key,omitempty"`
+	// Isolation is the level append histories are checked against:
+	// read-uncommitted, read-committed, snapshot-isolation,
+	// repeatable-read, serializable or strict-serializable.
+	Isolation string `json:"isolation,omitempty"`
 }
 
 // NemesisConfig shapes the fault schedule.
@@ -127,6 +143,18 @@ func (c *Config) Defaults() {
 	}
 	if w.ReadRatio == 0 && w.CasRatio == 0 {
 		w.ReadRatio, w.CasRatio = 0.5, 0.2
+		if w.Model == "append" {
+			w.CasRatio = 0
+		}
+	}
+	if w.TxnLen == 0 {
+		w.TxnLen = 4
+	}
+	if w.WritesPerKey == 0 {
+		w.WritesPerKey = 32
+	}
+	if w.Isolation == "" {
+		w.Isolation = "serializable"
 	}
 	if w.Think == 0 {
 		w.Think = Duration(50 * time.Millisecond)
@@ -149,8 +177,22 @@ func (c *Config) Validate() error {
 	if len(c.Nodes) == 0 {
 		return fmt.Errorf("at least one node is required")
 	}
-	if c.Workload.Model != "kv" {
-		return fmt.Errorf("workload.model %q not supported for live runs (kv)", c.Workload.Model)
+	switch c.Workload.Model {
+	case "kv":
+	case "append":
+		if c.Workload.Plugin != "" {
+			return fmt.Errorf("workload.plugin generates kv operations; it cannot drive the append model")
+		}
+		if c.Workload.TxnLen < 1 || c.Workload.WritesPerKey < 1 {
+			return fmt.Errorf("workload.txn_len and writes_per_key must be positive")
+		}
+		switch txn.IsolationLevel(c.Workload.Isolation) {
+		case txn.LevelReadUncommitted, txn.LevelReadCommitted, txn.LevelSnapshotIsolation, txn.LevelRepeatableRead, txn.LevelSerializable, txn.LevelStrictSerializable:
+		default:
+			return fmt.Errorf("workload.isolation %q is not a known level", c.Workload.Isolation)
+		}
+	default:
+		return fmt.Errorf("workload.model %q not supported for live runs (kv, append)", c.Workload.Model)
 	}
 	if c.Workload.ReadRatio < 0 || c.Workload.CasRatio < 0 || c.Workload.ReadRatio+c.Workload.CasRatio > 1 {
 		return fmt.Errorf("workload.read_ratio + cas_ratio must be within [0, 1]")
@@ -180,6 +222,14 @@ func joinKinds(ks []nemesis.Kind) string {
 		s[i] = string(k)
 	}
 	return strings.Join(s, ",")
+}
+
+// Model returns the consistency model the recorded history is checked with.
+func (c *Config) Model() model.Model {
+	if c.Workload.Model == "append" {
+		return model.Append{Level: c.Workload.Isolation}
+	}
+	return model.KV{}
 }
 
 // Env converts the config into the nemesis command environment.

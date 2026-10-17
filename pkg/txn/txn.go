@@ -98,7 +98,10 @@ func FromOperations(paired []history.Operation) []Txn {
 			Return:  p.Return,
 		}
 		if p.Input.F == history.FTxn && len(p.Input.Txn) > 0 {
-			for _, m := range p.Input.Txn {
+			// Read results live on the completion (p.Micro), not on the
+			// invocation: reading them from the invocation would turn every
+			// read into a read of the initial state.
+			for _, m := range p.Micro() {
 				kind := OpRead
 				if m.F == "w" || m.F == "write" {
 					kind = OpWrite

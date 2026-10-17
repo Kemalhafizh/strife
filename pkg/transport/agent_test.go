@@ -84,10 +84,16 @@ func TestAgentTransport(t *testing.T) {
 		t.Fatalf("teardown node failed: %v", err)
 	}
 
-	// Check jitter summary
-	summary := tr.JitterSummary()
-	if summary.Count != 2 {
-		t.Errorf("expected 2 samples recorded, got %d", summary.Count)
+	// Both transitions were timed, and the timings are durations, not
+	// timestamps.
+	summary := tr.LatencySummary()
+	if summary.Count != 2 || summary.Max <= 0 || summary.Max > 10*time.Second {
+		t.Errorf("expected 2 plausible samples, got %+v", summary)
+	}
+	for _, s := range tr.Collector().Samples() {
+		if s.Server < 0 || s.Server > s.RoundTrip {
+			t.Errorf("server time %v must lie within the round trip %v", s.Server, s.RoundTrip)
+		}
 	}
 	_ = portStr
 }

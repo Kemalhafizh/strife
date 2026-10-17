@@ -227,59 +227,17 @@ func TestServerExec(t *testing.T) {
 	}
 }
 
-func TestJitterCollector(t *testing.T) {
-	c := NewJitterCollector()
-
-	// Record several samples with known values
-	c.Record(JitterSample{
-		FaultID:   1,
-		Kind:      nemesis.Partition,
-		PlannedAt: 100 * time.Millisecond,
-		AppliedAt: 102 * time.Millisecond,
-		Jitter:    2 * time.Millisecond,
-	})
-	c.Record(JitterSample{
-		FaultID:   2,
-		Kind:      nemesis.Latency,
-		PlannedAt: 200 * time.Millisecond,
-		AppliedAt: 204 * time.Millisecond,
-		Jitter:    4 * time.Millisecond,
-	})
-	c.Record(JitterSample{
-		FaultID:   3,
-		Kind:      nemesis.Kill,
-		PlannedAt: 300 * time.Millisecond,
-		AppliedAt: 301 * time.Millisecond,
-		Jitter:    1 * time.Millisecond,
-	})
-	c.Record(JitterSample{
-		FaultID:   4,
-		Kind:      nemesis.Pause,
-		PlannedAt: 400 * time.Millisecond,
-		AppliedAt: 403 * time.Millisecond,
-		Jitter:    3 * time.Millisecond,
-	})
-
+func TestLatencyCollector(t *testing.T) {
+	c := NewLatencyCollector()
+	for i, ms := range []int{2, 4, 1, 3} {
+		c.Record(LatencySample{FaultID: i, Kind: nemesis.Partition, RoundTrip: time.Duration(ms) * time.Millisecond})
+	}
 	sum := c.Summary()
-	if sum.Count != 4 {
-		t.Errorf("expected count 4, got %d", sum.Count)
+	if sum.Count != 4 || sum.Min != time.Millisecond || sum.Max != 4*time.Millisecond || sum.P50 != 2*time.Millisecond {
+		t.Fatalf("got %+v", sum)
 	}
-	if sum.Min != 1*time.Millisecond {
-		t.Errorf("expected min 1ms, got %v", sum.Min)
-	}
-	if sum.Max != 4*time.Millisecond {
-		t.Errorf("expected max 4ms, got %v", sum.Max)
-	}
-	if sum.Mean != 2500*time.Microsecond {
-		t.Errorf("expected mean 2.5ms, got %v", sum.Mean)
-	}
-	if sum.P50 != 2*time.Millisecond {
-		t.Errorf("expected p50 2ms, got %v", sum.P50)
-	}
-
-	table := sum.FormatTable()
-	if table == "" {
-		t.Errorf("expected non-empty formatted markdown table")
+	if len(c.Samples()) != 4 {
+		t.Fatal("samples lost")
 	}
 }
 

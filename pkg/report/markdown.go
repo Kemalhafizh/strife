@@ -2,6 +2,7 @@ package report
 
 import (
 	"fmt"
+	"github.com/kemalhafizh/strife/internal/stats"
 	"io"
 	"strings"
 	"time"
@@ -76,6 +77,10 @@ func Markdown(w io.Writer, r *Report) error {
 			fmt.Fprintf(&b, "| %d | %v | %v | %s |\n", f.ID, f.Start.Round(time.Millisecond), f.End.Round(time.Millisecond), f.Describe(r.Schedule.Nodes))
 		}
 		b.WriteString("\n")
+	}
+	if t := InjectionTiming(r.Applied); t.Count > 0 {
+		fmt.Fprintf(&b, "**Fault timing** (%d transitions via %s, from the planned instant until every node confirmed): p50 %v · p95 %v · max %v\n\n",
+			t.Count, r.Applied[0].Method, stats.Round(t.P50), stats.Round(t.P95), stats.Round(t.Max))
 	}
 	if len(r.Applied) > 0 {
 		var errs []string

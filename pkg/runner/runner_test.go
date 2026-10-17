@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/client"
+	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/transport"
 )
@@ -107,4 +109,70 @@ func TestLoadRejectsBadConfigs(t *testing.T) {
 	if time.Duration(c.Duration) != 5*time.Second || c.Workload.Concurrency != 2 {
 		t.Fatalf("defaults not applied: %+v", c)
 	}
+}
+
+func TestLiveAppendWorkload(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workload = WorkloadConfig{Model: "append", Keys: 3, Concurrency: 6, Think: Duration(2 * time.Millisecond), WritesPerKey: 12, Isolation: "strict-serializable"}
+	cfg.Defaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Model != "append" || res.Check.Verdict != checker.Linearizable {
+		t.Fatalf("a strictly serializable store must pass: %s %s", res.Check.Model, res.Check.Verdict)
+	}
+	// Keys rotated: more distinct keys than slots, and every value unique.
+	keys, values := map[string]bool{}, map[int64]bool{}
+	reads := 0
+	for _, op := range res.History {
+		for _, m := range op.Txn {
+			keys[m.Key] = true
+			if op.Type == "invoke" && m.F == "append" {
+				if values[*m.Value] {
+					t.Fatalf("value %d appended twice", *m.Value)
+				}
+				values[*m.Value] = true
+			}
+			if op.Type == "ok" && m.F == "r" && len(m.Values) > 0 {
+				reads++
+			}
+		}
+	}
+	if len(keys) <= 3 || reads == 0 {
+		t.Fatalf("keys %d (want rotation past 3 slots), non-empty reads %d", len(keys), reads)
+	}
+}
+
+func TestAppendCatchesALostAppend(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workload = WorkloadConfig{Model: "append", Keys: 2, Concurrency: 4, Think: Duration(2 * time.Millisecond), Isolation: "strict-serializable"}
+	cfg.Defaults()
+	store := client.NewMemoryStore()
+	var n atomic.Int32
+	lossy := func(i int) (client.Client, error) { return &dropFirstAppend{Client: store.Client(), n: &n}, nil }
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Clients: lossy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Verdict != checker.Violation {
+		t.Fatalf("an acknowledged but lost append must be caught, got %s", res.Check.Verdict)
+	}
+}
+
+// dropFirstAppend acknowledges the first append transaction without
+// applying it.
+type dropFirstAppend struct {
+	client.Client
+	n *atomic.Int32
+}
+
+func (d *dropFirstAppend) Invoke(ctx context.Context, op history.Op) history.Op {
+	if op.F == history.FTxn && len(op.Txn) == 1 && op.Txn[0].F == history.MicroAppend && d.n.CompareAndSwap(0, 1) {
+		return history.Op{Process: op.Process, Type: history.OK, F: op.F, Txn: op.Txn}
+	}
+	return d.Client.Invoke(ctx, op)
 }
