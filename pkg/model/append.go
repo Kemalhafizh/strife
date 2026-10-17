@@ -109,11 +109,17 @@ func (Append) Partition(ops []history.Operation) ([]string, [][]history.Operatio
 }
 
 // Decide implements Decider.
-func (m Append) Decide(ops []history.Operation) (bool, []int, string) {
+func (m Append) Decide(ops []history.Operation) (bool, []int, string, []string) {
 	level := txn.IsolationLevel(m.Level)
 	rep := txn.CheckAppend(ops, level)
 	if rep.Verdict != txn.Violation {
-		return false, nil, ""
+		return false, nil, "", nil
+	}
+	var kinds []string
+	for _, a := range rep.Anomalies {
+		if !slices.Contains(kinds, string(a.Type)) {
+			kinds = append(kinds, string(a.Type))
+		}
 	}
 	first := rep.Anomalies[0]
 	index := make(map[int]int, len(ops))
@@ -148,5 +154,5 @@ func (m Append) Decide(ops []history.Operation) (bool, []int, string) {
 		sort.Strings(parts)
 		diag += fmt.Sprintf(" (%d more: %s)", n, strings.Join(parts, ", "))
 	}
-	return true, witness, diag
+	return true, witness, diag, kinds
 }

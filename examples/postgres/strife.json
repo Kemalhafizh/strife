@@ -1,32 +1,34 @@
 {
-  "name": "postgres-cluster",
+  "name": "postgres-primary",
   "seed": 42,
   "duration": "60s",
   "nodes": [
-    { "name": "n1", "ip": "172.31.1.11", "container": "strife-postgres1" },
-    { "name": "n2", "ip": "172.31.1.12", "container": "strife-postgres2" },
-    { "name": "n3", "ip": "172.31.1.13", "container": "strife-postgres3" }
+    { "name": "n1", "ip": "172.31.1.11", "container": "strife-postgres1" }
   ],
   "transport": { "type": "docker" },
   "db": {
     "kind": "postgres",
-    "endpoints": ["172.31.1.11:5432", "172.31.1.12:5432", "172.31.1.13:5432"],
+    "endpoints": ["172.31.1.11:5432"],
+    "user": "postgres",
+    "password": "env:STRIFE_PG_PASSWORD",
+    "tls": "require",
     "process": "postgres",
     "start": "/usr/local/bin/start-postgres.sh"
   },
   "workload": {
-    "model": "kv",
-    "keys": 4,
-    "values": 5,
-    "concurrency": 8,
+    "model": "append",
+    "isolation": "strict-serializable",
+    "keys": 6,
+    "txn_len": 4,
+    "concurrency": 10,
     "read_ratio": 0.5,
-    "cas_ratio": 0.2,
-    "timeout": "2s"
+    "think": "5ms",
+    "timeout": "5s"
   },
   "nemesis": {
-    "faults": ["partition", "pause"],
-    "interval": "8s",
-    "length": "6s",
+    "faults": ["kill", "pause"],
+    "interval": "10s",
+    "length": "4s",
     "interface": "eth0"
   }
 }

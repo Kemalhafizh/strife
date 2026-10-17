@@ -1,0 +1,16 @@
+# MySQL 8.4 with its default authentication (caching_sha2_password).
+# Strife reaches it by IP; the root password comes from the environment.
+services:
+  n1:
+    image: mysql:8.4
+    container_name: strife-mysql1
+    environment:
+      MYSQL_ROOT_PASSWORD: "${STRIFE_MYSQL_PASSWORD:?set STRIFE_MYSQL_PASSWORD}"
+      MYSQL_DATABASE: strife
+    command: ["--innodb-lock-wait-timeout=5", "--max-connections=500"]
+    networks: { strife: { ipv4_address: 172.31.4.11 } }
+
+networks:
+  strife:
+    ipam:
+      config: [{ subnet: 172.31.4.0/24 }]

@@ -68,6 +68,9 @@ type Counterexample struct {
 	Witness []Step `json:"witness,omitempty"`
 	// Diagnosis explains the witness in the model's terms, e.g. a stale read.
 	Diagnosis string `json:"diagnosis,omitempty"`
+	// Anomalies lists every kind of anomaly found, for models decided by
+	// dependency-graph analysis (e.g. ["G-realtime", "G2"]).
+	Anomalies []string `json:"anomalies,omitempty"`
 }
 
 // Summary is the most useful one-line description: the diagnosis of the
@@ -203,11 +206,12 @@ type cacheEntry struct {
 // direct certificate found in O(n log n).
 func checkKey(m model.Model, ops []history.Operation, opts Options) KeyResult {
 	if d, ok := m.(model.Decider); ok && !opts.SearchOnly {
-		bad, idx, diag := d.Decide(ops)
+		bad, idx, diag, kinds := d.Decide(ops)
 		if !bad {
 			return KeyResult{Operations: len(ops), Verdict: Linearizable}
 		}
 		ce := &Counterexample{
+			Anomalies:   kinds,
 			Diagnosis:   diag,
 			Explanation: "Proved by dependency-graph analysis; no search was needed.",
 			StateAfter:  "?",

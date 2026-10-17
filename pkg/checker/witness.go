@@ -91,6 +91,19 @@ const defaultWitnessSteps = 1_000_000
 // proves it is not linearizable, with a diagnosis, or nil if none was found
 // within the budget.
 func Witness(m model.Model, part []history.Operation, o WitnessOptions) ([]history.Operation, string) {
+	if d, ok := m.(model.Decider); ok {
+		// The decision procedure already names the anomaly and its
+		// transactions; searching would be both slow and pointless.
+		bad, idx, diag, _ := d.Decide(part)
+		if !bad {
+			return nil, ""
+		}
+		w := make([]history.Operation, len(idx))
+		for i, j := range idx {
+			w[i] = part[j]
+		}
+		return w, diag
+	}
 	if d, ok := m.(model.Diagnoser); ok {
 		if idx, diag, ok := d.Diagnose(part); ok {
 			w := make([]history.Operation, len(idx))

@@ -176,3 +176,12 @@ func (d *dropFirstAppend) Invoke(ctx context.Context, op history.Op) history.Op 
 	}
 	return d.Client.Invoke(ctx, op)
 }
+
+func TestRedactedConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.DB.Password, cfg.Transport.Token = "hunter2", "env:STRIFE_AGENT_TOKEN"
+	r := cfg.Redacted()
+	if r.DB.Password != "[redacted]" || r.Transport.Token != "env:STRIFE_AGENT_TOKEN" || cfg.DB.Password != "hunter2" {
+		t.Fatalf("redaction wrong: %q %q (original %q)", r.DB.Password, r.Transport.Token, cfg.DB.Password)
+	}
+}

@@ -2,80 +2,103 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"crypto/sha1"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1" //nolint:gosec // required by mysql_native_password and RSA-OAEP
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
-	"errors"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/history"
 )
 
-// MySQL speaks the MySQL Client/Server Protocol v10 to MySQL, Percona, MariaDB,
-// or TiDB using the Go standard library only.
+// MySQL speaks the MySQL client/server protocol (v10 handshake, protocol
+// 4.1) to MySQL, MariaDB and TiDB with the standard library only. It
+// authenticates with caching_sha2_password (the MySQL 8 default, including
+// full authentication over TLS or with the server's RSA key) and
+// mysql_native_password, follows authentication switch requests, and can
+// encrypt the connection with TLS.
 //
-// Operations supported:
-//   - read:     SELECT v FROM <table> WHERE k = '<key>';
-//   - write:    INSERT INTO <table> (k, v) VALUES ('<key>', <v>) ON DUPLICATE KEY UPDATE v = VALUES(v);
-//   - cas:      UPDATE <table> SET v = <new> WHERE k = '<key>' AND v = <old>;
-//   - inc/add:  INSERT INTO <table> (k, v) VALUES ('<key>', <delta>) ON DUPLICATE KEY UPDATE v = <table>.v + VALUES(v);
-//   - enqueue:  INSERT INTO <queue_table> (q, v) VALUES ('<key>', <v>);
-//   - dequeue:  atomic SELECT ... FOR UPDATE + DELETE inside mini-transaction;
-//   - txn:      atomic multi-operation transaction (START TRANSACTION ... micro-ops ... COMMIT).
+// Operations are those of the PostgreSQL client: read / write / cas / add on
+// single keys and list-append transactions, which run as one multi-statement
+// query "SET TRANSACTION ISOLATION LEVEL ...; START TRANSACTION; ...;
+// COMMIT", so that the server stops at the first error and COMMIT only runs
+// when everything before it succeeded.
 //
-// Error classification:
-//   - MySQL error 1213 (ER_LOCK_DEADLOCK): definite fail (rolled back by database);
-//   - MySQL error 1205 (ER_LOCK_WAIT_TIMEOUT): definite fail;
-//   - MySQL error 1062 (ER_DUP_ENTRY): definite fail;
-//   - TiDB error 9007 (ErrWriteConflict) / 9008 (ErrTxnRetryable): definite fail;
-//   - SQLSTATE 40001 (serialization failure): definite fail;
-//   - Connection failure before query sent: definite fail;
-//   - Timeout or connection drop on write/commit after sending: info (outcome indeterminate);
-//   - Reads: always safe to call fail.
+// Classification of a failed operation:
+//   - read-only operations: always fail;
+//   - a statement before COMMIT failed: fail (the transaction is rolled back);
+//   - errors that roll back for sure (deadlock 1213, lock wait 1205,
+//     duplicate key 1062, read-only 1290/1792, TiDB write conflict 9007,
+//     SQLSTATE 40001, syntax/data errors): fail;
+//   - lost connections, timeouts, shutdowns and unknown errors on a write or
+//     a COMMIT: info.
 type MySQL struct {
-	addr     string
-	prefix   string
-	user     string
-	password string
-	database string
-	conn     net.Conn
-	rd       *bufio.Reader
-	seq      uint8
-	initDone bool
-	mu       sync.Mutex
+	addr, prefix string
+	opt          ConnOptions
+	conn         net.Conn
+	rd           *bufio.Reader
+	seq          uint8
+	schema       bool
 }
 
-// NewMySQL returns a MySQL / TiDB client for one node endpoint (e.g. "127.0.0.1:4000" or "127.0.0.1:3306").
-func NewMySQL(addr, prefix string) *MySQL {
-	return &MySQL{
-		addr:     addr,
-		prefix:   prefix,
-		user:     "root",
-		password: "",
-		database: "",
+// NewMySQL returns a client for one MySQL or TiDB node ("10.0.0.1:3306").
+func NewMySQL(addr, prefix string, opt ConnOptions) *MySQL {
+	if opt.User == "" {
+		opt.User = "root"
 	}
+	if opt.Isolation == "" {
+		opt.Isolation = "SERIALIZABLE"
+	}
+	return &MySQL{addr: addr, prefix: prefix, opt: opt}
 }
+
+// Capability flags.
+const (
+	myLongPassword     = 0x00000001
+	myFoundRows        = 0x00000002
+	myLongFlag         = 0x00000004
+	myConnectWithDB    = 0x00000008
+	myProtocol41       = 0x00000200
+	mySSL              = 0x00000800
+	myTransactions     = 0x00002000
+	mySecureConnection = 0x00008000
+	myMultiStatements  = 0x00010000
+	myMultiResults     = 0x00020000
+	myPluginAuth       = 0x00080000
+	moreResults        = 0x0008 // SERVER_MORE_RESULTS_EXISTS status flag
+)
 
 // Close implements Client.
 func (m *MySQL) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.conn == nil {
 		return nil
 	}
-	// Try sending COM_QUIT (0x01)
-	_ = m.writePacketRaw([]byte{0x01})
+	m.seq = 0
+	_ = m.writePacket([]byte{0x01}) // COM_QUIT
 	err := m.conn.Close()
 	m.conn, m.rd = nil, nil
 	return err
 }
 
+func (m *MySQL) drop() {
+	if m.conn != nil {
+		_ = m.conn.Close()
+	}
+	m.conn, m.rd = nil, nil
+}
+
+// mysqlError is an ERR packet.
 type mysqlError struct {
 	code     uint16
 	sqlstate string
@@ -86,122 +109,138 @@ func (e *mysqlError) Error() string {
 	return fmt.Sprintf("mysql: [%d] (%s) %s", e.code, e.sqlstate, e.msg)
 }
 
-func (m *MySQL) writePacketRaw(data []byte) error {
-	length := len(data)
-	header := [4]byte{
-		byte(length),
-		byte(length >> 8),
-		byte(length >> 16),
-		m.seq,
+// ambiguous reports whether the error leaves a write's outcome unknown.
+func (e *mysqlError) ambiguous() bool {
+	switch e.code {
+	case 1062, // duplicate entry
+		1213, // deadlock: transaction rolled back
+		1205, // lock wait timeout (Strife rolls back)
+		1290, // --read-only
+		1792, // read-only transaction
+		1146, // no such table
+		1064, // syntax
+		1054, // unknown column
+		3572, // NOWAIT lock
+		1045, // access denied
+		8005, // TiDB: write conflict, retry
+		9007: // TiDB: write conflict
+		return false
 	}
+	switch {
+	case e.sqlstate == "40001",
+		strings.HasPrefix(e.sqlstate, "42"),
+		strings.HasPrefix(e.sqlstate, "22"),
+		strings.HasPrefix(e.sqlstate, "23"):
+		return false
+	}
+	return true
+}
+
+func (m *MySQL) writePacket(data []byte) error {
+	hdr := []byte{byte(len(data)), byte(len(data) >> 8), byte(len(data) >> 16), m.seq}
 	m.seq++
-	if _, err := m.conn.Write(header[:]); err != nil {
-		return err
-	}
-	_, err := m.conn.Write(data)
+	_, err := m.conn.Write(append(hdr, data...))
 	return err
 }
 
-func (m *MySQL) readPacketRaw() ([]byte, error) {
-	var header [4]byte
-	if _, err := io.ReadFull(m.rd, header[:]); err != nil {
+func (m *MySQL) readPacket() ([]byte, error) {
+	var hdr [4]byte
+	if _, err := io.ReadFull(m.rd, hdr[:]); err != nil {
 		return nil, err
 	}
-	length := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
-	m.seq = header[3] + 1
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(m.rd, payload); err != nil {
-		return nil, err
-	}
-	return payload, nil
+	n := int(hdr[0]) | int(hdr[1])<<8 | int(hdr[2])<<16
+	m.seq = hdr[3] + 1
+	p := make([]byte, n)
+	_, err := io.ReadFull(m.rd, p)
+	return p, err
 }
 
-func scramblePassword(salt []byte, password string) []byte {
-	if len(password) == 0 {
+func parseMySQLError(p []byte) *mysqlError {
+	e := &mysqlError{sqlstate: "HY000", msg: "malformed error packet"}
+	if len(p) < 3 {
+		return e
+	}
+	e.code = binary.LittleEndian.Uint16(p[1:3])
+	rest := p[3:]
+	if len(rest) >= 6 && rest[0] == '#' {
+		e.sqlstate, rest = string(rest[1:6]), rest[6:]
+	}
+	e.msg = string(rest)
+	return e
+}
+
+// lenenc reads a length-encoded integer; null is true for 0xfb.
+func lenenc(b []byte) (v uint64, n int, null bool, err error) {
+	if len(b) == 0 {
+		return 0, 0, false, io.ErrUnexpectedEOF
+	}
+	need := map[byte]int{0xfc: 3, 0xfd: 4, 0xfe: 9}[b[0]]
+	switch {
+	case b[0] == 0xfb:
+		return 0, 1, true, nil
+	case need == 0:
+		return uint64(b[0]), 1, false, nil
+	case len(b) < need:
+		return 0, 0, false, io.ErrUnexpectedEOF
+	}
+	var buf [8]byte
+	copy(buf[:], b[1:need])
+	return binary.LittleEndian.Uint64(buf[:]), need, false, nil
+}
+
+// Authentication scrambles.
+
+func nativePassword(password string, nonce []byte) []byte {
+	if password == "" {
 		return nil
 	}
-	h1 := sha1.Sum([]byte(password))
-	h2 := sha1.Sum(h1[:])
-
-	h := sha1.New()
-	if len(salt) >= 20 {
-		h.Write(salt[:20])
-	} else {
-		h.Write(salt)
-	}
+	h1 := sha1.Sum([]byte(password)) //nolint:gosec
+	h2 := sha1.Sum(h1[:])            //nolint:gosec
+	h := sha1.New()                  //nolint:gosec
+	h.Write(nonce[:min(20, len(nonce))])
 	h.Write(h2[:])
-	candidate := h.Sum(nil)
-
-	scramble := make([]byte, 20)
-	for i := 0; i < 20 && i < len(candidate); i++ {
-		scramble[i] = h1[i] ^ candidate[i]
+	out := h.Sum(nil)
+	for i := range out {
+		out[i] ^= h1[i]
 	}
-	return scramble
+	return out
 }
 
-func parseMySQLError(payload []byte) *mysqlError {
-	if len(payload) < 3 {
-		return &mysqlError{code: 0, msg: "unknown error packet"}
+// cachingSHA2Password is XOR(SHA256(p), SHA256(SHA256(SHA256(p)), nonce)).
+func cachingSHA2Password(password string, nonce []byte) []byte {
+	if password == "" {
+		return nil
 	}
-	code := binary.LittleEndian.Uint16(payload[1:3])
-	sqlstate := "HY000"
-	msg := ""
-	if len(payload) >= 9 && payload[3] == '#' {
-		sqlstate = string(payload[4:9])
-		msg = string(payload[9:])
-	} else if len(payload) > 3 {
-		msg = string(payload[3:])
+	h1 := sha256.Sum256([]byte(password))
+	h2 := sha256.Sum256(h1[:])
+	h := sha256.New()
+	h.Write(h2[:])
+	h.Write(nonce[:min(20, len(nonce))])
+	out := h.Sum(nil)
+	for i := range out {
+		out[i] ^= h1[i]
 	}
-	return &mysqlError{code: code, sqlstate: sqlstate, msg: msg}
+	return out
 }
 
-func readLengthEncodedInt(b []byte) (uint64, int) {
-	if len(b) == 0 {
-		return 0, 0
+func (m *MySQL) scramble(plugin string, nonce []byte) ([]byte, error) {
+	switch plugin {
+	case "mysql_native_password":
+		return nativePassword(m.opt.Password, nonce), nil
+	case "caching_sha2_password":
+		return cachingSHA2Password(m.opt.Password, nonce), nil
+	case "mysql_clear_password":
+		if !m.tlsActive() {
+			return nil, fmt.Errorf("mysql: refusing to send a cleartext password without TLS")
+		}
+		return append([]byte(m.opt.Password), 0), nil
 	}
-	switch b[0] {
-	case 0xfb:
-		return 0, 1 // NULL
-	case 0xfc:
-		if len(b) < 3 {
-			return 0, 0
-		}
-		return uint64(binary.LittleEndian.Uint16(b[1:3])), 3
-	case 0xfd:
-		if len(b) < 4 {
-			return 0, 0
-		}
-		return uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16, 4
-	case 0xfe:
-		if len(b) < 9 {
-			return 0, 0
-		}
-		return binary.LittleEndian.Uint64(b[1:9]), 9
-	default:
-		return uint64(b[0]), 1
-	}
+	return nil, fmt.Errorf("mysql: unsupported authentication plugin %q", plugin)
 }
 
-func parseRowValues(b []byte, colCount int) []string {
-	vals := make([]string, colCount)
-	offset := 0
-	for i := 0; i < colCount; i++ {
-		if offset >= len(b) {
-			break
-		}
-		if b[offset] == 0xfb {
-			vals[i] = "NULL"
-			offset++
-			continue
-		}
-		length, n := readLengthEncodedInt(b[offset:])
-		offset += n
-		if offset+int(length) <= len(b) {
-			vals[i] = string(b[offset : offset+int(length)])
-			offset += int(length)
-		}
-	}
-	return vals
+func (m *MySQL) tlsActive() bool {
+	_, ok := m.conn.(*tls.Conn)
+	return ok
 }
 
 func (m *MySQL) dial(ctx context.Context) error {
@@ -213,473 +252,463 @@ func (m *MySQL) dial(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	m.conn, m.rd = c, bufio.NewReader(c)
-	m.seq = 0
-
-	// 1. Read Initial Handshake Packet
-	handshake, err := m.readPacketRaw()
-	if err != nil {
-		_ = m.conn.Close()
-		m.conn, m.rd = nil, nil
-		return fmt.Errorf("mysql: failed to read handshake: %w", err)
+	if dl, ok := ctx.Deadline(); ok {
+		_ = c.SetDeadline(dl)
 	}
-	if len(handshake) > 0 && handshake[0] == 0xff {
-		_ = m.conn.Close()
-		m.conn, m.rd = nil, nil
-		return parseMySQLError(handshake)
+	m.conn, m.rd, m.seq = c, bufio.NewReader(c), 0
+	if err := m.handshake(ctx); err != nil {
+		m.drop()
+		return err
 	}
-
-	// Parse salt from handshake
-	salt := make([]byte, 20)
-	idx := 1
-	for idx < len(handshake) && handshake[idx] != 0 {
-		idx++
-	}
-	idx++    // skip null byte of server version
-	idx += 4 // skip connection id
-	if idx+8 <= len(handshake) {
-		copy(salt[0:8], handshake[idx:idx+8])
-	}
-	idx += 8 + 1 // 8 bytes salt + 1 filler byte
-	idx += 2     // capability flags part 1
-
-	if idx < len(handshake) {
-		idx += 1 // charset
-		idx += 2 // status flags
-		idx += 2 // capability flags part 2
-		authLen := 21
-		if idx < len(handshake) {
-			authLen = int(handshake[idx])
-			idx++
-		}
-		idx += 10 // reserved
-		part2Len := authLen - 8
-		if part2Len < 12 {
-			part2Len = 12
-		}
-		if idx+part2Len <= len(handshake) {
-			copy(salt[8:20], handshake[idx:idx+part2Len])
+	if m.opt.InitSQL != "" {
+		if _, err := m.query(ctx, m.opt.InitSQL); err != nil {
+			m.drop()
+			return fmt.Errorf("mysql: init_sql: %w", err)
 		}
 	}
-
-	// 2. Send Handshake Response 4.1
-	clientFlags := uint32(
-		0x00000001 | // CLIENT_LONG_PASSWORD
-			0x00000004 | // CLIENT_LONG_FLAG
-			0x00000200 | // CLIENT_PROTOCOL_41
-			0x00008000 | // CLIENT_SECURE_CONNECTION
-			0x00080000 | // CLIENT_PLUGIN_AUTH
-			0x00010000, // CLIENT_MULTI_STATEMENTS
-	)
-	if m.database != "" {
-		clientFlags |= 0x00000008 // CLIENT_CONNECT_WITH_DB
-	}
-
-	var resp []byte
-	resp = binary.LittleEndian.AppendUint32(resp, clientFlags)
-	resp = binary.LittleEndian.AppendUint32(resp, 0x01000000) // max packet size 16MB
-	resp = append(resp, 45)                                   // utf8mb4 charset (0x2d)
-	resp = append(resp, make([]byte, 23)...)                  // 23 filler bytes
-	resp = append(resp, []byte(m.user)...)
-	resp = append(resp, 0) // null-terminated username
-
-	scramble := scramblePassword(salt, m.password)
-	if len(scramble) > 0 {
-		resp = append(resp, byte(len(scramble)))
-		resp = append(resp, scramble...)
-	} else {
-		resp = append(resp, 0)
-	}
-
-	if m.database != "" {
-		resp = append(resp, []byte(m.database)...)
-		resp = append(resp, 0)
-	}
-	resp = append(resp, []byte("mysql_native_password\x00")...)
-
-	if err := m.writePacketRaw(resp); err != nil {
-		_ = m.conn.Close()
-		m.conn, m.rd = nil, nil
-		return fmt.Errorf("mysql: failed to write auth response: %w", err)
-	}
-
-	// 3. Read Auth Result
-	authRes, err := m.readPacketRaw()
-	if err != nil {
-		_ = m.conn.Close()
-		m.conn, m.rd = nil, nil
-		return fmt.Errorf("mysql: failed to read auth result: %w", err)
-	}
-	if len(authRes) > 0 && authRes[0] == 0xff {
-		_ = m.conn.Close()
-		m.conn, m.rd = nil, nil
-		return parseMySQLError(authRes)
-	}
-
 	return nil
 }
 
-type mysqlQueryResult struct {
-	affectedRows uint64
-	rows         [][]string
-}
-
-func (m *MySQL) execQuery(ctx context.Context, sql string) (*mysqlQueryResult, error) {
-	if err := m.dial(ctx); err != nil {
-		return nil, err
-	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = m.conn.SetDeadline(deadline)
-		defer func() { _ = m.conn.SetDeadline(time.Time{}) }()
-	}
-
-	m.seq = 0
-	cmd := append([]byte{0x03}, []byte(sql)...) // 0x03 = COM_QUERY
-	if err := m.writePacketRaw(cmd); err != nil {
-		_ = m.conn.Close()
-		m.conn, m.rd = nil, nil
-		return nil, err
-	}
-
-	firstPkt, err := m.readPacketRaw()
+func (m *MySQL) handshake(ctx context.Context) error {
+	hs, err := m.readPacket()
 	if err != nil {
-		_ = m.conn.Close()
-		m.conn, m.rd = nil, nil
-		return nil, err
+		return fmt.Errorf("mysql: reading handshake: %w", err)
 	}
-
-	if len(firstPkt) == 0 {
-		return &mysqlQueryResult{}, nil
+	if len(hs) > 0 && hs[0] == 0xff {
+		return parseMySQLError(hs)
 	}
-
-	// Error packet
-	if firstPkt[0] == 0xff {
-		return nil, parseMySQLError(firstPkt)
+	if len(hs) < 1 || hs[0] != 10 {
+		return fmt.Errorf("mysql: unsupported handshake protocol %v", hs[:min(1, len(hs))])
 	}
-
-	// OK packet
-	if firstPkt[0] == 0x00 {
-		affected, _ := readLengthEncodedInt(firstPkt[1:])
-		return &mysqlQueryResult{affectedRows: affected}, nil
+	// protocol(1) version(NUL) connid(4) auth1(8) filler(1) caps-lo(2)
+	// charset(1) status(2) caps-hi(2) authlen(1) reserved(10) auth2 plugin(NUL)
+	i := bytes.IndexByte(hs[1:], 0) + 2
+	if i < 2 || i+4+8+1+2 > len(hs) {
+		return fmt.Errorf("mysql: truncated handshake")
 	}
-
-	// Result Set
-	colCount, _ := readLengthEncodedInt(firstPkt)
-	for i := 0; i < int(colCount); i++ {
-		if _, err := m.readPacketRaw(); err != nil {
-			_ = m.conn.Close()
-			m.conn, m.rd = nil, nil
-			return nil, err
+	i += 4
+	nonce := append([]byte(nil), hs[i:i+8]...)
+	i += 9
+	caps := uint32(binary.LittleEndian.Uint16(hs[i:]))
+	i += 2
+	plugin := "mysql_native_password"
+	if len(hs) >= i+16 {
+		caps |= uint32(binary.LittleEndian.Uint16(hs[i+3:])) << 16
+		authLen := int(hs[i+5])
+		i += 16
+		n := max(13, authLen-8)
+		if i+n <= len(hs) {
+			nonce = append(nonce, bytes.TrimRight(hs[i:i+n], "\x00")...)
+			i += n
+		}
+		if caps&myPluginAuth != 0 && i < len(hs) {
+			if j := bytes.IndexByte(hs[i:], 0); j >= 0 {
+				plugin = string(hs[i : i+j])
+			} else {
+				plugin = string(hs[i:])
+			}
 		}
 	}
 
-	// Read column EOF / OK packet
-	colEOF, err := m.readPacketRaw()
+	flags := uint32(myLongPassword | myFoundRows | myLongFlag | myProtocol41 | myTransactions |
+		mySecureConnection | myMultiStatements | myMultiResults | myPluginAuth)
+	if m.opt.Database != "" {
+		flags |= myConnectWithDB
+	}
+	tcfg, err := m.opt.tlsConfig(m.addr)
 	if err != nil {
-		_ = m.conn.Close()
-		m.conn, m.rd = nil, nil
-		return nil, err
+		return err
 	}
-	if len(colEOF) > 0 && colEOF[0] == 0xff {
-		return nil, parseMySQLError(colEOF)
+	head := binary.LittleEndian.AppendUint32(nil, flags)
+	head = binary.LittleEndian.AppendUint32(head, 1<<24) // max packet
+	head = append(head, 45)                              // utf8mb4
+	head = append(head, make([]byte, 23)...)
+	if tcfg != nil {
+		if caps&mySSL == 0 {
+			return fmt.Errorf("mysql: server %s does not support TLS (db.tls=%s)", m.addr, m.opt.TLS)
+		}
+		binary.LittleEndian.PutUint32(head, flags|mySSL)
+		if err := m.writePacket(head); err != nil {
+			return err
+		}
+		tc := tls.Client(m.conn, tcfg)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			return fmt.Errorf("mysql: TLS: %w", err)
+		}
+		m.conn, m.rd = tc, bufio.NewReader(tc)
+		flags |= mySSL
+		binary.LittleEndian.PutUint32(head, flags)
 	}
+	auth, err := m.scramble(plugin, nonce)
+	if err != nil {
+		return err
+	}
+	resp := append(append([]byte(nil), head...), m.opt.User...)
+	resp = append(resp, 0, byte(len(auth)))
+	resp = append(resp, auth...)
+	if m.opt.Database != "" {
+		resp = append(append(resp, m.opt.Database...), 0)
+	}
+	resp = append(append(resp, plugin...), 0)
+	if err := m.writePacket(resp); err != nil {
+		return err
+	}
+	return m.authResult(plugin, nonce)
+}
 
-	// Read Rows until EOF (0xfe with length < 9) or OK packet
-	var rows [][]string
+// authResult follows the server through switch requests and the
+// caching_sha2_password exchange until OK or an error.
+func (m *MySQL) authResult(plugin string, nonce []byte) error {
 	for {
-		rowPkt, err := m.readPacketRaw()
+		p, err := m.readPacket()
 		if err != nil {
-			_ = m.conn.Close()
-			m.conn, m.rd = nil, nil
-			return nil, err
+			return fmt.Errorf("mysql: reading auth result: %w", err)
 		}
-		if len(rowPkt) > 0 {
-			if rowPkt[0] == 0xff {
-				return nil, parseMySQLError(rowPkt)
-			}
-			if rowPkt[0] == 0xfe && len(rowPkt) < 9 {
-				break // EOF packet
-			}
-			if rowPkt[0] == 0x00 && len(rowPkt) < 9 {
-				break
-			}
+		if len(p) == 0 {
+			return fmt.Errorf("mysql: empty auth packet")
 		}
-		rows = append(rows, parseRowValues(rowPkt, int(colCount)))
+		switch p[0] {
+		case 0x00:
+			return nil
+		case 0xff:
+			return parseMySQLError(p)
+		case 0xfe: // AuthSwitchRequest: plugin NUL nonce
+			rest := p[1:]
+			j := bytes.IndexByte(rest, 0)
+			if j < 0 {
+				return fmt.Errorf("mysql: malformed auth switch")
+			}
+			plugin, nonce = string(rest[:j]), bytes.TrimRight(rest[j+1:], "\x00")
+			auth, err := m.scramble(plugin, nonce)
+			if err != nil {
+				return err
+			}
+			if err := m.writePacket(auth); err != nil {
+				return err
+			}
+		case 0x01: // AuthMoreData
+			if plugin != "caching_sha2_password" || len(p) < 2 {
+				return fmt.Errorf("mysql: unexpected auth data for %s", plugin)
+			}
+			switch p[1] {
+			case 3: // fast authentication succeeded; OK follows
+			case 4: // full authentication
+				if m.tlsActive() {
+					if err := m.writePacket(append([]byte(m.opt.Password), 0)); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := m.writePacket([]byte{2}); err != nil { // request public key
+					return err
+				}
+				key, err := m.readPacket()
+				if err != nil {
+					return err
+				}
+				if len(key) < 2 || key[0] != 0x01 {
+					return fmt.Errorf("mysql: expected the server's public key")
+				}
+				enc, err := encryptPassword(m.opt.Password, nonce, key[1:])
+				if err != nil {
+					return err
+				}
+				if err := m.writePacket(enc); err != nil {
+					return err
+				}
+			default:
+				// Public key sent as AuthMoreData without being asked.
+				return fmt.Errorf("mysql: unexpected caching_sha2 state %d", p[1])
+			}
+		default:
+			return fmt.Errorf("mysql: unexpected auth packet 0x%02x", p[0])
+		}
 	}
-
-	return &mysqlQueryResult{rows: rows}, nil
 }
 
-func mysqlTableName(prefix string) string {
-	s := strings.Map(func(r rune) rune {
+// encryptPassword encrypts (password NUL) XOR nonce with the server's RSA
+// key (RSA-OAEP with SHA-1), for full caching_sha2 authentication without
+// TLS.
+func encryptPassword(password string, nonce, pemKey []byte) ([]byte, error) {
+	block, _ := pem.Decode(pemKey)
+	if block == nil {
+		return nil, fmt.Errorf("mysql: server public key is not PEM")
+	}
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: server public key: %w", err)
+	}
+	rk, ok := key.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("mysql: server public key is not RSA")
+	}
+	plain := append([]byte(password), 0)
+	for i := range plain {
+		plain[i] ^= nonce[i%len(nonce)]
+	}
+	return rsa.EncryptOAEP(sha1.New(), rand.Reader, rk, plain, nil) //nolint:gosec
+}
+
+// result is one statement's outcome: rows for a result set, affected rows
+// otherwise.
+type result struct {
+	affected uint64
+	rows     [][]*string
+}
+
+// query sends COM_QUERY and reads every result. A failed statement ends the
+// query (MySQL does not run the statements after it); the results before it
+// are returned with the error.
+func (m *MySQL) query(ctx context.Context, sql string) ([]result, error) {
+	if err := m.dial(ctx); err != nil {
+		return nil, &notSent{err}
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		_ = m.conn.SetDeadline(dl)
+	} else {
+		_ = m.conn.SetDeadline(time.Time{})
+	}
+	m.seq = 0
+	if err := m.writePacket(append([]byte{0x03}, sql...)); err != nil {
+		m.drop()
+		return nil, &sentError{err}
+	}
+	var out []result
+	for {
+		r, more, err := m.readResult()
+		if err != nil {
+			if _, ok := err.(*mysqlError); !ok {
+				m.drop()
+				return out, &sentError{err}
+			}
+			return out, err
+		}
+		out = append(out, r)
+		if !more {
+			return out, nil
+		}
+	}
+}
+
+func (m *MySQL) readResult() (result, bool, error) {
+	p, err := m.readPacket()
+	if err != nil {
+		return result{}, false, err
+	}
+	if len(p) == 0 {
+		return result{}, false, io.ErrUnexpectedEOF
+	}
+	switch p[0] {
+	case 0xff:
+		return result{}, false, parseMySQLError(p)
+	case 0x00:
+		affected, n, _, err := lenenc(p[1:])
+		if err != nil {
+			return result{}, false, err
+		}
+		_, n2, _, err := lenenc(p[1+n:]) // last insert id
+		if err != nil || 1+n+n2+2 > len(p) {
+			return result{}, false, io.ErrUnexpectedEOF
+		}
+		status := binary.LittleEndian.Uint16(p[1+n+n2:])
+		return result{affected: affected}, status&moreResults != 0, nil
+	}
+	cols, _, _, err := lenenc(p)
+	if err != nil {
+		return result{}, false, err
+	}
+	for i := uint64(0); i < cols; i++ { // column definitions
+		if _, err := m.readPacket(); err != nil {
+			return result{}, false, err
+		}
+	}
+	if _, err := m.readPacket(); err != nil { // EOF after definitions
+		return result{}, false, err
+	}
+	var r result
+	for {
+		row, err := m.readPacket()
+		if err != nil {
+			return result{}, false, err
+		}
+		if len(row) > 0 && row[0] == 0xff {
+			return result{}, false, parseMySQLError(row)
+		}
+		if len(row) >= 1 && len(row) < 9 && row[0] == 0xfe { // EOF
+			more := len(row) >= 5 && binary.LittleEndian.Uint16(row[3:])&moreResults != 0
+			return r, more, nil
+		}
+		vals := make([]*string, 0, cols)
+		for off := 0; uint64(len(vals)) < cols; {
+			l, n, null, err := lenenc(row[off:])
+			if err != nil {
+				return result{}, false, err
+			}
+			off += n
+			if null {
+				vals = append(vals, nil)
+				continue
+			}
+			if off+int(l) > len(row) {
+				return result{}, false, io.ErrUnexpectedEOF
+			}
+			v := string(row[off : off+int(l)])
+			off += int(l)
+			vals = append(vals, &v)
+		}
+		r.rows = append(r.rows, vals)
+	}
+}
+
+func (m *MySQL) tables() (kv, lists string) {
+	base := strings.Trim(strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
 			return r
 		}
 		return '_'
-	}, prefix)
-	s = strings.Trim(s, "_")
-	if s == "" {
-		s = "strife"
+	}, strings.ToLower(m.prefix)), "_")
+	if base == "" {
+		base = "strife"
 	}
-	return s + "_kv"
-}
-
-func mysqlQueueTableName(prefix string) string {
-	return mysqlTableName(prefix) + "_queue"
+	return base + "_kv", base + "_lists"
 }
 
 func (m *MySQL) ensureSchema(ctx context.Context) error {
-	if m.initDone {
+	if m.schema {
 		return nil
 	}
-	table := mysqlTableName(m.prefix)
-	qTable := mysqlQueueTableName(m.prefix)
-
-	schema := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		k VARCHAR(255) PRIMARY KEY,
-		v BIGINT NOT NULL
-	) ENGINE=InnoDB;`, table)
-	if _, err := m.execQuery(ctx, schema); err != nil {
+	kv, lists := m.tables()
+	sql := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (k VARCHAR(255) PRIMARY KEY, v BIGINT NOT NULL); CREATE TABLE IF NOT EXISTS %s (k VARCHAR(255) PRIMARY KEY, v LONGTEXT NOT NULL)", kv, lists)
+	if _, err := m.query(ctx, sql); err != nil {
 		return err
 	}
-
-	qSchema := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		id BIGINT AUTO_INCREMENT PRIMARY KEY,
-		q VARCHAR(255) NOT NULL,
-		v BIGINT NOT NULL,
-		INDEX idx_q_id (q, id)
-	) ENGINE=InnoDB;`, qTable)
-	if _, err := m.execQuery(ctx, qSchema); err != nil {
-		return err
-	}
-
-	m.initDone = true
+	m.schema = true
 	return nil
 }
 
-func classifyMySQLError(op history.Op, err error) history.Type {
-	if op.F == history.FRead {
-		return history.Fail
-	}
-	var myErr *mysqlError
-	if errors.As(err, &myErr) {
-		switch myErr.code {
-		case 1213, 1205, 1062, 3572, 9007, 9008, 8005, 1045, 1146:
-			// Definite server-side aborts / lock wait timeouts
-			return history.Fail
-		}
-		if myErr.sqlstate == "40001" || myErr.sqlstate == "23000" {
-			return history.Fail
-		}
-	}
-	return Classify(op, err)
+func escapeMySQL(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s)
 }
 
-// Invoke executes one operation against MySQL or TiDB.
+// Invoke implements Client.
 func (m *MySQL) Invoke(ctx context.Context, op history.Op) history.Op {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	res := op
-	res.Time = time.Now().UnixNano()
-
 	if err := m.ensureSchema(ctx); err != nil {
-		res.Type = classifyMySQLError(op, err)
-		res.Error = err.Error()
-		return res
+		out := complete(op, history.Fail) // the operation never ran
+		out.Error = err.Error()
+		return out
 	}
+	out, err := m.invoke(ctx, op)
+	if err == nil {
+		return out
+	}
+	out = complete(op, sqlOutcome(op, err))
+	out.Error = err.Error()
+	return out
+}
 
-	table := mysqlTableName(m.prefix)
-	qTable := mysqlQueueTableName(m.prefix)
-
+func (m *MySQL) invoke(ctx context.Context, op history.Op) (history.Op, error) {
+	kv, lists := m.tables()
+	key := escapeMySQL(op.Key)
 	switch op.F {
 	case history.FRead:
-		sql := fmt.Sprintf("SELECT v FROM %s WHERE k = '%s';", table, op.Key)
-		qr, err := m.execQuery(ctx, sql)
+		res, err := m.query(ctx, fmt.Sprintf("SELECT v FROM %s WHERE k = '%s'", kv, key))
 		if err != nil {
-			res.Type = history.Fail
-			res.Error = err.Error()
-			return res
+			return history.Op{}, err
 		}
-		res.Type = history.OK
-		if len(qr.rows) > 0 && len(qr.rows[0]) > 0 && qr.rows[0][0] != "NULL" {
-			if v, err := strconv.ParseInt(qr.rows[0][0], 10, 64); err == nil {
-				res.Value = history.Int(v)
+		out := complete(op, history.OK)
+		if len(res) == 1 && len(res[0].rows) == 1 && res[0].rows[0][0] != nil {
+			n, err := strconv.ParseInt(*res[0].rows[0][0], 10, 64)
+			if err != nil {
+				return history.Op{}, &notSent{fmt.Errorf("mysql: non-integer value %q", *res[0].rows[0][0])}
 			}
-		} else {
-			res.Value = nil
+			out.Value = history.Int(n)
 		}
-		return res
-
+		return out, nil
 	case history.FWrite:
-		val := int64(0)
-		if op.Value != nil {
-			val = *op.Value
+		if _, err := m.query(ctx, fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v)", kv, key, *op.Value)); err != nil {
+			return history.Op{}, err
 		}
-		sql := fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v);", table, op.Key, val)
-		_, err := m.execQuery(ctx, sql)
-		if err != nil {
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
-		}
-		res.Type = history.OK
-		return res
-
+		return complete(op, history.OK), nil
 	case history.FCas:
-		oldVal, newVal := int64(0), int64(0)
-		if op.Old != nil {
-			oldVal = *op.Old
-		}
-		if op.Value != nil {
-			newVal = *op.Value
-		}
-		sql := fmt.Sprintf("UPDATE %s SET v = %d WHERE k = '%s' AND v = %d;", table, newVal, op.Key, oldVal)
-		qr, err := m.execQuery(ctx, sql)
+		// CLIENT_FOUND_ROWS: affected counts matched rows, so a cas to the
+		// same value still reports 1.
+		res, err := m.query(ctx, fmt.Sprintf("UPDATE %s SET v = %d WHERE k = '%s' AND v = %d", kv, *op.Value, key, *op.Old))
 		if err != nil {
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
+			return history.Op{}, err
 		}
-		if qr.affectedRows > 0 {
-			res.Type = history.OK
-			res.Value = history.Int(newVal)
-		} else {
-			res.Type = history.Fail
-			res.Error = "cas condition mismatch"
+		if len(res) == 1 && res[0].affected == 1 {
+			return complete(op, history.OK), nil
 		}
-		return res
-
+		return complete(op, history.Fail), nil
 	case history.FAdd, history.FInc:
 		delta := int64(1)
 		if op.Value != nil {
 			delta = *op.Value
 		}
-		sql := fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = %s.v + VALUES(v);", table, op.Key, delta, table)
-		if _, err := m.execQuery(ctx, sql); err != nil {
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
+		if _, err := m.query(ctx, fmt.Sprintf("INSERT INTO %[1]s (k, v) VALUES ('%[2]s', %[3]d) ON DUPLICATE KEY UPDATE v = %[1]s.v + VALUES(v)", kv, key, delta)); err != nil {
+			return history.Op{}, err
 		}
-		readSQL := fmt.Sprintf("SELECT v FROM %s WHERE k = '%s';", table, op.Key)
-		qr, err := m.execQuery(ctx, readSQL)
-		if err != nil {
-			res.Type = history.Info
-			res.Error = err.Error()
-			return res
-		}
-		res.Type = history.OK
-		if len(qr.rows) > 0 && len(qr.rows[0]) > 0 {
-			if v, err := strconv.ParseInt(qr.rows[0][0], 10, 64); err == nil {
-				res.Value = history.Int(v)
-			}
-		}
-		return res
-
-	case history.FEnqueue:
-		val := int64(0)
-		if op.Value != nil {
-			val = *op.Value
-		}
-		sql := fmt.Sprintf("INSERT INTO %s (q, v) VALUES ('%s', %d);", qTable, op.Key, val)
-		if _, err := m.execQuery(ctx, sql); err != nil {
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
-		}
-		res.Type = history.OK
-		return res
-
-	case history.FDequeue:
-		if _, err := m.execQuery(ctx, "START TRANSACTION;"); err != nil {
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
-		}
-		selectSQL := fmt.Sprintf("SELECT id, v FROM %s WHERE q = '%s' ORDER BY id ASC LIMIT 1 FOR UPDATE;", qTable, op.Key)
-		qr, err := m.execQuery(ctx, selectSQL)
-		if err != nil {
-			_, _ = m.execQuery(ctx, "ROLLBACK;")
-			res.Type = history.Fail
-			res.Error = err.Error()
-			return res
-		}
-		if len(qr.rows) == 0 {
-			_, _ = m.execQuery(ctx, "COMMIT;")
-			res.Type = history.OK
-			res.Value = nil
-			return res
-		}
-		rowID := qr.rows[0][0]
-		val, _ := strconv.ParseInt(qr.rows[0][1], 10, 64)
-		delSQL := fmt.Sprintf("DELETE FROM %s WHERE id = %s;", qTable, rowID)
-		if _, err := m.execQuery(ctx, delSQL); err != nil {
-			_, _ = m.execQuery(ctx, "ROLLBACK;")
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
-		}
-		if _, err := m.execQuery(ctx, "COMMIT;"); err != nil {
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
-		}
-		res.Type = history.OK
-		res.Value = history.Int(val)
-		return res
-
+		return complete(op, history.OK), nil
 	case history.FTxn:
-		if _, err := m.execQuery(ctx, "START TRANSACTION;"); err != nil {
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
-		}
-		var completedTxn []history.MicroOp
-		for _, mop := range op.Txn {
-			mres := mop
-			switch mop.F {
-			case "r", history.FRead:
-				sql := fmt.Sprintf("SELECT v FROM %s WHERE k = '%s';", table, mop.Key)
-				qr, err := m.execQuery(ctx, sql)
-				if err != nil {
-					_, _ = m.execQuery(ctx, "ROLLBACK;")
-					res.Type = classifyMySQLError(op, err)
-					res.Error = err.Error()
-					return res
-				}
-				if len(qr.rows) > 0 && len(qr.rows[0]) > 0 && qr.rows[0][0] != "NULL" {
-					if v, err := strconv.ParseInt(qr.rows[0][0], 10, 64); err == nil {
-						mres.Value = history.Int(v)
-					}
-				} else {
-					mres.Value = nil
-				}
-			case "w", history.FWrite:
-				val := int64(0)
-				if mop.Value != nil {
-					val = *mop.Value
-				}
-				sql := fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v);", table, mop.Key, val)
-				if _, err := m.execQuery(ctx, sql); err != nil {
-					_, _ = m.execQuery(ctx, "ROLLBACK;")
-					res.Type = classifyMySQLError(op, err)
-					res.Error = err.Error()
-					return res
-				}
-			}
-			completedTxn = append(completedTxn, mres)
-		}
-		if _, err := m.execQuery(ctx, "COMMIT;"); err != nil {
-			res.Type = classifyMySQLError(op, err)
-			res.Error = err.Error()
-			return res
-		}
-		res.Type = history.OK
-		res.Txn = completedTxn
-		return res
+		return m.txn(ctx, op, lists)
 	}
+	return history.Op{}, &notSent{fmt.Errorf("mysql: unsupported operation %q", op.F)}
+}
 
-	res.Type = history.Fail
-	res.Error = fmt.Sprintf("mysql: unsupported function %q", op.F)
-	return res
+func (m *MySQL) txn(ctx context.Context, op history.Op, lists string) (history.Op, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "SET TRANSACTION ISOLATION LEVEL %s; START TRANSACTION", m.opt.Isolation)
+	for _, mo := range op.Txn {
+		k := escapeMySQL(mo.Key)
+		switch mo.F {
+		case history.MicroAppend:
+			fmt.Fprintf(&b, "; INSERT INTO %s (k, v) VALUES ('%s', '%d') ON DUPLICATE KEY UPDATE v = CONCAT(v, ',', VALUES(v))", lists, k, *mo.Value)
+		case history.MicroRead:
+			fmt.Fprintf(&b, "; SELECT v FROM %s WHERE k = '%s'", lists, k)
+		default:
+			return history.Op{}, &notSent{fmt.Errorf("mysql: unsupported micro-op %q", mo.F)}
+		}
+	}
+	b.WriteString("; COMMIT")
+	commit := len(op.Txn) + 2 // index of COMMIT's result
+	res, err := m.query(ctx, b.String())
+	if err != nil {
+		if m.conn != nil {
+			if _, rerr := m.query(ctx, "ROLLBACK"); rerr != nil {
+				m.drop()
+			}
+		}
+		var me *mysqlError
+		if len(res) < commit && asMySQLError(err, &me) {
+			// The server stopped before COMMIT: nothing was committed.
+			return history.Op{}, &mysqlError{code: 1213, sqlstate: "40001", msg: "before commit: " + me.Error()}
+		}
+		return history.Op{}, err
+	}
+	if len(res) != commit+1 {
+		return history.Op{}, &sentError{fmt.Errorf("mysql: %d results for %d statements", len(res), commit+1)}
+	}
+	out := complete(op, history.OK)
+	for i, mo := range op.Txn {
+		if mo.F != history.MicroRead {
+			continue
+		}
+		vals := []int64{}
+		if r := res[i+2]; len(r.rows) == 1 && r.rows[0][0] != nil {
+			var err error
+			if vals, err = parseList(*r.rows[0][0]); err != nil {
+				return history.Op{}, &sentError{err}
+			}
+		}
+		out.Txn[i].Values = vals
+	}
+	return out, nil
+}
+
+func asMySQLError(err error, target **mysqlError) bool {
+	e, ok := err.(*mysqlError)
+	if ok {
+		*target = e
+	}
+	return ok
 }

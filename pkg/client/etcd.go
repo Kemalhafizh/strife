@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -141,6 +142,100 @@ func (e *Etcd) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 			return complete(op, history.OK), nil
 		}
 		return complete(op, history.Fail), nil
+	case history.FTxn:
+		return e.txn(ctx, op)
 	}
 	return history.Op{}, &statusError{code: 400, body: "unsupported op " + op.F}
+}
+
+// txn runs a list-append transaction optimistically: read every key in one
+// etcd transaction, compute the result, then commit the new lists in a
+// transaction that compares every key's mod revision with what was read. A
+// lost race changes nothing and is retried; if every attempt loses, the
+// operation definitely failed.
+func (e *Etcd) txn(ctx context.Context, op history.Op) (history.Op, error) {
+	var keys []string
+	for _, m := range op.Txn {
+		if !slices.Contains(keys, m.Key) {
+			keys = append(keys, m.Key)
+		}
+	}
+	for attempt := 0; attempt < 4; attempt++ {
+		var snap struct {
+			Responses []struct {
+				Range struct {
+					Kvs []struct {
+						Value       string `json:"value"`
+						ModRevision string `json:"mod_revision"`
+					} `json:"kvs"`
+				} `json:"response_range"`
+			} `json:"responses"`
+		}
+		var ranges []map[string]any
+		for _, k := range keys {
+			ranges = append(ranges, map[string]any{"requestRange": map[string]any{"key": b64(e.prefix + k)}})
+		}
+		if err := e.post(ctx, "/v3/kv/txn", map[string]any{"success": ranges}, &snap); err != nil {
+			if attempt > 0 {
+				err = &statusError{code: 409, body: "commit retry: " + err.Error()} // nothing committed yet
+			}
+			return history.Op{}, err
+		}
+		if len(snap.Responses) != len(keys) {
+			return history.Op{}, &statusError{code: 502, body: "etcd: short txn response"}
+		}
+		lists := map[string][]int64{}
+		revs := map[string]string{}
+		for i, k := range keys {
+			revs[k] = "0"
+			if kvs := snap.Responses[i].Range.Kvs; len(kvs) > 0 {
+				raw, err := base64.StdEncoding.DecodeString(kvs[0].Value)
+				if err != nil {
+					return history.Op{}, err
+				}
+				if lists[k], err = parseList(string(raw)); err != nil {
+					return history.Op{}, err
+				}
+				revs[k] = kvs[0].ModRevision
+			}
+		}
+		out := complete(op, history.OK)
+		written := false
+		for i, m := range op.Txn {
+			switch m.F {
+			case history.MicroAppend:
+				lists[m.Key] = append(lists[m.Key], *m.Value)
+				written = true
+			case history.MicroRead:
+				out.Txn[i].Values = append([]int64{}, lists[m.Key]...)
+			}
+		}
+		if !written {
+			return out, nil // one atomic, linearizable snapshot
+		}
+		var compare, puts []map[string]any
+		for _, k := range keys {
+			compare = append(compare, map[string]any{"key": b64(e.prefix + k), "target": "MOD", "result": "EQUAL", "mod_revision": revs[k]})
+		}
+		for _, k := range keys {
+			if !slices.ContainsFunc(op.Txn, func(m history.MicroOp) bool { return m.Key == k && m.F == history.MicroAppend }) {
+				continue
+			}
+			strs := make([]string, len(lists[k]))
+			for i, v := range lists[k] {
+				strs[i] = strconv.FormatInt(v, 10)
+			}
+			puts = append(puts, map[string]any{"requestPut": map[string]any{"key": b64(e.prefix + k), "value": b64(strings.Join(strs, ","))}})
+		}
+		var resp struct {
+			Succeeded bool `json:"succeeded"`
+		}
+		if err := e.post(ctx, "/v3/kv/txn", map[string]any{"compare": compare, "success": puts}, &resp); err != nil {
+			return history.Op{}, err
+		}
+		if resp.Succeeded {
+			return out, nil
+		}
+	}
+	return history.Op{}, &statusError{code: 409, body: "etcd: lost every optimistic commit race"}
 }

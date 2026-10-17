@@ -55,7 +55,10 @@ type Diagnoser interface {
 // sound: a reported violation is a proof. A model that implements Decider is
 // never searched, so a pass means "no anomaly found".
 type Decider interface {
-	Decide(ops []history.Operation) (violation bool, witness []int, diagnosis string)
+	// Decide returns whether ops violate the model, the indices of the
+	// operations that witness the first violation, a sentence explaining
+	// it, and the kinds of every violation found (e.g. "G2").
+	Decide(ops []history.Operation) (violation bool, witness []int, diagnosis string, kinds []string)
 }
 
 // ReadOnly is implemented by models whose some operations never change the

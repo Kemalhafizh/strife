@@ -1,29 +1,30 @@
 {
-  "name": "tidb-cluster",
+  "name": "tidb-pessimistic",
   "seed": 42,
   "duration": "60s",
   "nodes": [
-    { "name": "n1", "ip": "172.31.3.11", "container": "strife-tidb1" }
+    { "name": "n1", "ip": "172.31.3.11", "container": "strife-tidb1", "cgroup": "auto" }
   ],
-  "transport": { "type": "docker" },
+  "transport": { "type": "docker", "sudo": true },
   "db": {
     "kind": "tidb",
     "endpoints": ["172.31.3.11:4000"],
-    "prefix": "strife/"
+    "user": "root",
+    "database": "test"
   },
   "workload": {
-    "model": "kv",
-    "keys": 4,
-    "values": 5,
-    "concurrency": 8,
+    "model": "append",
+    "isolation": "snapshot-isolation",
+    "keys": 6,
+    "txn_len": 4,
+    "concurrency": 10,
     "read_ratio": 0.5,
-    "cas_ratio": 0.2,
-    "timeout": "2s"
+    "think": "5ms",
+    "timeout": "5s"
   },
   "nemesis": {
-    "faults": ["pause"],
-    "interval": "8s",
-    "length": "6s",
-    "interface": "eth0"
+    "faults": ["freeze"],
+    "interval": "10s",
+    "length": "3s"
   }
 }

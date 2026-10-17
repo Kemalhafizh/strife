@@ -606,10 +606,7 @@ func cmdShrinkHistory(path, modelName, isolation, outDir string, ci report.Outpu
 	if err != nil {
 		return exitUsage, err
 	}
-	if tm, ok := m.(model.TxnModel); ok {
-		tm.Level = isolation
-		m = tm
-	}
+	m = withIsolation(m, isolation)
 
 	fmt.Fprintf(stdout, "\nshrinking history %q (%d ops, model %s)…\n", path, len(ops), modelName)
 
@@ -784,10 +781,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitUsage, err
 	}
-	if tm, ok := m.(model.TxnModel); ok {
-		tm.Level = *isolation
-		m = tm
-	}
+	m = withIsolation(m, *isolation)
 	var r io.Reader = os.Stdin
 	if *path != "-" {
 		f, err := os.Open(*path)
@@ -987,7 +981,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	addWitnesses(cfg.Model(), res.History, &res.Check)
 	res.Findings = probe.Correlate(res.History, res.Check, res.Schedule, res.Probes)
-	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg, res.Schedule, res.History, res.Check, "")
+	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg.Redacted(), res.Schedule, res.History, res.Check, "")
 	if err != nil {
 		return exitError, err
 	}
@@ -1410,4 +1404,17 @@ func cmdWorkload(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	tw.Flush()
 	return exitOK, nil
+}
+
+// withIsolation applies --isolation to the transactional models.
+func withIsolation(m model.Model, level string) model.Model {
+	switch t := m.(type) {
+	case model.TxnModel:
+		t.Level = level
+		return t
+	case model.Append:
+		t.Level = level
+		return t
+	}
+	return m
 }

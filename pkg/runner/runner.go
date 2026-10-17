@@ -3,9 +3,12 @@ package runner
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kemalhafizh/strife/internal/rng"
@@ -66,7 +69,9 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	if factory == nil {
 		namespace = Namespace(cfg, time.Now())
 		var err error
-		if factory, err = client.NewFactory(cfg.DB.Config, namespace); err != nil {
+		dbc := cfg.DB.Config
+		dbc.Isolation = cfg.Workload.Isolation
+		if factory, err = client.NewFactory(dbc, namespace); err != nil {
 			return nil, err
 		}
 	}
@@ -140,16 +145,30 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 		logf("loaded workload plugin %q (%s, sha256=%s)", plug.Name, plug.Source, plug.SHA256[:12])
 	}
 	root := rng.New(cfg.Seed)
+	var rot *keyRotation
+	if cfg.Workload.Model == "append" {
+		rot = &keyRotation{perKey: int64(cfg.Workload.WritesPerKey), writes: make([]atomic.Int64, cfg.Workload.Keys)}
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < cfg.Workload.Concurrency; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			worker(runCtx, cfg, i, root.Fork(fmt.Sprintf("workload/%d", i)), plug, factory, rec, start.Add(duration), logf)
+			worker(runCtx, cfg, i, root.Fork(fmt.Sprintf("workload/%d", i)), plug, rot, factory, rec, start.Add(duration), logf)
 		}(i)
 	}
 	wg.Wait()
 	nemWG.Wait()
+	if cfg.Workload.Model == "append" {
+		// Heal, let the cluster settle, then read every key once more: an
+		// acknowledged append that no read ever saw is otherwise invisible.
+		hctx, hcancel := context.WithTimeout(ctx, time.Minute)
+		if errs := inj.Teardown(hctx, cfg.Nemesis.Faults); len(errs) > 0 {
+			logf("healing before final reads: %v", errs)
+		}
+		hcancel()
+		finalReads(ctx, cfg, factory, rec, logf)
+	}
 
 	if t := report.InjectionTiming(applied); t.Count > 0 {
 		logf("fault timing: %d transitions landed p50=%v p95=%v max=%v after plan", t.Count, stats.Round(t.P50), stats.Round(t.P95), stats.Round(t.Max))
@@ -171,6 +190,14 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if rep.Stats.OK == 0 && rep.Verdict == checker.Linearizable {
+		// Nothing succeeded, so nothing was tested: a pass would be a lie.
+		rep.Verdict = checker.Unknown
+		for i := range rep.Keys {
+			rep.Keys[i].Verdict, rep.Keys[i].Reason = checker.Unknown, ReasonNoSuccess
+		}
+		logf("no operation succeeded: the verdict is unknown (see the errors in history.jsonl)")
+	}
 	findings := probe.Correlate(ops, rep, sched, probes)
 	return &Result{
 		Schedule:  sched,
@@ -183,15 +210,20 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	}, nil
 }
 
+// ReasonNoSuccess explains an unknown verdict for a run in which no
+// operation succeeded.
+const ReasonNoSuccess = "no operation succeeded"
+
 // ResolveHost replaces "auto" cgroups and io_device with what the transport
 // discovers on the host. It returns a copy: the caller's config is untouched.
 func ResolveHost(ctx context.Context, cfg *Config, tr transport.Transport) (*Config, error) {
+	cgroupFaults := slices.Contains(cfg.Nemesis.Faults, nemesis.Freeze) || slices.Contains(cfg.Nemesis.Faults, nemesis.IOStall)
 	needs := cfg.Nemesis.IODevice == transport.Auto
 	for _, n := range cfg.Nodes {
 		needs = needs || n.Cgroup == transport.Auto
 	}
-	if !needs {
-		return cfg, nil
+	if !needs || !cgroupFaults {
+		return cfg, nil // nothing will use them
 	}
 	hr, ok := tr.(transport.HostResolver)
 	if !ok {
@@ -225,7 +257,7 @@ func Namespace(cfg *Config, now time.Time) string {
 	return fmt.Sprintf("%s-%d-%s", cfg.Name, cfg.Seed, strconv.FormatInt(now.UnixNano(), 36))
 }
 
-func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workload.Plugin, factory client.Factory, rec *history.Recorder, until time.Time, logf func(string, ...any)) {
+func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workload.Plugin, rot *keyRotation, factory client.Factory, rec *history.Recorder, until time.Time, logf func(string, ...any)) {
 	w := cfg.Workload
 	node := slot % len(cfg.Nodes)
 	c, err := factory(node)
@@ -237,8 +269,8 @@ func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workl
 	process := slot
 	step := 0
 	var gen *appendGen
-	if w.Model == "append" {
-		gen = &appendGen{worker: slot, keys: w.Keys, perWorker: max(1, w.WritesPerKey/w.Concurrency), writes: make([]int, w.Keys)}
+	if rot != nil {
+		gen = &appendGen{worker: slot, keys: rot}
 	}
 	for time.Now().Before(until) && ctx.Err() == nil {
 		var op history.Op
@@ -289,7 +321,9 @@ func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workl
 		out := c.Invoke(octx, inv)
 		cancel()
 		out.Process = process
-		out.Node = cfg.Nodes[node].Name
+		if out.Node == "" { // clients that route requests report the server
+			out.Node = cfg.Nodes[node].Name
+		}
 		rec.Record(out)
 		if out.Type == history.Info {
 			// The op may still be in flight: continue as a new process with
@@ -317,33 +351,104 @@ func absDuration(d time.Duration) time.Duration {
 	return d
 }
 
-// appendGen generates list-append transactions for one worker. Values are
-// unique across the run (the worker index is part of each value), and keys
-// rotate deterministically: after perWorker of its own appends to a key slot
-// the worker moves to the slot's next generation, so each key collects about
-// writes_per_key appends in total and lists stay short.
-type appendGen struct {
-	worker, keys, perWorker int
-	writes                  []int // this worker's appends per key slot
-	next                    int64
+// keyRotation is shared by every worker of an append run: like Elle, all
+// workers contend on the same few active keys, and a key slot moves to its
+// next generation once it has collected writes_per_key appends in total, so
+// lists stay short. (Contention is the point: per-worker keys would never
+// conflict.) The keys an operation picks therefore depend on global
+// progress, while each worker's random choices still come from its seed.
+type keyRotation struct {
+	perKey int64
+	writes []atomic.Int64
 }
 
-func (g *appendGen) key(slot int) string {
-	return fmt.Sprintf("a%d.%d", slot, g.writes[slot]/g.perWorker)
+func (k *keyRotation) key(slot int) string {
+	return fmt.Sprintf("a%d.%d", slot, k.writes[slot].Load()/k.perKey)
+}
+
+// appendGen generates list-append transactions for one worker. Values are
+// unique across the run: the worker index is part of each value.
+type appendGen struct {
+	worker int
+	keys   *keyRotation
+	next   int64
 }
 
 func (g *appendGen) op(r *rng.Rand, txnLen int, readRatio float64) history.Op {
 	n := 1 + r.Intn(txnLen)
 	micro := make([]history.MicroOp, 0, n)
 	for i := 0; i < n; i++ {
-		slot := r.Intn(g.keys)
+		slot := r.Intn(len(g.keys.writes))
+		key := g.keys.key(slot)
 		if r.Float64() < readRatio {
-			micro = append(micro, history.MicroOp{F: history.MicroRead, Key: g.key(slot)})
+			micro = append(micro, history.MicroOp{F: history.MicroRead, Key: key})
 			continue
 		}
 		g.next++
-		micro = append(micro, history.MicroOp{F: history.MicroAppend, Key: g.key(slot), Value: history.Int(int64(g.worker+1)*1_000_000_000 + g.next)})
-		g.writes[slot]++
+		micro = append(micro, history.MicroOp{F: history.MicroAppend, Key: key, Value: history.Int(int64(g.worker+1)*1_000_000_000 + g.next)})
+		g.keys.writes[slot].Add(1)
 	}
 	return history.Op{Type: history.Invoke, F: history.FTxn, Txn: micro}
+}
+
+// finalReads reads every key the append workload touched, retrying on other
+// nodes until each read succeeds or attempts run out.
+func finalReads(ctx context.Context, cfg *Config, factory client.Factory, rec *history.Recorder, logf func(string, ...any)) {
+	keys := map[string]bool{}
+	for _, op := range rec.Ops() {
+		for _, m := range op.Txn {
+			keys[m.Key] = true
+		}
+	}
+	sorted := make([]string, 0, len(keys))
+	for k := range keys {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	select {
+	case <-time.After(time.Duration(cfg.Workload.Timeout)):
+	case <-ctx.Done():
+		return
+	}
+	process := 1 << 30 // far from workload processes
+	clients := map[int]client.Client{}
+	defer func() {
+		for _, c := range clients {
+			_ = c.Close()
+		}
+	}()
+	missing := 0
+	for _, k := range sorted {
+		ok := false
+		for attempt := 0; attempt < 3*len(cfg.Nodes) && !ok && ctx.Err() == nil; attempt++ {
+			node := attempt % len(cfg.Nodes)
+			c, found := clients[node]
+			if !found {
+				var err error
+				if c, err = factory(node); err != nil {
+					continue
+				}
+				clients[node] = c
+			}
+			op := rec.Record(history.Op{Process: process, Type: history.Invoke, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroRead, Key: k}}})
+			octx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Workload.Timeout))
+			out := c.Invoke(octx, op)
+			cancel()
+			out.Process = process
+			if out.Node == "" {
+				out.Node = cfg.Nodes[node].Name
+			}
+			rec.Record(out)
+			process++
+			if ok = out.Type == history.OK; !ok {
+				// A failed client may hold a broken connection.
+				_ = c.Close()
+				delete(clients, node)
+			}
+		}
+		if !ok {
+			missing++
+		}
+	}
+	logf("final reads: %d keys, %d could not be read", len(sorted), missing)
 }

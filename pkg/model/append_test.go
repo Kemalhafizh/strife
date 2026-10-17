@@ -36,7 +36,7 @@ func TestAppendModel(t *testing.T) {
 		appendOp(1, 1, 20, 30, history.OK, rd("x", 1), app("x", 2)),
 		appendOp(2, 0, 40, 50, history.OK, rd("x", 1, 2)),
 	}
-	if bad, _, _ := m.Decide(good); bad {
+	if bad, _, _, _ := m.Decide(good); bad {
 		t.Fatal("serial history flagged")
 	}
 	// The sequential spec agrees.
@@ -52,15 +52,15 @@ func TestAppendModel(t *testing.T) {
 	}
 
 	stale := append(good, appendOp(3, 1, 60, 70, history.OK, rd("x", 1)))
-	bad, witness, diag := m.Decide(stale)
-	if !bad || len(witness) == 0 || !strings.Contains(diag, "G-realtime") {
+	bad, witness, diag, kinds := m.Decide(stale)
+	if !bad || len(witness) == 0 || !strings.Contains(diag, "G-realtime") || kinds[0] != "G-realtime" {
 		t.Fatalf("stale read after completion must be a real-time violation: %v %v %q", bad, witness, diag)
 	}
 	if ok, _ := m.Step(s, stale[3].Input, stale[3].Output); ok {
 		t.Fatal("step must reject a stale list")
 	}
 	// Serializable (not strict) allows ordering the stale reader earlier.
-	if bad, _, _ := (Append{Level: "serializable"}).Decide(stale); bad {
+	if bad, _, _, _ := (Append{Level: "serializable"}).Decide(stale); bad {
 		t.Fatal("serializability does not forbid this history")
 	}
 }

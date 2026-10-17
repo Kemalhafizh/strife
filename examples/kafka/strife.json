@@ -1,7 +1,7 @@
 {
-  "name": "kafka-cluster",
+  "name": "kafka-3",
   "seed": 17,
-  "duration": "60s",
+  "duration": "90s",
   "nodes": [
     { "name": "n1", "ip": "172.31.2.11", "container": "strife-kafka1" },
     { "name": "n2", "ip": "172.31.2.12", "container": "strife-kafka2" },
@@ -11,20 +11,23 @@
   "db": {
     "kind": "kafka",
     "endpoints": ["172.31.2.11:9092", "172.31.2.12:9092", "172.31.2.13:9092"],
-    "process": "kafka",
+    "process": "kafka.Kafka",
     "start": "/usr/local/bin/start-kafka.sh"
   },
   "workload": {
-    "model": "queue",
-    "keys": 3,
-    "values": 10,
-    "concurrency": 6,
-    "read_ratio": 0.5,
-    "timeout": "2s"
+    "model": "append",
+    "txn_len": 1,
+    "isolation": "strict-serializable",
+    "keys": 4,
+    "writes_per_key": 64,
+    "concurrency": 8,
+    "read_ratio": 0.4,
+    "think": "20ms",
+    "timeout": "5s"
   },
   "nemesis": {
-    "faults": ["partition", "pause"],
-    "interval": "8s",
+    "faults": ["partition", "kill", "pause"],
+    "interval": "12s",
     "length": "6s",
     "interface": "eth0"
   }

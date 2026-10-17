@@ -26,6 +26,11 @@ const (
 	// AnomalyInternal: a transaction did not observe its own earlier
 	// appends or reads (internal inconsistency).
 	AnomalyInternal AnomalyType = "internal"
+	// AnomalyLostAppend: an acknowledged append that no read ever
+	// observed, although reads of the key began after it was acknowledged.
+	// Under strict serializability (real time) that is a lost write; a
+	// stale read, by contrast, misses an append that later reads observe.
+	AnomalyLostAppend AnomalyType = "lost-append"
 )
 
 // CheckAppend checks a history of list-append transactions against an
@@ -48,6 +53,9 @@ func CheckAppend(ops []history.Operation, level IsolationLevel) *Report {
 	anomalies := append([]Anomaly(nil), a.always...)
 	if level != LevelReadUncommitted {
 		anomalies = append(anomalies, a.readCommitted...)
+	}
+	if level == LevelStrictSerializable {
+		anomalies = append(anomalies, a.lostAppends()...)
 	}
 	g := a.graph(level == LevelStrictSerializable)
 	rep.Edges = g.edges
@@ -721,4 +729,55 @@ func (a *analysis) cycleAnomaly(typ AnomalyType, name, why string, p path) Anoma
 		fmt.Fprintf(&b, " %s = %s;", a.name(s.from), a.describe(s.from))
 	}
 	return Anomaly{Type: typ, Name: name, Explanation: strings.TrimSuffix(b.String(), ";") + ".", Cycle: c, Txns: txns}
+}
+
+// lostAppends reports acknowledged appends that no read observed although
+// some read of the key began after the append completed: in real time the
+// value must have been there.
+func (a *analysis) lostAppends() []Anomaly {
+	lastStart := map[string]int{} // key -> txn of the latest-starting read
+	for k, obs := range a.reads {
+		best := -1
+		for _, o := range obs {
+			if best < 0 || a.txns[o.txn].op.Call > a.txns[best].op.Call {
+				best = o.txn
+			}
+		}
+		lastStart[k] = best
+	}
+	var out []Anomaly
+	for t, tx := range a.txns {
+		if tx.op.Status() != history.OK {
+			continue
+		}
+		for _, m := range tx.micro {
+			if m.F != history.MicroAppend || m.Value == nil {
+				continue
+			}
+			e := elem{m.Key, *m.Value}
+			if _, seen := a.pos[e]; seen || a.dup[e] || a.broken[m.Key] {
+				continue
+			}
+			r, ok := lastStart[m.Key]
+			if !ok || a.txns[r].op.Call <= tx.op.Return {
+				continue
+			}
+			var list []int64
+			for _, o := range a.reads[m.Key] {
+				if o.txn == r {
+					list = o.list
+				}
+			}
+			out = append(out, Anomaly{
+				Type: AnomalyLostAppend, Name: "Lost append",
+				Explanation: fmt.Sprintf("%s appended %d to %s and was acknowledged at %v, but no read ever observed it: %s began at %v and read %s = %v.",
+					a.name(t), e.val, m.Key, ns(tx.op.Return), a.name(r), ns(a.txns[r].op.Call), m.Key, list),
+				Txns: []Txn{a.txn(t), a.txn(r)},
+			})
+			if len(out) >= maxAnomalyCycles {
+				return out
+			}
+		}
+	}
+	return out
 }

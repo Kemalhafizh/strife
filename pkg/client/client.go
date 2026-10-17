@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/kemalhafizh/strife/internal/secret"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -36,6 +37,31 @@ type Config struct {
 	// 10.0.0.1:6379 for redis/valkey.
 	Endpoints []string `json:"endpoints,omitempty"`
 	Prefix    string   `json:"prefix,omitempty"` // key prefix, default "strife/" or "strife:"
+	// Credentials and transport security (postgres, mysql/tidb, redis).
+	// Password accepts "env:NAME" or "file:PATH" so it never has to live in
+	// strife.json, which is copied into every report.
+	User     string `json:"user,omitempty"`
+	Password string `json:"password,omitempty"`
+	Database string `json:"database,omitempty"`
+	TLS      string `json:"tls,omitempty"`    // disable | require | verify-full
+	TLSCA    string `json:"tls_ca,omitempty"` // PEM CA bundle for verify-full
+	// InitSQL runs on every new SQL connection (postgres, mysql/tidb).
+	InitSQL string `json:"init_sql,omitempty"`
+	// Isolation is the transaction isolation level, set from
+	// workload.isolation by the runner.
+	Isolation string `json:"-"`
+	// TxnIsolation overrides the SQL isolation transactions run at
+	// ("read-committed", "repeatable-read", "serializable"), independently
+	// of the level the history is checked against: e.g. read-only
+	// transactions on a PostgreSQL hot standby cannot be serializable.
+	TxnIsolation string `json:"txn_isolation,omitempty"`
+}
+
+// Redacted returns c with a literal password masked; secret references are
+// kept, since they reveal only where the secret comes from.
+func (c Config) Redacted() Config {
+	c.Password = secret.Redact(c.Password)
+	return c
 }
 
 // Kinds lists the supported drivers.
@@ -69,29 +95,47 @@ func NewFactory(c Config, namespace string) (Factory, error) {
 		if len(c.Endpoints) == 0 {
 			return nil, fmt.Errorf("client: %s needs db.endpoints (host:port per node)", c.Kind)
 		}
+		opt, err := connOptions(c, "", "")
+		if err != nil {
+			return nil, err
+		}
 		return func(i int) (Client, error) {
-			return NewRedis(c.Endpoints[i%len(c.Endpoints)], prefix), nil
+			return NewRedisWith(c.Endpoints[i%len(c.Endpoints)], prefix, opt), nil
 		}, nil
 	case "postgres", "postgresql":
 		if len(c.Endpoints) == 0 {
 			return nil, fmt.Errorf("client: postgres needs db.endpoints (host:port per node)")
 		}
+		opt, err := connOptions(c, "postgres", "")
+		if err != nil {
+			return nil, err
+		}
 		return func(i int) (Client, error) {
-			return NewPostgres(c.Endpoints[i%len(c.Endpoints)], prefix), nil
+			return NewPostgres(c.Endpoints[i%len(c.Endpoints)], prefix, opt), nil
 		}, nil
 	case "kafka":
 		if len(c.Endpoints) == 0 {
 			return nil, fmt.Errorf("client: kafka needs db.endpoints (host:port per node)")
 		}
 		return func(i int) (Client, error) {
-			return NewKafka(c.Endpoints[i%len(c.Endpoints)], prefix), nil
+			// Bootstrap from the client's own node first, then the others.
+			n := len(c.Endpoints)
+			boot := make([]string, n)
+			for j := range boot {
+				boot[j] = c.Endpoints[(i+j)%n]
+			}
+			return NewKafka(boot, prefix), nil
 		}, nil
 	case "mysql", "tidb":
 		if len(c.Endpoints) == 0 {
 			return nil, fmt.Errorf("client: %s needs db.endpoints (host:port per node)", c.Kind)
 		}
+		opt, err := connOptions(c, "root", "")
+		if err != nil {
+			return nil, err
+		}
 		return func(i int) (Client, error) {
-			return NewMySQL(c.Endpoints[i%len(c.Endpoints)], prefix), nil
+			return NewMySQL(c.Endpoints[i%len(c.Endpoints)], prefix, opt), nil
 		}, nil
 	case "memory":
 		store := NewMemoryStore()
@@ -108,7 +152,7 @@ func Classify(op history.Op, err error) history.Type {
 	if err == nil {
 		return history.OK
 	}
-	if op.F == history.FRead {
+	if readOnly(op) {
 		return history.Fail
 	}
 	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) {

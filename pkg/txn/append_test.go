@@ -177,6 +177,24 @@ func TestAppendOrderAnomalies(t *testing.T) {
 	expect(t, b.ops, LevelReadUncommitted, AnomalyInternal)
 }
 
+func TestAppendLostVersusStale(t *testing.T) {
+	// Lost: acknowledged, then never observed by reads that began later.
+	b := &ab{}
+	b.txn(0, 0, 10, ok, "a x 1")
+	b.txn(1, 0, 10, ok, "a x 2")
+	b.txn(2, 20, 30, ok, "r x 2")
+	r := expect(t, b.ops, LevelStrictSerializable, AnomalyLostAppend)
+	if r.Anomalies[0].Type != AnomalyLostAppend || !strings.Contains(r.Anomalies[0].Explanation, "appended 1") {
+		t.Fatal(r.FullReport())
+	}
+	// Stale: a later read observes it, so it was not lost.
+	b.txn(3, 40, 50, ok, "r x 2,1")
+	r = CheckAppend(b.ops, LevelStrictSerializable)
+	if slices.Contains(types(r), AnomalyLostAppend) || r.Verdict != Violation {
+		t.Fatalf("a stale read is not a lost append: %v", types(r))
+	}
+}
+
 func TestAppendInfoTransactions(t *testing.T) {
 	// An indeterminate append that was observed committed; one that was
 	// never observed is simply unknown.

@@ -7,6 +7,7 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/kemalhafizh/strife/internal/secret"
 	"os"
 	"strings"
 	"time"
@@ -222,6 +223,15 @@ func joinKinds(ks []nemesis.Kind) string {
 		s[i] = string(k)
 	}
 	return strings.Join(s, ",")
+}
+
+// Redacted returns a copy safe to embed in reports and attestations:
+// literal passwords and tokens are masked (env:/file: references are kept).
+func (c *Config) Redacted() *Config {
+	r := *c
+	r.DB.Config = c.DB.Config.Redacted()
+	r.Transport.Token = secret.Redact(c.Transport.Token)
+	return &r
 }
 
 // Model returns the consistency model the recorded history is checked with.
