@@ -22,6 +22,9 @@ type ServerConfig struct {
 	NodeName  string
 	Interface string
 	Token     string // optional shared secret
+
+	// filters overrides the packet filter backends (tests).
+	filters []filterBackend
 }
 
 // Server is the strife-agent per-node daemon.
@@ -71,6 +74,9 @@ func NewServer(cfg ServerConfig) *Server {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
+	if cfg.filters != nil {
+		s.filter.backends = cfg.filters
+	}
 	_ = s.filter.Setup()
 	return s
 }
@@ -88,7 +94,8 @@ func (s *Server) Capabilities() Capabilities {
 		Netlink:       s.netlink.Available(),
 		CgroupV2:      s.cgroup.Available(),
 		DirectSignals: runtime.GOOS == "linux" || runtime.GOOS == "darwin",
-		IPTables:      true,
+		NFTables:      s.filter.Method() == "filter:nftables",
+		IPTables:      s.filter.Method() == "filter:iptables",
 		TC:            s.netlink.Available(),
 	}
 }
@@ -114,6 +121,7 @@ func (s *Server) Serve(l net.Listener) error {
 // Shutdown gracefully shuts down the agent and heals active faults.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.Teardown()
+	_ = s.filter.Close() // remove the agent's nftables tables / iptables rules
 	return s.httpSrv.Shutdown(ctx)
 }
 
@@ -176,16 +184,9 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 	case ActionInject:
 		switch req.Kind {
 		case nemesis.Partition:
-			method = "filter:iptables"
-			var dropped []string
-			for _, ip := range req.TargetIPs {
-				if e := s.filter.Drop(ip); e != nil && err == nil {
-					err = e
-				} else {
-					dropped = append(dropped, ip)
-				}
-			}
-			applied = fmt.Sprintf("partition:dropped:%s", strings.Join(dropped, ","))
+			method = s.filter.Method()
+			err = s.filter.Drop(req.TargetIPs...)
+			applied = fmt.Sprintf("partition:dropped:%s", strings.Join(s.filter.Dropped(), ","))
 
 		case nemesis.Latency, nemesis.Loss:
 			method = "netlink:netem"
@@ -254,7 +255,7 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 	case ActionHeal:
 		switch req.Kind {
 		case nemesis.Partition:
-			method = "filter:iptables"
+			method = s.filter.Method()
 			err = s.filter.Flush()
 			applied = "partition:healed"
 
