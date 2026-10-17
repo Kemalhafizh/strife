@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strife Campaign Dashboard · raft-cluster (40 seeds)</title>
+<style>
+:root {
+  --bg: #080a0e;
+  --panel: #0d1117;
+  --panel-alt: #121821;
+  --border: #1e2631;
+  --border-hi: #2e3a4b;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --teal: #2dd4bf;
+  --red: #f85149;
+  --amber: #d29922;
+  --blue: #58a6ff;
+  --purple: #bc8cff;
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.title-mono {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+.badge-reg {
+  padding: 3px 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(248, 81, 73, 0.14);
+  color: var(--red);
+  border: 1px solid rgba(248, 81, 73, 0.45);
+  margin-right: 10px;
+}
+.meta-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.meta-item {
+  padding: 2px 8px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+}
+.meta-item strong { color: var(--fg); }
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.kpi {
+  background: var(--panel);
+  padding: 12px 16px;
+}
+.kpi-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.kpi-val {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+button.pill {
+  background: var(--panel-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+button.pill:hover { border-color: var(--border-hi); }
+button.pill.active {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: rgba(45, 212, 191, 0.08);
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  min-height: 410px;
+}
+@media (max-width: 820px) {
+  .workspace { grid-template-columns: 1fr; }
+}
+.pane {
+  background: var(--panel);
+  padding: 16px 18px;
+}
+.pane-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 12px 0;
+}
+
+.heatmap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 6px;
+}
+.seed-tile {
+  padding: 8px 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 0.08s, border-color 0.12s;
+}
+.seed-tile:hover {
+  transform: translateY(-1px);
+  border-color: var(--fg);
+}
+.seed-tile.selected {
+  outline: 2px solid var(--fg);
+  outline-offset: 1px;
+}
+.seed-tile.linearizable {
+  background: rgba(45, 212, 191, 0.08);
+  border-color: rgba(45, 212, 191, 0.35);
+  color: var(--teal);
+}
+.seed-tile.regressed {
+  background: rgba(248, 81, 73, 0.22);
+  border-color: var(--red);
+  color: #ff9492;
+  font-weight: 700;
+}
+.seed-tile.persistent {
+  background: rgba(248, 81, 73, 0.10);
+  border-color: rgba(248, 81, 73, 0.45);
+  color: var(--red);
+}
+.seed-tile.fixed {
+  background: rgba(88, 166, 255, 0.16);
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.seed-tile.drift {
+  background: rgba(210, 153, 34, 0.16);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.seed-tile .sub {
+  display: block;
+  font-size: 9px;
+  opacity: 0.8;
+  margin-top: 2px;
+}
+
+.inspector-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.kv-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  border-bottom: 1px solid #141a23;
+}
+.kv-row span:first-child { color: var(--muted); }
+.diag-callout {
+  margin-top: 12px;
+  padding: 10px;
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  color: var(--fg);
+  line-height: 1.45;
+}
+.diag-callout.ok {
+  background: rgba(45, 212, 191, 0.06);
+  border-color: rgba(45, 212, 191, 0.3);
+}
+.repro-cmd {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: #05070a;
+  border: 1px solid var(--border);
+  color: var(--teal);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <span class="badge-reg">2 REGRESSIONS DETECTED</span>
+    <span class="title-mono">Campaign · raft-lease (seeds 1..40 vs baseline bdc66f6)</span>
+  </div>
+  <div class="meta-list">
+    <span class="meta-item">commit: <strong>a8f31c9</strong></span>
+    <span class="meta-item">workload: <strong>preset:cas-hotspot (.wasm)</strong></span>
+    <span class="meta-item">determinism: <strong>40/40 verified</strong></span>
+  </div>
+</div>
+
+<div class="kpi-grid">
+  <div class="kpi">
+    <div class="kpi-label">Total Seeds</div>
+    <div class="kpi-val">40</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Linearizable</div>
+    <div class="kpi-val" style="color:var(--teal)">36</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Regressed (New Bug)</div>
+    <div class="kpi-val" style="color:var(--red)">2</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Persistent Failures</div>
+    <div class="kpi-val" style="color:var(--red)">2</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Fixed vs Baseline</div>
+    <div class="kpi-val" style="color:var(--blue)">1</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Aggregate Ops</div>
+    <div class="kpi-val">178,420</div>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="pills">
+    <button class="pill active" data-filter="all">All Seeds (40)</button>
+    <button class="pill" data-filter="regressed">Regressed (2)</button>
+    <button class="pill" data-filter="persistent">Persistent Failures (2)</button>
+    <button class="pill" data-filter="fixed">Fixed (1)</button>
+    <button class="pill" data-filter="drift">Trace Drift (1)</button>
+    <button class="pill" data-filter="linearizable">Linearizable (34)</button>
+  </div>
+  <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">Click any seed tile to inspect baseline delta & reproduction command</span>
+</div>
+
+<div class="workspace">
+  <div class="pane">
+    <h3 class="pane-title">Seed Corpus Matrix (Click to Inspect)</h3>
+    <div class="heatmap" id="heatmap"></div>
+  </div>
+  <div class="pane">
+    <h3 class="pane-title">Seed Telemetry & Baseline Delta Inspector</h3>
+    <div class="inspector-box" id="inspector"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const seeds = [];
+  for (let s = 1; s <= 40; s++) {
+    let state = "linearizable";
+    let prev = "linearizable";
+    let curr = "linearizable";
+    let tag = "PASS";
+    let ops = 4100 + ((s * 137) % 650);
+    let faults = 4 + (s % 4);
+    let trace = ((0x7a120000 + s * 98317) >>> 0).toString(16) + "b491c02e";
+    let prevTrace = trace;
+    let diag = "All 4 register keys (k0..k3) satisfied Wing & Gong linearizability under partition, clock-skew, and io-stall.";
+
+    if (s === 9 || s === 27) {
+      state = "regressed";
+      prev = "linearizable";
+      curr = "violation";
+      tag = "REGR";
+      diag = "REGRESSION (linearizable → violation): Deposed leader n1 served local read k0 → 1 at t=6.412s after a +420ms clock-skew jump outlived its 300ms leader lease while partitioned from quorum [n0, n2, n3].";
+    } else if (s === 13 || s === 34) {
+      state = "persistent";
+      prev = "violation";
+      curr = "violation";
+      tag = "FAIL";
+      diag = "PERSISTENT VIOLATION: Un-fsynced append on key k1 lost across simultaneous io-stall [n2] + cluster kill.";
+    } else if (s === 18) {
+      state = "fixed";
+      prev = "violation";
+      curr = "linearizable";
+      tag = "FIXED";
+      diag = "FIXED (violation → linearizable): Previously failing seed 18 from baseline bdc66f6 now linearizes cleanly across all 4,512 operations.";
+    } else if (s === 22) {
+      state = "drift";
+      prev = "linearizable";
+      curr = "linearizable";
+      tag = "DRIFT";
+      prevTrace = "19bc4082e104fa11";
+      diag = "TRACE DRIFT: Verdict remained LINEARIZABLE, but simulator execution trace hash changed from 19bc4082e104fa11 to " + trace + " due to modified election timer backoff.";
+    }
+
+    seeds.push({ seed: s, state, prev, curr, tag, ops, faults, trace, prevTrace, diag });
+  }
+
+  const heatmap = document.getElementById("heatmap");
+  const inspector = document.getElementById("inspector");
+  let activeFilter = "all";
+  let selectedSeed = 9;
+
+  function renderHeatmap() {
+    heatmap.innerHTML = "";
+    seeds.forEach(item => {
+      if (activeFilter !== "all" && item.state !== activeFilter) return;
+      const div = document.createElement("div");
+      div.className = "seed-tile " + item.state + (item.seed === selectedSeed ? " selected" : "");
+      div.innerHTML = "#" + item.seed + "<span class='sub'>" + item.tag + "</span>";
+      div.addEventListener("click", () => {
+        selectedSeed = item.seed;
+        renderHeatmap();
+        renderInspector();
+      });
+      heatmap.appendChild(div);
+    });
+  }
+
+  function renderInspector() {
+    const item = seeds.find(x => x.seed === selectedSeed) || seeds[0];
+    const isOk = item.curr === "linearizable" && item.state !== "regressed";
+    inspector.innerHTML =
+      "<div class='kv-row'><span>Seed ID</span><strong>#" + item.seed + " (" + item.tag + ")</strong></div>" +
+      "<div class='kv-row'><span>Baseline Verdict (bdc66f6)</span><strong>" + item.prev.toUpperCase() + "</strong></div>" +
+      "<div class='kv-row'><span>Current Verdict (a8f31c9)</span><strong style='color:" + (item.curr === "violation" ? "var(--red)" : "var(--teal)") + "'>" + item.curr.toUpperCase() + "</strong></div>" +
+      "<div class='kv-row'><span>Checked Operations</span><strong>" + item.ops.toLocaleString() + " ops (" + item.faults + " scheduled faults)</strong></div>" +
+      "<div class='kv-row'><span>Simulator Trace Digest</span><strong>" + item.trace + "</strong></div>" +
+      "<div class='kv-row'><span>Baseline Trace Digest</span><strong>" + item.prevTrace + "</strong></div>" +
+      "<div class='diag-callout " + (isOk ? "ok" : "") + "'>" + item.diag + "</div>" +
+      "<div class='repro-cmd'>strife sim --system raft-lease --seed " + item.seed + " --workload preset:cas-hotspot --faults partition,clock-skew --shrink</div>";
+  }
+
+  document.querySelectorAll("[data-filter]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("[data-filter]").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeFilter = btn.getAttribute("data-filter");
+      const firstMatch = seeds.find(s => activeFilter === "all" || s.state === activeFilter);
+      if (firstMatch) selectedSeed = firstMatch.seed;
+      renderHeatmap();
+      renderInspector();
+    });
+  });
+
+  renderHeatmap();
+  renderInspector();
+})();
+</script>
+</body>
+</html>

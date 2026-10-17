@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strife Compliance Dossier · DORA / SOC 2 / ISO 27001 / BI-OJK</title>
+<style>
+:root {
+  --bg: #080a0e;
+  --panel: #0d1117;
+  --panel-alt: #121821;
+  --border: #1e2631;
+  --border-hi: #2e3a4b;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --teal: #2dd4bf;
+  --red: #f85149;
+  --amber: #d29922;
+  --blue: #58a6ff;
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.badge-pass {
+  display: inline-block;
+  padding: 3px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(45, 212, 191, 0.14);
+  color: var(--teal);
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  margin-right: 10px;
+}
+.title-mono {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+.chain-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.chain-cell {
+  background: var(--panel-alt);
+  padding: 10px 16px;
+}
+.chain-cell .k {
+  color: var(--muted);
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.chain-cell .v {
+  color: var(--fg);
+  font-weight: 600;
+  margin-top: 2px;
+  display: block;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.fw-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+button.fw-btn {
+  background: var(--panel-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+button.fw-btn:hover { border-color: var(--border-hi); }
+button.fw-btn.active {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: rgba(45, 212, 191, 0.08);
+}
+
+.controls-wrap {
+  padding: 14px 18px;
+}
+table.ctrl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+table.ctrl-table th, table.ctrl-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+table.ctrl-table th {
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+table.ctrl-table tr {
+  background: var(--panel);
+}
+table.ctrl-table tr:nth-child(even) {
+  background: var(--panel-alt);
+}
+.mono-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--blue);
+  white-space: nowrap;
+}
+.fw-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  background: #18202c;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  text-transform: uppercase;
+}
+.status-pill {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  background: rgba(45, 212, 191, 0.14);
+  color: var(--teal);
+  border: 1px solid rgba(45, 212, 191, 0.4);
+}
+.scope-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border-top: 1px solid var(--border);
+}
+.scope-card {
+  background: var(--panel);
+  padding: 14px 18px;
+  font-size: 12px;
+}
+.scope-card h4 {
+  margin: 0 0 6px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.scope-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <span class="badge-pass">OVERALL: PASS (12/12 CONTROLS)</span>
+    <span class="title-mono">Regulatory Resilience & Integrity Dossier · raft-production-cluster</span>
+  </div>
+  <div style="font-family:var(--mono);font-size:11px;color:var(--muted)">
+    in-toto v0.1 Statement · Ed25519 Verified
+  </div>
+</div>
+
+<div class="chain-bar">
+  <div class="chain-cell">
+    <span class="k">Report SHA-256 Fingerprint</span>
+    <span class="v">8f02b4c9e1a37742d109c8a235e7f192</span>
+  </div>
+  <div class="chain-cell">
+    <span class="k">Ed25519 Signer & Key ID</span>
+    <span class="v" style="color:var(--teal)">bank-sec-auditor (key: 4c91e07a82f1b304)</span>
+  </div>
+  <div class="chain-cell">
+    <span class="k">Fault Classes Exercised</span>
+    <span class="v">partition, kill, io-stall, clock-skew</span>
+  </div>
+  <div class="chain-cell">
+    <span class="k">Consistency Verdict</span>
+    <span class="v" style="color:var(--teal)">LINEARIZABLE (42,810 ops checked)</span>
+  </div>
+</div>
+
+<div class="filter-bar">
+  <div class="fw-tabs">
+    <button class="fw-btn active" data-fw="all">All Frameworks (12)</button>
+    <button class="fw-btn" data-fw="dora">EU DORA (3)</button>
+    <button class="fw-btn" data-fw="soc2">AICPA SOC 2 (3)</button>
+    <button class="fw-btn" data-fw="iso27001">ISO/IEC 27001:2022 (3)</button>
+    <button class="fw-btn" data-fw="bi-ojk">BI / OJK Indonesia (3)</button>
+  </div>
+  <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">Cryptographic chain-of-custody verified against report.json & bundle.json</span>
+</div>
+
+<div class="controls-wrap">
+  <table class="ctrl-table">
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Framework</th>
+        <th>Control ID</th>
+        <th>Control Title</th>
+        <th>Empirical Chaos & Consistency Evidence</th>
+      </tr>
+    </thead>
+    <tbody id="ctrl-body"></tbody>
+  </table>
+</div>
+
+<div class="scope-grid">
+  <div class="scope-card">
+    <h4>What Is Tested</h4>
+    <p>Linearizability (Wing & Gong / Lowe) and transactional isolation (Adya G0..G2 cycle detection) across 42,810 operations under concurrent network partitions, process crashes (SIGKILL), storage I/O stalls, and clock skew.</p>
+  </div>
+  <div class="scope-card">
+    <h4>What Is Not Tested</h4>
+    <p>Does not cover Byzantine memory corruption, TLS/IAM key management policies, physical facility controls, or organizational incident-response procedures outside the database state machine.</p>
+  </div>
+  <div class="scope-card">
+    <h4>Auditor Verification Command</h4>
+    <p style="font-family:var(--mono);color:var(--teal);margin-top:4px">strife verify --bundle bundle.json --key audit.pub --history history.jsonl</p>
+  </div>
+</div>
+
+<script>
+(function() {
+  const controls = [
+    { fw: "dora", id: "DORA-Art.24-25", title: "Digital Operational Resilience Testing", evidence: "Cluster survived 18 scheduled network & node faults (partition, kill, io-stall, clock-skew) across 42,810 operations with zero safety violations." },
+    { fw: "dora", id: "DORA-Art.9.4(c)", title: "Data Integrity Under Network Disruption", evidence: "100% of register keys verified linearizable under asymmetric majority/minority partitions (schedule hash 71c94a0e)." },
+    { fw: "dora", id: "DORA-Art.11-12", title: "Crash Recovery & Storage Durability", evidence: "Zero acknowledged writes lost across forced process crashes (kill) paired with block storage stalls (io-stall)." },
+    { fw: "soc2", id: "PI1.3-PI1.4", title: "Processing Integrity & Completeness", evidence: "Wing & Gong / Lowe solver verified that every completed read, write, and CAS operation reflects a single serial execution order." },
+    { fw: "soc2", id: "A1.2", title: "Environmental Disruption & Failover Recovery", evidence: "Automatic leader re-election and state convergence verified under partition heal and node restart cycles." },
+    { fw: "soc2", id: "CC7.2-CC7.4", title: "Tamper-Evident Audit Evidence", evidence: "Report SHA-256 fingerprint (8f02b4c9...) recomputed from raw config/schedule/history digests and verified against Ed25519 signature (key 4c91e07a82f1b304)." },
+    { fw: "iso27001", id: "A.8.13-A.8.14", title: "Information Backup & Redundancy", evidence: "Quorum replication preserved all committed state across concurrent node kills and disk stalls." },
+    { fw: "iso27001", id: "A.8.17", title: "Clock Synchronization Resilience", evidence: "Safety invariants held under injected local clock drift and wall-clock jumps (clock-skew fault class)." },
+    { fw: "iso27001", id: "A.8.29", title: "Resilience Testing in Development & Acceptance", evidence: "Deterministic seed corpus executed with reproducible schedule.json and JUnit CI gate artifacts." },
+    { fw: "bi-ojk", id: "SEOJK-29/MRTIK-DRC", title: "Uji Ketahanan & Pemulihan Bencana (DRP)", evidence: "Sistem mempertahankan ketersediaan kuorum dan pemulihan otomatis selama injeksi kegagalan jaringan (partition) dan penghentian node (kill)." },
+    { fw: "bi-ojk", id: "SEOJK-29/Integritas-Data", title: "Integritas & Konsistensi Data Transaksi", evidence: "Terbukti linearizable (0 anomali stale-read / lost-update) pada 42.810 operasi konkuren di bawah gangguan I/O disk dan jaringan." },
+    { fw: "bi-ojk", id: "SEOJK-29/Jejak-Audit", title: "Bukti Audit Kriptografis Nir-Penyangkalan", evidence: "Bundel atestasi in-toto v0.1 ditandatangani dengan kunci privat Ed25519 dan terikat secara kriptografis pada digest history.jsonl." }
+  ];
+
+  const tbody = document.getElementById("ctrl-body");
+  let activeFw = "all";
+
+  function render() {
+    tbody.innerHTML = "";
+    controls.forEach(c => {
+      if (activeFw !== "all" && c.fw !== activeFw) return;
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td><span class='status-pill'>PASS</span></td>" +
+        "<td><span class='fw-tag'>" + c.fw + "</span></td>" +
+        "<td class='mono-id'>" + c.id + "</td>" +
+        "<td><strong>" + c.title + "</strong></td>" +
+        "<td style='color:var(--muted)'>" + c.evidence + "</td>";
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.querySelectorAll("[data-fw]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("[data-fw]").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeFw = btn.getAttribute("data-fw");
+      render();
+    });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20(stdlib%20only)-2ea44f)](go.mod)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-[Quick Start](#quick-start) · [Shrinking](#shrinking-failures) · [Models & Checkers](#consistency-models--anomaly-detection) · [Live Clusters & Agent](#live-clusters--strife-agent) · [Wasm Workloads](#custom-workloads--wasm-vm) · [Campaigns](#regression-campaigns) · [Attestation & Compliance](#cryptographic-attestation--compliance-dossiers) · [Architecture](#architecture)
+[Quick Start](#quick-start) · [Interactive Demos](site/index.html) · [Shrinking](#shrinking-failures) · [Models & Checkers](#consistency-models--anomaly-detection) · [Live Clusters & Agent](#live-clusters--strife-agent) · [Wasm Workloads](#custom-workloads--wasm-vm) · [Campaigns](#regression-campaigns) · [Attestation & Compliance](#cryptographic-attestation--compliance-dossiers) · [Architecture](#architecture)
 
 </div>
 
@@ -390,6 +390,7 @@ pkg/runner        Live cluster test orchestrator & per-run namespace isolation
 pkg/report        Interactive HTML5/Canvas timeline studio, Markdown/JUnit exporters, fingerprints
 pkg/attest        in-toto v0.1 statement builder and Ed25519 signing/verification
 pkg/compliance    Regulatory control evaluator (EU DORA, SOC 2, ISO 27001, BI/OJK) & HTML/MD/JSON dossiers
+site/             Interactive product showcase & standalone HTML5 demos (timeline, campaign, dossier)
 ```
 
 <details>

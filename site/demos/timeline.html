@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strife Report · raft-unsafe-fsync (seed 13, 1-minimal)</title>
+<style>
+:root {
+  --bg: #080a0e;
+  --panel: #0d1117;
+  --panel-alt: #121821;
+  --border: #1e2631;
+  --border-hi: #2e3a4b;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --dim: #586069;
+  --teal: #2dd4bf;
+  --red: #f85149;
+  --amber: #d29922;
+  --blue: #58a6ff;
+  --purple: #bc8cff;
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(248, 81, 73, 0.14);
+  color: var(--red);
+  border: 1px solid rgba(248, 81, 73, 0.45);
+}
+.title-mono {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.meta-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.meta-pill {
+  padding: 2px 8px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+}
+.meta-pill strong { color: var(--fg); font-weight: 600; }
+
+.diagnosis-banner {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 18px;
+  background: rgba(248, 81, 73, 0.06);
+  border-bottom: 1px solid var(--border);
+}
+.diag-text {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+}
+.diag-text .tag {
+  color: var(--red);
+  font-weight: 700;
+  margin-right: 8px;
+}
+.diag-sub {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.tool-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tool-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 4px;
+}
+button.btn {
+  background: var(--panel-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+button.btn:hover {
+  border-color: var(--border-hi);
+  background: #18202c;
+}
+button.btn.active {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: rgba(45, 212, 191, 0.08);
+}
+button.btn.violation-key {
+  border-color: rgba(248, 81, 73, 0.45);
+}
+button.btn.violation-key.active {
+  border-color: var(--red);
+  color: var(--red);
+  background: rgba(248, 81, 73, 0.12);
+}
+button.btn-primary {
+  background: rgba(248, 81, 73, 0.14);
+  color: var(--red);
+  border: 1px solid rgba(248, 81, 73, 0.5);
+  font-weight: 600;
+}
+button.btn-primary:hover {
+  background: rgba(248, 81, 73, 0.22);
+}
+
+.canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 360px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  user-select: none;
+}
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+canvas:active { cursor: grabbing; }
+
+.legend-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.swatch {
+  width: 10px;
+  height: 10px;
+  display: inline-block;
+}
+
+.bottom-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1px;
+  background: var(--border);
+}
+.card {
+  background: var(--panel);
+  padding: 14px 18px;
+}
+.card h3 {
+  margin: 0 0 10px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+table.data-table th, table.data-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+table.data-table th {
+  color: var(--muted);
+  font-weight: 500;
+}
+.code-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--teal);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+#tooltip {
+  position: fixed;
+  pointer-events: none;
+  z-index: 50;
+  background: #0d1117;
+  border: 1px solid var(--border-hi);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  display: none;
+  max-width: 340px;
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="verdict-badge">VIOLATION · K0</span>
+    <span class="title-mono">raft-unsafe-fsync · seed 13 (shrunk 1-minimal)</span>
+  </div>
+  <div class="meta-pills">
+    <span class="meta-pill">model: <strong>kv (linearizable)</strong></span>
+    <span class="meta-pill">faults: <strong>6 → 2 (1-minimal)</strong></span>
+    <span class="meta-pill">trace: <strong>50173cb8d89db240</strong></span>
+    <span class="meta-pill">fingerprint: <strong>e94a10f27c8831b4</strong></span>
+  </div>
+</div>
+
+<div class="diagnosis-banner">
+  <div>
+    <div class="diag-text">
+      <span class="tag">[COUNTEREXAMPLE WITNESS]</span>
+      Stale / lost acknowledged write on key <strong>k0</strong>: <code>p2 write k0 → 4</code> returned <code>ok</code> at <code>7.612s</code> while node 3 disk was stalled; after cluster-wide <code>kill</code> at <code>7.878s</code>, <code>p5 read k0 → 2</code> at <code>8.140s</code> observed pre-crash state <code>2</code>.
+    </div>
+    <div class="diag-sub">
+      Root-Cause Probe Correlation [HIGH CONFIDENCE]: node <code>n3</code> reported <code>fsync_stall</code> (1,400ms un-flushed WAL window) overlapping <code>kill [0 1 2 3 4]</code> at <code>t=7.878s</code>.
+    </div>
+  </div>
+  <button class="btn btn-primary" id="btn-focus">Focus Anomaly Window</button>
+</div>
+
+<div class="toolbar">
+  <div class="tool-group">
+    <span class="tool-label">Key:</span>
+    <button class="btn violation-key active" data-key="k0">k0 (violation)</button>
+    <button class="btn" data-key="k1">k1 (ok)</button>
+    <button class="btn" data-key="k2">k2 (ok)</button>
+    <button class="btn" data-key="all">All Keys</button>
+  </div>
+  <div class="tool-group">
+    <span class="tool-label">View:</span>
+    <button class="btn" id="btn-witness-only">Witness Only</button>
+    <button class="btn" id="btn-zoom-in">Zoom In (+)</button>
+    <button class="btn" id="btn-zoom-out">Zoom Out (-)</button>
+    <button class="btn" id="btn-reset">Full Trace (0..8.4s)</button>
+  </div>
+</div>
+
+<div class="canvas-wrap" id="canvas-wrap">
+  <canvas id="timeline"></canvas>
+</div>
+
+<div class="legend-bar">
+  <div class="legend-items">
+    <span class="legend-item"><span class="swatch" style="background:#2dd4bf"></span> ok (completed)</span>
+    <span class="legend-item"><span class="swatch" style="background:#586069"></span> fail (rejected)</span>
+    <span class="legend-item"><span class="swatch" style="background:#d29922"></span> info (indeterminate timeout)</span>
+    <span class="legend-item"><span class="swatch" style="background:#f85149;border:1px solid #fff"></span> violating read (stuck op)</span>
+    <span class="legend-item"><span class="swatch" style="background:#58a6ff;border:1px solid #fff"></span> contradicting write witness</span>
+    <span class="legend-item"><span class="swatch" style="background:rgba(210,153,34,0.22);border:1px dashed #d29922"></span> fault: io-stall / kill</span>
+  </div>
+  <span>Scroll to zoom · Drag to pan · Hover op bar for nanosecond trace</span>
+</div>
+
+<div class="bottom-grid">
+  <div class="card">
+    <h3>1-Minimal Shrunk Fault Schedule (ddmin: 6 → 2 faults)</h3>
+    <table class="data-table">
+      <thead>
+        <tr><th>ID</th><th>Kind</th><th>Target Nodes</th><th>Window</th><th>Minimality Note</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>#4</td>
+          <td style="color:var(--amber)">io-stall</td>
+          <td>[n3]</td>
+          <td>6.500s → 7.900s</td>
+          <td>Blocks WAL fsync on leader n3</td>
+        </tr>
+        <tr>
+          <td>#5</td>
+          <td style="color:var(--red)">kill</td>
+          <td>[n0, n1, n2, n3, n4]</td>
+          <td>7.877832s → 8.100s</td>
+          <td>Exact boundary required; loses un-fsynced entry</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Minimal Conflicting Witness (3 Operations on k0)</h3>
+    <table class="data-table">
+      <thead>
+        <tr><th>Proc</th><th>Operation</th><th>Invoke</th><th>Return</th><th>Role</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>p0</td>
+          <td>write k0 → 2</td>
+          <td>6.180s</td>
+          <td>6.310s (ok)</td>
+          <td style="color:var(--muted)">Prior durable state</td>
+        </tr>
+        <tr>
+          <td>p2</td>
+          <td>write k0 → 4</td>
+          <td>7.420s</td>
+          <td>7.612s (ok)</td>
+          <td style="color:var(--blue)">Contradicting write (acked before fsync)</td>
+        </tr>
+        <tr>
+          <td>p5</td>
+          <td>read k0 → 2</td>
+          <td>7.990s</td>
+          <td>8.140s (ok)</td>
+          <td style="color:var(--red)">Violating read (observes stale state 2)</td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="margin-top:10px">
+      <div class="code-box">strife sim --system raft-unsafe-fsync --seed 13 --plan strife-out/raft-unsafe-fsync-seed13-min/schedule.json</div>
+    </div>
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+(function() {
+  const DURATION = 8.4;
+  const faults = [
+    { id: 4, kind: "io-stall [n3]", start: 6.50, end: 7.90, color: "rgba(210, 153, 34, 0.16)", border: "#d29922" },
+    { id: 5, kind: "kill [n0..n4]", start: 7.8778, end: 8.10, color: "rgba(248, 81, 73, 0.18)", border: "#f85149" }
+  ];
+
+  const ops = [
+    // Normal traffic leading up to anomaly window
+    { proc: 0, key: "k0", f: "write", val: "1", start: 0.45, end: 0.72, status: "ok", role: "" },
+    { proc: 1, key: "k0", f: "read",  val: "1", start: 0.80, end: 1.05, status: "ok", role: "" },
+    { proc: 2, key: "k1", f: "write", val: "3", start: 1.15, end: 1.48, status: "ok", role: "" },
+    { proc: 3, key: "k0", f: "cas",   val: "1→3", start: 1.60, end: 1.92, status: "ok", role: "" },
+    { proc: 4, key: "k2", f: "write", val: "0", start: 2.10, end: 2.40, status: "ok", role: "" },
+    { proc: 5, key: "k0", f: "read",  val: "3", start: 2.55, end: 2.82, status: "ok", role: "" },
+    { proc: 1, key: "k1", f: "read",  val: "3", start: 3.00, end: 3.30, status: "ok", role: "" },
+    { proc: 0, key: "k0", f: "write", val: "0", start: 3.45, end: 3.78, status: "ok", role: "" },
+    { proc: 2, key: "k0", f: "read",  val: "0", start: 4.10, end: 4.38, status: "ok", role: "" },
+    { proc: 3, key: "k2", f: "cas",   val: "0→4", start: 4.55, end: 4.90, status: "ok", role: "" },
+    { proc: 4, key: "k0", f: "write", val: "1", start: 5.10, end: 5.42, status: "ok", role: "" },
+    { proc: 5, key: "k1", f: "write", val: "2", start: 5.60, end: 5.95, status: "ok", role: "" },
+
+    // Critical anomaly window (6.0s .. 8.35s)
+    { proc: 0, key: "k0", f: "write", val: "2", start: 6.18, end: 6.31, status: "ok", role: "witness-prior", note: "Durable write k0=2 flushed before io-stall" },
+    { proc: 1, key: "k0", f: "read",  val: "2", start: 6.36, end: 6.58, status: "ok", role: "", note: "Observes k0=2" },
+    { proc: 3, key: "k1", f: "read",  val: "2", start: 6.65, end: 6.92, status: "ok", role: "" },
+    { proc: 4, key: "k0", f: "cas",   val: "0→1", start: 6.80, end: 7.12, status: "fail", role: "", note: "Precondition failed (current=2)" },
+    { proc: 2, key: "k0", f: "write", val: "4", start: 7.42, end: 7.612, status: "ok", role: "witness-write", note: "CONTRAST WITNESS: Leader n3 acks write k0=4 before fsync completes!" },
+    { proc: 1, key: "k0", f: "read",  val: "4", start: 7.64, end: 7.81, status: "ok", role: "witness-prior", note: "Pre-crash read observes k0=4 in volatile leader memory" },
+    { proc: 4, key: "k0", f: "write", val: "3", start: 7.75, end: 8.25, status: "info", role: "", note: "Indeterminate timeout across cluster kill (process rotated)" },
+    { proc: 3, key: "k2", f: "read",  val: "4", start: 7.82, end: 8.04, status: "fail", role: "" },
+    { proc: 5, key: "k0", f: "read",  val: "2", start: 7.99, end: 8.14, status: "ok", role: "violating-read", note: "VIOLATION: Returns stale value 2 after k0=4 was acknowledged at 7.612s!" },
+    { proc: 0, key: "k0", f: "read",  val: "2", start: 8.16, end: 8.31, status: "ok", role: "" }
+  ];
+
+  const canvas = document.getElementById("timeline");
+  const wrap = document.getElementById("canvas-wrap");
+  const tooltip = document.getElementById("tooltip");
+  const ctx = canvas.getContext("2d");
+
+  let viewStart = 5.95;
+  let viewEnd = 8.38;
+  let selectedKey = "k0";
+  let witnessOnly = false;
+  let hitBoxes = [];
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = wrap.clientWidth * dpr;
+    canvas.height = wrap.clientHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function filteredOps() {
+    return ops.filter(o => {
+      if (selectedKey !== "all" && o.key !== selectedKey) return false;
+      if (witnessOnly && !o.role) return false;
+      return true;
+    });
+  }
+
+  function draw() {
+    const W = wrap.clientWidth;
+    const H = wrap.clientHeight;
+    ctx.clearRect(0, 0, W, H);
+
+    const padL = 68;
+    const padR = 20;
+    const padT = 34;
+    const padB = 28;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+
+    const tToX = t => padL + ((t - viewStart) / (viewEnd - viewStart)) * plotW;
+
+    // Background grid & time ticks
+    ctx.strokeStyle = "#161d27";
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "10px 'JetBrains Mono', monospace";
+    const span = viewEnd - viewStart;
+    const step = span <= 1.2 ? 0.1 : span <= 3.5 ? 0.25 : 1.0;
+    const firstTick = Math.ceil(viewStart / step) * step;
+    for (let t = firstTick; t <= viewEnd; t += step) {
+      const x = tToX(t);
+      ctx.beginPath();
+      ctx.moveTo(x, padT);
+      ctx.lineTo(x, H - padB);
+      ctx.stroke();
+      ctx.fillText(t.toFixed(2) + "s", x - 16, H - 10);
+    }
+
+    // Fault overlay bands
+    faults.forEach(f => {
+      const x1 = Math.max(padL, tToX(f.start));
+      const x2 = Math.min(W - padR, tToX(f.end));
+      if (x2 <= x1) return;
+      ctx.fillStyle = f.color;
+      ctx.fillRect(x1, padT, x2 - x1, plotH);
+      ctx.strokeStyle = f.border;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x1, padT);
+      ctx.lineTo(x1, H - padB);
+      ctx.moveTo(x2, padT);
+      ctx.lineTo(x2, H - padB);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = f.border;
+      ctx.font = "bold 10px 'JetBrains Mono', monospace";
+      ctx.fillText("FAULT #" + f.id + ": " + f.kind, x1 + 6, padT + 14);
+    });
+
+    // Process lanes (p0..p5)
+    const laneCount = 6;
+    const laneH = (plotH - 22) / laneCount;
+    for (let p = 0; p < laneCount; p++) {
+      const y = padT + 22 + p * laneH;
+      ctx.strokeStyle = "#121820";
+      ctx.beginPath();
+      ctx.moveTo(padL, y + laneH);
+      ctx.lineTo(W - padR, y + laneH);
+      ctx.stroke();
+
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "11px 'JetBrains Mono', monospace";
+      ctx.fillText("p" + p, 18, y + laneH * 0.62);
+    }
+
+    // Left axis border
+    ctx.strokeStyle = "#1e2631";
+    ctx.beginPath();
+    ctx.moveTo(padL, padT);
+    ctx.lineTo(padL, H - padB);
+    ctx.stroke();
+
+    // Draw operations
+    hitBoxes = [];
+    const visible = filteredOps();
+    visible.forEach(o => {
+      if (o.end < viewStart || o.start > viewEnd) return;
+      const x1 = Math.max(padL, tToX(o.start));
+      const x2 = Math.min(W - padR, tToX(o.end));
+      const bw = Math.max(8, x2 - x1);
+      const y = padT + 22 + o.proc * laneH + laneH * 0.18;
+      const bh = laneH * 0.64;
+
+      let fill = "rgba(45, 212, 191, 0.22)";
+      let stroke = "#2dd4bf";
+      let lineW = 1.2;
+
+      if (o.status === "fail") {
+        fill = "rgba(88, 96, 105, 0.22)";
+        stroke = "#6e7681";
+      } else if (o.status === "info") {
+        fill = "rgba(210, 153, 34, 0.20)";
+        stroke = "#d29922";
+      }
+
+      if (o.role === "violating-read") {
+        fill = "rgba(248, 81, 73, 0.35)";
+        stroke = "#f85149";
+        lineW = 2.2;
+      } else if (o.role === "witness-write") {
+        fill = "rgba(88, 166, 255, 0.32)";
+        stroke = "#58a6ff";
+        lineW = 2.0;
+      } else if (o.role === "witness-prior") {
+        fill = "rgba(188, 140, 255, 0.25)";
+        stroke = "#bc8cff";
+        lineW = 1.6;
+      }
+
+      ctx.fillStyle = fill;
+      ctx.fillRect(x1, y, bw, bh);
+      ctx.lineWidth = lineW;
+      ctx.strokeStyle = stroke;
+      ctx.strokeRect(x1, y, bw, bh);
+      ctx.lineWidth = 1;
+
+      const label = o.f + " " + o.key + " → " + o.val;
+      if (bw > 44) {
+        ctx.fillStyle = "#e6edf3";
+        ctx.font = "10px 'JetBrains Mono', monospace";
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x1 + 4, y, bw - 8, bh);
+        ctx.clip();
+        ctx.fillText(label, x1 + 6, y + bh * 0.66);
+        ctx.restore();
+      }
+
+      hitBoxes.push({ x: x1, y: y, w: bw, h: bh, op: o });
+    });
+
+    // Draw causal contradiction arrow between witness-write (p2) and violating-read (p5)
+    const wWrite = visible.find(o => o.role === "witness-write");
+    const vRead = visible.find(o => o.role === "violating-read");
+    if (wWrite && vRead && wWrite.end >= viewStart && vRead.start <= viewEnd) {
+      const x1 = tToX(wWrite.end);
+      const y1 = padT + 22 + wWrite.proc * laneH + laneH * 0.5;
+      const x2 = tToX(vRead.start);
+      const y2 = padT + 22 + vRead.proc * laneH + laneH * 0.5;
+      if (x1 >= padL && x2 <= W - padR) {
+        ctx.strokeStyle = "#f85149";
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineWidth = 1;
+      }
+    }
+  }
+
+  // Pan & Zoom interactions
+  let dragging = false;
+  let lastX = 0;
+
+  canvas.addEventListener("mousedown", e => {
+    dragging = true;
+    lastX = e.clientX;
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+  window.addEventListener("mousemove", e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    if (dragging) {
+      const dx = e.clientX - lastX;
+      lastX = e.clientX;
+      const plotW = wrap.clientWidth - 88;
+      const dt = -(dx / plotW) * (viewEnd - viewStart);
+      const span = viewEnd - viewStart;
+      viewStart = Math.max(0, Math.min(DURATION - span, viewStart + dt));
+      viewEnd = viewStart + span;
+      draw();
+      return;
+    }
+
+    const hit = hitBoxes.find(b => mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h);
+    if (hit && mx >= 0 && my >= 0 && mx <= rect.width && my <= rect.height) {
+      const o = hit.op;
+      const durMs = ((o.end - o.start) * 1000).toFixed(1);
+      tooltip.style.display = "block";
+      tooltip.style.left = Math.min(window.innerWidth - 350, e.clientX + 14) + "px";
+      tooltip.style.top = Math.min(window.innerHeight - 130, e.clientY + 14) + "px";
+      tooltip.innerHTML =
+        "<div><strong>p" + o.proc + " " + o.f + " " + o.key + " → " + o.val + "</strong> [" + o.status.toUpperCase() + "]</div>" +
+        "<div style='color:#8b949e;margin-top:3px'>call: " + o.start.toFixed(3) + "s · return: " + o.end.toFixed(3) + "s (" + durMs + "ms)</div>" +
+        (o.note ? "<div style='color:#2dd4bf;margin-top:4px'>" + o.note + "</div>" : "");
+    } else {
+      tooltip.style.display = "none";
+    }
+  });
+
+  canvas.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+
+  canvas.addEventListener("wheel", e => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const plotW = wrap.clientWidth - 88;
+    const ratio = Math.max(0, Math.min(1, (mx - 68) / plotW));
+    const anchor = viewStart + ratio * (viewEnd - viewStart);
+    const factor = e.deltaY < 0 ? 0.8 : 1.25;
+    const newSpan = Math.max(0.5, Math.min(DURATION, (viewEnd - viewStart) * factor));
+    viewStart = Math.max(0, Math.min(DURATION - newSpan, anchor - ratio * newSpan));
+    viewEnd = viewStart + newSpan;
+    draw();
+  }, { passive: false });
+
+  document.querySelectorAll("[data-key]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("[data-key]").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      selectedKey = btn.getAttribute("data-key");
+      draw();
+    });
+  });
+
+  document.getElementById("btn-witness-only").addEventListener("click", function() {
+    witnessOnly = !witnessOnly;
+    this.classList.toggle("active", witnessOnly);
+    draw();
+  });
+
+  document.getElementById("btn-focus").addEventListener("click", () => {
+    viewStart = 6.05;
+    viewEnd = 8.35;
+    draw();
+  });
+
+  document.getElementById("btn-reset").addEventListener("click", () => {
+    viewStart = 0;
+    viewEnd = DURATION;
+    draw();
+  });
+
+  document.getElementById("btn-zoom-in").addEventListener("click", () => {
+    const mid = (viewStart + viewEnd) / 2;
+    const span = Math.max(0.5, (viewEnd - viewStart) * 0.7);
+    viewStart = Math.max(0, mid - span / 2);
+    viewEnd = Math.min(DURATION, viewStart + span);
+    draw();
+  });
+
+  document.getElementById("btn-zoom-out").addEventListener("click", () => {
+    const mid = (viewStart + viewEnd) / 2;
+    const span = Math.min(DURATION, (viewEnd - viewStart) * 1.4);
+    viewStart = Math.max(0, Math.min(DURATION - span, mid - span / 2));
+    viewEnd = viewStart + span;
+    draw();
+  });
+
+  window.addEventListener("resize", resize);
+  resize();
+})();
+</script>
+</body>
+</html>
