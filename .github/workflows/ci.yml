@@ -49,8 +49,47 @@ jobs:
           set -e
           test -f shrunk/raft-stale-reads-seed2-min/report.html
           python3 -c "import json,sys; r=json.load(open('shrunk/raft-stale-reads-seed2-min/report.json')); sys.exit(0 if r['shrink']['minimal_faults'] <= 3 else 1)"
+      - name: Wasm workloads replay bit-for-bit
+        run: |
+          for p in preset:kv-balanced preset:cas-hotspot preset:si-write-skew; do
+            ./strife sim --system raft --workload "$p" --seeds 1..20 --determinism --expect linearizable --out ""
+          done
       - name: live runner end to end (in-memory store, dry-run nemesis)
         run: ./strife run --config testdata/memory.json --duration 5s --dry-run --quiet
+
+  # Every parser of untrusted bytes, plus the soundness of the list-append
+  # checker, under coverage-guided fuzzing (the corpus in testdata/fuzz
+  # replays in the regular test job).
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - FuzzRESP ./pkg/client
+          - FuzzPostgresMessages ./pkg/client
+          - FuzzMySQLPackets ./pkg/client
+          - FuzzKafkaRecords ./pkg/client
+          - FuzzReadJSONL ./pkg/history
+          - FuzzParseWasm ./pkg/workload
+          - FuzzCheckAppendSound ./pkg/txn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: fuzz for 45 seconds
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          read -r name pkg <<<"$TARGET"
+          go test -run '^$' -fuzz "^${name}\$" -fuzztime 45s "$pkg"
+      - name: keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crasher-${{ strategy.job-index }}
+          path: pkg/*/testdata/fuzz
 
   # Dogfood the GitHub Action exactly as users consume it.
   action:

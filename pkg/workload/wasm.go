@@ -169,12 +169,17 @@ type WasmModule struct {
 
 // ParseWasm decodes and validates a WebAssembly 1.0 binary module.
 // The module must export a function `next_op(i32, i32, i64, i32, i32) -> i64`.
-func ParseWasm(data []byte) (*WasmModule, error) {
+func ParseWasm(data []byte) (mod *WasmModule, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			mod, err = nil, fmt.Errorf("wasm: malformed module: %v", r)
+		}
+	}()
 	if !IsWasmBinary(data) {
 		return nil, fmt.Errorf("wasm: invalid magic header or version (expected \\x00asm v1)")
 	}
 	r := &wasmReader{buf: data, pos: 8}
-	mod := &WasmModule{
+	mod = &WasmModule{
 		exports:     make(map[string]uint32),
 		nextOpIndex: -1,
 		maxFuel:     DefaultMaxFuel,
@@ -559,7 +564,15 @@ type ctrlFrame struct {
 
 // CallNextOp invokes the exported `next_op(process, step, rand_u64, keys, values) -> i64`
 // function in an isolated, fuel-metered stack frame. It is safe for concurrent use.
-func (m *WasmModule) CallNextOp(process, step int32, randU64 uint64, keys, values int32) (uint64, error) {
+func (m *WasmModule) CallNextOp(process, step int32, randU64 uint64, keys, values int32) (result uint64, err error) {
+	// The decoder checks structure, not operand types, so a malformed
+	// module can underflow the operand stack or index past a local. That is
+	// a trap of the module, never a crash of Strife.
+	defer func() {
+		if r := recover(); r != nil {
+			result, err = 0, fmt.Errorf("wasm: trap: %v", r)
+		}
+	}()
 	if m.nextOpIndex < 0 || m.nextOpIndex >= len(m.funcs) {
 		return 0, fmt.Errorf("wasm: next_op not bound")
 	}
