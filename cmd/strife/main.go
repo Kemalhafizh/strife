@@ -1017,6 +1017,18 @@ func cmdPlan(args []string, stdout, stderr io.Writer) (int, error) {
 	var env nemesis.Env
 	if cfg != nil {
 		env = cfg.Env()
+		// Values discovered when the run starts are shown as placeholders.
+		for i, n := range env.Nodes {
+			if n.IP == transport.Auto {
+				env.Nodes[i].IP = "<ip of " + n.Name + ">"
+			}
+			if n.Cgroup == transport.Auto {
+				env.Nodes[i].Cgroup = "<cgroup of " + n.Name + ">"
+			}
+		}
+		if env.IODevice == transport.Auto {
+			env.IODevice = "<io device>"
+		}
 		for _, c := range env.Setup(cfg.Nemesis.Faults) {
 			fmt.Fprintf(stdout, "  setup  [%s] %s\n", cfg.Nodes[c.Node].Name, c.Script)
 		}

@@ -70,6 +70,10 @@ jobs:
           fi
           kind version
           kubectl version --client
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o bin/strife ./cmd/strife
       - name: deploy etcd in kind
         run: scripts/live/kind-etcd.sh
       - name: etcd on Kubernetes stays linearizable under faults
@@ -79,6 +83,22 @@ jobs:
           out: live-out/kubernetes
           junit: live-out/kubernetes.xml
           artifact-name: live-kubernetes
+      - name: deploy the node helper and pick the host faults the nodes support
+        id: host
+        run: echo "faults=$(scripts/live/kind-host-faults.sh)" >> "$GITHUB_OUTPUT"
+      - name: freeze and io-stall land on pods through the node helper
+        run: |
+          mkdir -p live-out
+          bin/strife bench inject --config examples/kubernetes/strife-host.json --transports kubernetes \
+            --faults ${{ steps.host.outputs.faults }} --cycles 10 --period 500ms --markdown live-out/bench-k8s-host.md
+          { echo "### Kubernetes host fault latency"; echo; cat live-out/bench-k8s-host.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: etcd on Kubernetes stays linearizable when pods freeze or their disks stall
+        uses: ./
+        with:
+          command: run --config examples/kubernetes/strife-host.json --duration 45s --faults ${{ steps.host.outputs.faults }} --expect linearizable --quiet
+          out: live-out/kubernetes-host
+          junit: live-out/kubernetes-host.xml
+          artifact-name: live-kubernetes-host
       - name: logs
         if: always()
         run: |

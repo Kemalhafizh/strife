@@ -216,7 +216,9 @@ func (c *Config) Validate() error {
 			case nemesis.ClockSkew:
 				return fmt.Errorf("clock-skew is refused with the kubernetes transport: pods share their node's clock")
 			case nemesis.Freeze, nemesis.IOStall:
-				return fmt.Errorf("%s needs host access, which the kubernetes transport does not have: run strife-agent on the nodes (transport \"agent\")", k)
+				if c.Transport.NodeHelper == nil {
+					return fmt.Errorf("%s acts on the node's cgroups: set transport.node_helper to a privileged per-node DaemonSet (see examples/kubernetes/node-helper.yaml)", k)
+				}
 			}
 		}
 	}

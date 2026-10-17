@@ -58,9 +58,18 @@ func cmdBench(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// "auto" cgroups and disks are discovered once, through docker.
-	if dock, err := transport.New(transport.Config{Type: "docker", Sudo: cfg.Transport.Sudo}); err == nil {
-		if cfg, err = runner.ResolveHost(ctx, cfg, dock); err != nil {
+	// "auto" IPs, cgroups and disks are discovered once, through the
+	// config's transport when it can (kubernetes, docker), else docker.
+	if tr, err := transport.New(cfg.Transport); err == nil {
+		if cfg, err = runner.ResolveNodes(ctx, cfg, tr); err != nil {
+			return exitError, err
+		}
+		if _, ok := tr.(transport.HostResolver); !ok {
+			if tr, err = transport.New(transport.Config{Type: "docker", Sudo: cfg.Transport.Sudo}); err != nil {
+				return exitError, err
+			}
+		}
+		if cfg, err = runner.ResolveHost(ctx, cfg, tr); err != nil {
 			return exitError, err
 		}
 	}

@@ -1,0 +1,42 @@
+# Node helper for host faults (freeze, io-stall) on Kubernetes.
+#
+# A privileged pod on every node with the node's cgroup v2 filesystem and
+# container data directory mounted. Strife runs its cgroup writes here, with
+# `kubectl exec`, on the node that hosts the target pod. It runs no daemon of
+# its own: it only sleeps until Strife execs into it.
+#
+# Grant this namespace to the people who run Strife only: anything that can
+# exec into these pods controls the nodes.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: strife-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: strife-node
+  namespace: strife-system
+spec:
+  selector:
+    matchLabels: { app: strife-node }
+  template:
+    metadata:
+      labels: { app: strife-node }
+    spec:
+      terminationGracePeriodSeconds: 1
+      tolerations: [{ operator: Exists }]
+      containers:
+        - name: node
+          image: busybox:1.36.1
+          command: ["sh", "-c", "trap 'exit 0' TERM; while true; do sleep 3600 & wait $!; done"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - { name: cgroup, mountPath: /host/sys/fs/cgroup }
+            - { name: containerd, mountPath: /host/var/lib/containerd, readOnly: true }
+      volumes:
+        - name: cgroup
+          hostPath: { path: /sys/fs/cgroup, type: Directory }
+        - name: containerd
+          hostPath: { path: /var/lib/containerd, type: Directory }
