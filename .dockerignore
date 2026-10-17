@@ -1,0 +1,6 @@
+bin/
+strife-out/
+out/
+dist/
+.git/
+*.test

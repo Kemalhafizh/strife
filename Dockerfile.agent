@@ -1,0 +1,18 @@
+# strife-agent: the per-node fault injection daemon. It needs iptables and
+# tc next to it, and NET_ADMIN (plus SYS_ADMIN for cgroups) at run time.
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
+ARG TARGETOS TARGETARCH VERSION=dev
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+    -ldflags "-s -w -X github.com/kemalhafizh/strife/internal/version.Version=${VERSION}" \
+    -o /out/strife-agent ./cmd/strife-agent
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends iptables iproute2 procps ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/strife-agent /usr/local/bin/strife-agent
+EXPOSE 9292
+ENTRYPOINT ["/usr/local/bin/strife-agent"]
+CMD ["-listen", "0.0.0.0:9292"]

@@ -21,7 +21,8 @@
   ],
   "transport": {
     "type": "agent",
-    "agent_port": 9292
+    "agent_port": 9292,
+    "token": "env:STRIFE_AGENT_TOKEN"
   },
   "db": {
     "kind": "memory",

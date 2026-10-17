@@ -1,0 +1,24 @@
+# Adds strife-agent to every etcd node, for `strife run` with the agent
+# transport and for `strife bench inject`. Build a static agent first:
+#
+#   CGO_ENABLED=0 go build -o bin/strife-agent ./cmd/strife-agent   # repo root
+#   export STRIFE_AGENT_TOKEN=$(openssl rand -hex 16)
+#   docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d
+x-agent: &agent
+  volumes: ["../../bin/strife-agent:/usr/local/bin/strife-agent:ro"]
+  command:
+    - sh
+    - -c
+    - strife-agent -node "$$STRIFE_NODE" -listen 0.0.0.0:9292 -iface eth0 >/var/log/strife-agent.log 2>&1 &
+      /usr/local/bin/start-etcd.sh && exec sleep infinity
+
+services:
+  n1:
+    <<: *agent
+    environment: { STRIFE_AGENT_TOKEN: "${STRIFE_AGENT_TOKEN:?set STRIFE_AGENT_TOKEN}" }
+  n2:
+    <<: *agent
+    environment: { STRIFE_AGENT_TOKEN: "${STRIFE_AGENT_TOKEN:?set STRIFE_AGENT_TOKEN}" }
+  n3:
+    <<: *agent
+    environment: { STRIFE_AGENT_TOKEN: "${STRIFE_AGENT_TOKEN:?set STRIFE_AGENT_TOKEN}" }

@@ -29,7 +29,8 @@ func run(args []string) error {
 	listenAddr := fs.String("listen", fmt.Sprintf(":%d", agent.DefaultPort), "listen address (e.g. :9292, 0.0.0.0:9292, or /var/run/strife-agent.sock)")
 	nodeName := fs.String("node", "", "node name (defaults to hostname)")
 	iface := fs.String("iface", "eth0", "network interface for traffic control / netem")
-	token := fs.String("token", "", "optional authorization bearer token")
+	token := fs.String("token", os.Getenv("STRIFE_AGENT_TOKEN"), "bearer token clients must present (default $STRIFE_AGENT_TOKEN)")
+	insecure := fs.Bool("insecure-no-token", false, "allow serving a network address without a token (anyone who can reach it can run commands as this user)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -45,6 +46,11 @@ func run(args []string) error {
 		}
 	}
 
+	isUnix := strings.HasPrefix(*listenAddr, "/") || strings.HasSuffix(*listenAddr, ".sock")
+	if *token == "" && !isUnix && !loopback(*listenAddr) && !*insecure {
+		return fmt.Errorf("refusing to serve %s without a token: the agent executes commands for its clients; set -token or $STRIFE_AGENT_TOKEN (or pass -insecure-no-token on an isolated network)", *listenAddr)
+	}
+
 	cfg := agent.ServerConfig{
 		NodeName:  name,
 		Interface: *iface,
@@ -54,7 +60,6 @@ func run(args []string) error {
 
 	var l net.Listener
 	var err error
-	isUnix := strings.HasPrefix(*listenAddr, "/") || strings.HasSuffix(*listenAddr, ".sock")
 
 	if isUnix {
 		_ = os.Remove(*listenAddr)
@@ -96,4 +101,17 @@ func run(args []string) error {
 		}
 		return nil
 	}
+}
+
+// loopback reports whether addr only accepts connections from this machine.
+func loopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

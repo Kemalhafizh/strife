@@ -48,6 +48,7 @@ header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:fle
 h1{margin:0 0 6px 0;font-size:24px;letter-spacing:-0.02em}
 h2{margin:28px 0 12px 0;font-size:16px;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted)}
 .sub{color:var(--muted);font-size:13px;font-family:var(--mono)}
+.cite{color:var(--muted);font-size:12px;margin-top:4px;font-style:italic}
 .badge{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;font-weight:700;font-size:12px;font-family:var(--mono);letter-spacing:0.04em}
 .badge.pass{background:var(--ok-bg);color:var(--ok);border:1px solid rgba(34,197,94,0.35)}
 .badge.partial{background:var(--warn-bg);color:var(--warn);border:1px solid rgba(245,158,11,0.35)}
@@ -174,7 +175,7 @@ footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--border);color
 		fmt.Fprintf(&b, `<td><code>%s</code></td>`, html.EscapeString(strings.ToUpper(string(c.Framework))))
 		fmt.Fprintf(&b, `<td><strong>%s</strong><div class="sub">%s</div></td>`,
 			html.EscapeString(c.ControlID), html.EscapeString(c.Title))
-		fmt.Fprintf(&b, `<td>%s</td>`, html.EscapeString(c.Requirement))
+		fmt.Fprintf(&b, `<td>%s<div class="cite">%s</div></td>`, html.EscapeString(c.Requirement), html.EscapeString(c.Citation))
 		fmt.Fprintf(&b, `<td><span class="badge %s">%s</span></td>`,
 			html.EscapeString(string(c.Status)), html.EscapeString(strings.ToUpper(string(c.Status))))
 		b.WriteString(`<td>`)

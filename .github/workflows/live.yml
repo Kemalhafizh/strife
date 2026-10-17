@@ -1,8 +1,9 @@
 name: live
 
-# Real clusters in Docker, real faults (iptables, tc, signals), driven through
-# Strife's own GitHub Action. These are the end-to-end tests of the live path:
-# a correct system must pass and a known-weak setup must be caught.
+# Real clusters in Docker, real faults (iptables, tc, signals, cgroups),
+# driven through Strife's own GitHub Action. These are the end-to-end tests
+# of the live path: a correct system must pass, a known-weak setup must be
+# caught, and every number the documentation quotes comes from a job here.
 
 on:
   push:
@@ -10,8 +11,8 @@ on:
 
 jobs:
   etcd:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: pick faults the runner kernel supports
@@ -25,17 +26,7 @@ jobs:
         working-directory: examples/etcd
         run: docker compose up -d --build
       - name: wait until every member is healthy
-        run: |
-          for _ in $(seq 1 60); do
-            ok=0
-            for ip in 11 12 13; do
-              curl -fsS -m 2 "http://172.30.0.$ip:2379/health" >/dev/null && ok=$((ok + 1))
-            done
-            [ "$ok" = 3 ] && exit 0
-            sleep 2
-          done
-          docker compose -f examples/etcd/docker-compose.yml logs
-          exit 1
+        run: scripts/live/wait-etcd.sh
       - name: etcd stays linearizable under faults
         uses: ./
         with:
@@ -43,6 +34,13 @@ jobs:
           out: live-out/etcd
           junit: live-out/etcd.xml
           artifact-name: live-etcd
+      - name: etcd transactions stay strictly serializable under faults
+        uses: ./
+        with:
+          command: run --config examples/etcd/strife-append.json --duration 60s --faults ${{ steps.faults.outputs.faults }} --expect linearizable --quiet
+          out: live-out/etcd-append
+          junit: live-out/etcd-append.xml
+          artifact-name: live-etcd-append
       - name: logs
         if: always()
         run: for c in strife-etcd1 strife-etcd2 strife-etcd3; do echo "== $c"; docker exec "$c" tail -20 /var/log/etcd.log || true; done
@@ -51,8 +49,144 @@ jobs:
         working-directory: examples/etcd
         run: docker compose down -v
 
+  # The same etcd cluster as a StatefulSet in kind, driven through kubectl
+  # exec: pod IPs are discovered at run time ("ip": "auto").
+  kubernetes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: pick faults the runner kernel supports
+        id: faults
+        run: |
+          faults=partition,kill,pause
+          if sudo modprobe sch_netem 2>/dev/null; then faults="$faults,latency,loss"; fi
+          echo "faults=$faults" >> "$GITHUB_OUTPUT"
+      - name: install kind
+        run: |
+          if ! command -v kind >/dev/null; then
+            curl -fsSLo kind https://github.com/kubernetes-sigs/kind/releases/download/v0.24.0/kind-linux-amd64
+            sudo install -m 0755 kind /usr/local/bin/kind && rm kind
+          fi
+          kind version
+          kubectl version --client
+      - name: deploy etcd in kind
+        run: scripts/live/kind-etcd.sh
+      - name: etcd on Kubernetes stays linearizable under faults
+        uses: ./
+        with:
+          command: run --config examples/kubernetes/strife.json --duration 60s --faults ${{ steps.faults.outputs.faults }} --expect linearizable --quiet
+          out: live-out/kubernetes
+          junit: live-out/kubernetes.xml
+          artifact-name: live-kubernetes
+      - name: logs
+        if: always()
+        run: |
+          kubectl -n strife get pods -o wide || true
+          for p in etcd-0 etcd-1 etcd-2; do echo "== $p"; kubectl -n strife exec "$p" -c etcd -- tail -20 /var/log/etcd.log || true; done
+      - name: delete the cluster
+        if: always()
+        run: scripts/live/kind-etcd.sh delete
+
+  # Fault-injection precision, measured: docker exec versus strife-agent on
+  # the same etcd cluster. The README's numbers come from this job's summary.
+  agent:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      STRIFE_AGENT_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build strife and a static strife-agent
+        run: |
+          go build -o bin/strife ./cmd/strife
+          CGO_ENABLED=0 go build -o bin/strife-agent ./cmd/strife-agent
+      - name: pick faults the runner kernel supports
+        id: faults
+        run: |
+          faults=partition,pause,kill
+          if sudo modprobe sch_netem 2>/dev/null; then faults="$faults,latency,loss"; fi
+          echo "faults=$faults" >> "$GITHUB_OUTPUT"
+      - name: start etcd with an agent in every node
+        working-directory: examples/etcd
+        run: docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d --build
+      - name: wait for etcd and the agents
+        run: |
+          scripts/live/wait-etcd.sh
+          for ip in 11 12 13; do
+            curl -fsS -m 2 -H "Authorization: Bearer $STRIFE_AGENT_TOKEN" "http://172.30.0.$ip:9292/health"; echo
+          done
+      - name: the agent's netem parameters are what the kernel holds
+        if: contains(steps.faults.outputs.faults, 'latency')
+        run: scripts/live/check-agent-netem.sh strife-etcd1
+      - name: measure injection latency (docker exec vs strife-agent)
+        run: |
+          mkdir -p live-out
+          bin/strife bench inject --config examples/etcd/strife-agent.json --transports docker,agent \
+            --faults ${{ steps.faults.outputs.faults }} --cycles 50 --period 300ms \
+            --json live-out/bench-inject.json --markdown live-out/bench-inject.md
+          { echo "### Fault injection latency"; echo; cat live-out/bench-inject.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: etcd stays linearizable with faults delivered by the agent
+        uses: ./
+        with:
+          command: run --config examples/etcd/strife-agent.json --duration 60s --expect linearizable --quiet
+          out: live-out/agent
+          junit: live-out/agent.xml
+          artifact-name: live-agent
+      - name: upload benchmark
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-inject
+          path: live-out/bench-inject.*
+      - name: stop the cluster
+        if: always()
+        working-directory: examples/etcd
+        run: docker compose -f docker-compose.yml -f docker-compose.agent.yml down -v
+
+  # freeze and io-stall act on the container's cgroup v2 from the host, which
+  # GitHub's runners provide (the development sandbox does not).
+  cgroup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o bin/strife ./cmd/strife
+      - name: start a 3-node etcd cluster
+        working-directory: examples/etcd
+        run: docker compose up -d --build
+      - name: wait until every member is healthy
+        run: scripts/live/wait-etcd.sh
+      - name: make sure each container's cgroup has the io controller
+        run: scripts/live/cgroup-io.sh strife-etcd1 strife-etcd2 strife-etcd3
+      - name: io.max really stalls a container's disk writes
+        run: scripts/live/check-io-stall.sh strife-etcd1
+      - name: measure freeze and io-stall (freeze waits for cgroup.events)
+        run: |
+          mkdir -p live-out
+          bin/strife bench inject --config examples/etcd/strife-cgroup.json --transports docker \
+            --faults freeze,io-stall --cycles 20 --period 500ms --markdown live-out/bench-cgroup.md
+          { echo "### cgroup fault latency"; echo; cat live-out/bench-cgroup.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: etcd stays linearizable when nodes freeze or their disks stall
+        uses: ./
+        with:
+          command: run --config examples/etcd/strife-cgroup.json --duration 60s --expect linearizable --quiet
+          out: live-out/cgroup
+          junit: live-out/cgroup.xml
+          artifact-name: live-cgroup
+      - name: stop the cluster
+        if: always()
+        working-directory: examples/etcd
+        run: docker compose down -v
+
   valkey:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -85,4 +219,188 @@ jobs:
       - name: stop the cluster
         if: always()
         working-directory: examples/valkey
+        run: docker compose down -v
+
+  postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      STRIFE_PG_PASSWORD: ${{ github.run_id }}-pg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: start a primary and two async standbys (SCRAM, TLS)
+        working-directory: examples/postgres
+        run: docker compose up -d --build
+      - name: wait for streaming replication
+        run: |
+          for _ in $(seq 1 90); do
+            n=$(docker exec strife-postgres1 psql -U postgres -tAc "select count(*) from pg_stat_replication where state = 'streaming'" 2>/dev/null || true)
+            [ "$n" = 2 ] && exit 0
+            sleep 2
+          done
+          docker compose -f examples/postgres/docker-compose.yml logs
+          exit 1
+      - name: the primary is strictly serializable under kill -9 and pauses
+        uses: ./
+        with:
+          command: run --config examples/postgres/strife.json --duration 60s --expect linearizable --quiet
+          out: live-out/pg-primary
+          junit: live-out/pg-primary.xml
+          artifact-name: live-pg-primary
+      - name: REPEATABLE READ satisfies snapshot isolation
+        uses: ./
+        with:
+          command: run --config examples/postgres/strife-snapshot.json --duration 45s --expect linearizable --quiet
+          out: live-out/pg-snapshot
+          junit: live-out/pg-snapshot.xml
+          artifact-name: live-pg-snapshot
+      - name: ...but the same history is not serializable (write skew)
+        run: |
+          go build -o bin/strife ./cmd/strife
+          h=$(ls live-out/pg-snapshot/*/history.jsonl)
+          set +e
+          bin/strife check --model append --isolation serializable "$h"
+          code=$?
+          set -e
+          test "$code" = 1
+      - name: reads from async standbys are caught as stale
+        uses: ./
+        with:
+          command: run --config examples/postgres/strife-replicas.json --duration 45s --expect violation --quiet
+          out: live-out/pg-replicas
+          junit: live-out/pg-replicas.xml
+          artifact-name: live-pg-replicas
+      - name: live shrinking finds that the stale reads need no fault at all
+        run: |
+          set +e
+          bin/strife shrink --live --config examples/postgres/strife-replicas.json --duration 15s --attempts 2 --verify 3 --out live-out/pg-shrink
+          code=$?
+          set -e
+          test "$code" = 1
+          python3 - <<'PY'
+          import glob, json
+          r = json.load(open(glob.glob("live-out/pg-shrink/*/shrink.json")[0]))
+          print(f"minimal {len(r['minimal']['faults'])} faults, reproduced {r['reproduced']}/{r['verified']} in {r['runs']} runs")
+          assert r["minimal"]["faults"] == [] and r["reproduced"] >= 1, r
+          PY
+      - name: stop the cluster
+        if: always()
+        working-directory: examples/postgres
+        run: docker compose down -v
+
+  mysql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      STRIFE_MYSQL_PASSWORD: ${{ github.run_id }}-my
+    steps:
+      - uses: actions/checkout@v4
+      - name: start MySQL 8.4 (caching_sha2_password)
+        working-directory: examples/mysql
+        run: docker compose up -d
+      - name: wait until MySQL accepts TCP connections
+        run: |
+          for _ in $(seq 1 90); do
+            docker exec strife-mysql1 mysql -h 172.31.4.11 -uroot -p"$STRIFE_MYSQL_PASSWORD" -e 'select 1' >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          docker logs strife-mysql1
+          exit 1
+      - run: scripts/live/cgroup-io.sh strife-mysql1
+      - name: SERIALIZABLE is strictly serializable while the server freezes
+        uses: ./
+        with:
+          command: run --config examples/mysql/strife.json --duration 60s --expect linearizable --quiet
+          out: live-out/mysql
+          junit: live-out/mysql.xml
+          artifact-name: live-mysql
+      - name: REPEATABLE READ is caught violating snapshot isolation (no fault needed)
+        uses: ./
+        with:
+          command: run --config examples/mysql/strife-repeatable-read.json --duration 30s --expect violation --quiet
+          out: live-out/mysql-rr
+          junit: live-out/mysql-rr.xml
+          artifact-name: live-mysql-rr
+      - name: stop
+        if: always()
+        working-directory: examples/mysql
+        run: docker compose down -v
+
+  tidb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: start TiDB
+        working-directory: examples/tidb
+        run: docker compose up -d
+      - name: wait for TiDB
+        run: |
+          for _ in $(seq 1 60); do
+            curl -fsS -m 2 http://172.31.3.11:10080/status >/dev/null && exit 0
+            sleep 2
+          done
+          docker logs strife-tidb1
+          exit 1
+      - name: optimistic transactions satisfy snapshot isolation while frozen
+        uses: ./
+        with:
+          command: run --config examples/tidb/strife-optimistic.json --duration 45s --expect linearizable --quiet
+          out: live-out/tidb-optimistic
+          junit: live-out/tidb-optimistic.xml
+          artifact-name: live-tidb-optimistic
+      - name: pessimistic REPEATABLE READ is caught violating snapshot isolation
+        uses: ./
+        with:
+          command: run --config examples/tidb/strife.json --faults none --duration 45s --expect violation --quiet
+          out: live-out/tidb-pessimistic
+          junit: live-out/tidb-pessimistic.xml
+          artifact-name: live-tidb-pessimistic
+      - name: stop
+        if: always()
+        working-directory: examples/tidb
+        run: docker compose down -v
+
+  kafka:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["3.9.1", "4.1.0"]
+    env:
+      KAFKA_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: start a 3-broker KRaft cluster
+        working-directory: examples/kafka
+        run: docker compose up -d --build
+      - name: wait until three brokers host a replicated topic
+        run: |
+          for _ in $(seq 1 90); do
+            docker exec strife-kafka1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server 172.31.2.11:9092 \
+              --create --if-not-exists --topic strife-ready --partitions 1 --replication-factor 3 >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          docker exec strife-kafka1 tail -50 /var/log/kafka.log
+          exit 1
+      - name: kill brokers while producing (acks=all) and reading logs
+        id: run
+        uses: ./
+        with:
+          command: run --config examples/kafka/strife.json --duration 60s --quiet
+          out: live-out/kafka
+          junit: live-out/kafka.xml
+          artifact-name: live-kafka-${{ matrix.version }}
+          fail: "false"
+      - name: no acknowledged record was lost; only stale reads are tolerated
+        env:
+          OUTCOME: ${{ steps.run.outputs.outcome }}
+        run: python3 scripts/live/check-kafka.py "$OUTCOME" live-out/kafka
+      - name: stop
+        if: always()
+        working-directory: examples/kafka
         run: docker compose down -v

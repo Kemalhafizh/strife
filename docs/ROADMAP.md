@@ -209,21 +209,22 @@ execution with a per-node daemon and direct kernel manipulation:
   - Cgroup freeze and I/O throttling executed via direct `os.WriteFile` to `cgroup.freeze` and `io.max`.
 - **Fast-path Transport (`pkg/transport/agent.go`)**:
   - Implements `transport.Transport` and `FaultApplier` interface for direct fault dispatching in `runner.Run`.
-  - Measures microsecond kernel timestamps and records injection jitter.
+  - Records, per transition, the round trip and the time spent inside the agent.
 
-**Measured Injection Jitter** (50 fault transitions on 3-node cluster):
+**Measured injection latency** (`strife bench inject`, 50 transitions per row,
+GitHub-hosted runner, 3-node etcd; method and full table in
+[`BENCHMARKS.md`](BENCHMARKS.md#1-fault-injection-latency)):
 
-> ⚠️ **Proof debt:** no benchmark or CI job in this repository produces the
-> numbers below yet, so they cannot be reproduced. Until 5.0 lands they are
-> targets, not measurements, and must not be quoted externally.
+| Fault | `docker exec` P50 | `strife-agent` P50 | Inside the agent (P50) |
+|---|---|---|---|
+| pause | 43.7 ms | 1.36 ms | 372 µs |
+| kill | 44.4 ms | 1.58 ms | 495 µs |
+| partition | 57.9 ms | 4.02 ms | 2.61 ms (still runs `iptables`) |
+| latency | 42.8 ms | 48.1 ms (reply delayed by the fault itself) | 159 µs |
 
-| Transport | Fault Mechanism | Median Latency (P50) | 95th Percentile (P95) | Max Jitter |
-|---|---|---|---|---|
-| **Shell `docker exec`** | Process fork + exec + sh | ~45ms | ~85ms | >200ms |
-| **Shell `ssh`** | SSH handshake + remote shell | ~60ms | ~120ms | >350ms |
-| **`strife-agent`** | **TCP socket + Linux RTNETLINK** | **0.28ms** | **0.95ms** | **< 3ms** |
-
-Result: **>50x reduction in injection jitter**, enabling deterministic fault injection in microsecond-scale race windows.
+The earlier table here (P50 0.28 ms, ">50x") had no benchmark behind it and
+was computed from Unix timestamps; it is withdrawn. The measured gain is ~30x
+for signals and netem, ~14x for partitions.
 
 ### 2.2 New models
 
@@ -355,100 +356,105 @@ correlation** alongside the client history (`pkg/probe`):
 
 - **Empirical Technical Control Mapping (`pkg/compliance/compliance.go`)**:
   - Maps provable technical resilience and consistency properties (network partition survival, crash/`fsync` durability, clock-skew tolerance, linearizability/isolation verification, and Ed25519 `in-toto` non-repudiation) to four regulatory and audit standards:
-    - **EU DORA** (`dora`): `DORA-Art.24-25` (Operational Resilience Testing), `DORA-Art.9.4(c)` (Data Integrity Under Disruption), `DORA-Art.11-12` (Crash Recovery & Storage Durability).
-    - **AICPA SOC 2** (`soc2`): `PI1.3-PI1.4` (Processing Integrity), `A1.2` (Environmental Disruption Recovery), `CC7.2-CC7.4` (Tamper-Evident Audit Evidence).
-    - **ISO/IEC 27001:2022** (`iso27001`): `A.8.13-A.8.14` (Information Backup & Redundancy), `A.8.17` (Clock Synchronization Resilience), `A.8.29` (Resilience Testing in Development & Acceptance).
-    - **Bank Indonesia / OJK** (`bi-ojk`): `SEOJK-29/MRTIK-DRC` (Uji Ketahanan & Pemulihan Bencana), `SEOJK-29/Integritas-Data` (Integritas & Konsistensi Data Transaksi), `SEOJK-29/Jejak-Audit` (Bukti Audit Kriptografis).
+    - **EU DORA** (`dora`): `dora.resilience-testing` (Art. 24–25), `dora.data-integrity` (Art. 9(3)(b)–(c)), `dora.recovery` (Art. 11–12).
+    - **AICPA SOC 2** (`soc2`): `soc2.processing-integrity` (PI1.3–PI1.4), `soc2.recovery` (A1.2–A1.3), `soc2.test-evidence` (CC4.1).
+    - **ISO/IEC 27001:2022** (`iso27001`): `iso27001.redundancy` (Annex A 8.13–8.14), `iso27001.clock-sync` (8.17), `iso27001.security-testing` (8.29).
+    - **OJK** (`bi-ojk`): `bi-ojk.pemulihan-bencana`, `bi-ojk.integritas-data`, `bi-ojk.jejak-audit` (POJK No. 11/POJK.03/2022; SEOJK No. 29/SEOJK.03/2022).
+  - Control IDs are Strife's labels; each control carries a `citation` of the provision it supports (since Phase 5).
   - Evaluates each control as `PASS`, `PARTIAL` (with explicit remediation hints when fault coverage or cryptographic signing is incomplete), or `FAIL`.
 - **Documented Methodology & Scope Boundaries**:
   - Explicitly states *What Is Tested*, *What Is Not Tested* (omitted fault classes, Byzantine/hardware bit-rot, organizational policies), and *Execution & Reproducibility Boundaries* (simulation bit-for-bit replay vs. live cluster interleavings), plus a clear auditor disclaimer.
 - **Audit Dossier Artifacts & CLI (`strife compliance`)**:
   - Generates tamper-evident `dossier.json`, `dossier.md`, and a self-contained, print-ready `dossier.html` from either a single `report.json` or a multi-seed `campaign.json` (plus optional `bundle.json` + Ed25519 public key).
 
-## Phase 5: Proof, reach, distribution (next)
+## Phase 5: Proof, reach, distribution ✅ done (PR #8)
 
-An audit of `main` at `22a3dff` (2026-10-17): the build, `go vet`, `gofmt`
-and the full test suite are clean, and the `ci`, `live` and `pages` workflows
-are green. Feature coverage now runs ahead of evidence. The live CI
-validates only etcd and Valkey. The new clients are tested against fake
-servers only. One headline number on the README and the site has no
-benchmark behind it. Principle 1 says a feature ships when a test or
-benchmark proves it, so Phase 5 pays that debt first and only then widens
-reach.
+An audit of `main` at `22a3dff` (2026-10-17) found feature coverage running
+ahead of evidence: live CI covered only etcd and Valkey, the new clients were
+tested against fake servers only, and one headline number had no benchmark
+behind it. Phase 5 paid that debt first, then widened reach. Every number
+below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
 
-Order: **5.0 → 5.1 → 5.2** are prerequisites for the first paying customer.
-5.3 and 5.4 make the engine stronger. Phase 6 is the commercial layer.
+### 5.0 Pay the proof debt ✅
 
-### 5.0 Pay the proof debt ⬜ (highest priority, ~1–2 weeks)
+| Claim | Evidence now |
+|---|---|
+| Agent injection latency | `strife bench inject` + the `agent` job: pause 1.36 ms, kill 1.58 ms, partition 4.02 ms at P50 vs 43–58 ms for `docker exec`; the agent-side column separates kernel time (150–500 µs for signals and netem) from the confirmation. The unbacked 0.28 ms table is withdrawn. |
+| PostgreSQL, Kafka, TiDB, MySQL targets | `live.yml` jobs for each, with expected passes and expected violations (G2 at REPEATABLE READ, stale standby reads, MySQL and TiDB-pessimistic REPEATABLE READ not being snapshot isolation, Kafka stale reads after leader changes with no lost records). |
+| cgroup faults | `cgroup` job on cgroup v2 runners: `io.max` verified to stall writes, freeze confirmed through `cgroup.events`, etcd linearizable under both; freeze 9.6 ms and io-stall 8.3 ms P50. |
+| Checker throughput | `BENCHMARKS.md` §2: 95k–508k ops/s on one register depending on concurrency; list-append 41k–57k txns/s; the 50-process single-key case is `unknown`, documented as the limit. |
+| Compliance mapping | Control IDs renamed to Strife labels (`dora.data-integrity`…), each with a `citation` of the provision it supports (DORA Art. 9(3)(b)–(c) replaces the incorrect "9.4(c)"); dossiers say the mapping is informative. |
 
-| Claim today | Evidence today | Work |
-|---|---|---|
-| Agent injection jitter P50 0.28ms vs ~45ms `docker exec` (README, site, 2.1) | None in the repo | Add `strife bench inject` (or a Go benchmark), plus a `live.yml` job that applies N partition/heal transitions through each transport and records P50/P95/max from kernel-side timestamps. Publish runner spec + numbers; replace the table with whatever it measures. |
-| PostgreSQL, Kafka, TiDB targets (2.3) | Fake-server unit tests | `live.yml` jobs mirroring etcd/Valkey: a single Postgres primary under `kill` → `--expect linearizable`; reads from an async standby → `--expect violation`; TiDB `txn` workload at `serializable`; Kafka `queue` model with broker kills. |
-| cgroup faults `freeze`, `io-stall` (1.3) | Command-level unit tests | GitHub's `ubuntu-24.04` runners use cgroup v2, which the development sandbox lacks. Validate both faults there via the agent. |
-| Checker 120k–260k ops/s, ~1.5ms diagnosis (1.4) | `pkg/checker/bench_test.go` | `docs/BENCHMARKS.md`: machine, Go version, exact command, before/after table, known limits. Optionally a nightly job that flags a >20% regression. |
-| Compliance mapping (4.2) | Unit tests | Control IDs such as `SEOJK-29/MRTIK-DRC` are Strife's own labels, not official clause numbers. Cite the source regulation and clause for each, state that the mapping is informative, and get it reviewed by one practising auditor before selling it. |
+### 5.1 Clients that work outside the examples ✅
 
-Done when: every number on the README and the site links to a job or a
-command that reproduces it.
+- **PostgreSQL:** SCRAM-SHA-256 (RFC 7677 test vectors), MD5, TLS
+  (`require`, `verify-full` with a CA), per-statement results, ambiguous-error
+  classification; validated on PostgreSQL 17 with its default auth.
+- **MySQL / TiDB:** `caching_sha2_password` (fast path; full auth over TLS or
+  RSA-OAEP), `mysql_native_password`, TLS, `init_sql`; validated on MySQL 8.4
+  and TiDB 8.5.
+- **Kafka:** ApiVersions, Metadata v4, Produce v3, Fetch v4, RecordBatch v2
+  with CRC-32C; validated on Kafka 3.9.1 and 4.1.0 (KRaft).
+- **Redis / Valkey:** `AUTH`, TLS, Lua list-append transactions.
+- **All clients:** credentials as `env:NAME` / `file:PATH`, redacted in
+  reports and attestations; the agent token likewise, compared in constant
+  time; the agent refuses a non-loopback listener without a token.
 
-### 5.1 Clients that work outside the examples ⬜
+### 5.2 Distribution and stable contracts ✅ (tagging is the release step)
 
-The clients only connect to clusters configured for the examples:
+- `release.yml`: on a `v*` tag, binaries for linux/darwin/windows ×
+  amd64/arm64, `SHA256SUMS`, an SPDX SBOM, an in-toto release attestation
+  made with `strife sign --release` (when `STRIFE_RELEASE_KEY` is set), and
+  multi-arch `ghcr.io` images for `strife` and `strife-agent`.
+- The Action downloads and checksum-verifies the release binary when pinned
+  to a tag, and builds from source otherwise.
+- `schemas/report.v1.json`, `history.v1.json`, `dossier.v1.json` with
+  validation of real outputs and a compatibility test that refuses breaking
+  changes (it caught one during this phase).
+- `CHANGELOG.md`; `strife version` stamped at build time.
 
-- **PostgreSQL:** only `trust` auth. PostgreSQL 14+ defaults to
-  `scram-sha-256`, so add SCRAM-SHA-256 (stdlib `crypto/hmac` + `pbkdf2`) and
-  TLS (`sslmode=require|verify-full`).
-- **MySQL:** only `mysql_native_password`. MySQL 8 defaults to
-  `caching_sha2_password`, and MySQL 8.4/9 disable native auth by default.
-  Add caching_sha2 (full auth over TLS or RSA) and TLS.
-- **Kafka:** fixed v0 APIs. Kafka 4.0 removed Produce v0–2 and Fetch v0–3
-  (KIP-896), so the example only works because it pins 3.7. Add
-  `ApiVersions` negotiation and Produce/Fetch at v3+ (record batches).
-- **All clients:** TLS and credentials from env/files, never from
-  `strife.json` in plain text (it lands in reports and attestations).
+### 5.3 Engine depth ✅
 
-Done when: each client passes its `live.yml` job against the current major
-version with default authentication.
+- **Elle-style list-append** (`workload.model: "append"`, `--model append`):
+  version orders from reads, ww/wr/rw and real-time edges, G0–G2, G-single,
+  G-realtime, lost appends, incompatible orders, duplicates and internal
+  consistency; live on etcd, PostgreSQL, MySQL, TiDB, Valkey and Kafka.
+- **Live-run shrinking** (`strife shrink --live`, `strife run --schedule`):
+  delta debugging over the fault schedule with N attempts per candidate,
+  reported as a candidate with its reproduction rate; CI shows the
+  PostgreSQL standby anomaly needs no fault at all.
+- **Kubernetes target:** the `kubernetes` transport drives pods through
+  `kubectl exec`, discovers pod IPs (`"ip": "auto"`) and expands `{ip}`
+  endpoints; `examples/kubernetes` runs etcd as a StatefulSet and the
+  `kubernetes` job validates it in kind under partition, kill, pause,
+  latency and loss. Host faults on Kubernetes still need the agent (see 5.5).
 
-### 5.2 Distribution and stable contracts ⬜
+### 5.4 Correctness safety net ✅
 
-- **Releases:** tag `v0.2.0`. Cross-compiled binaries (linux/darwin/windows ×
-  amd64/arm64) with SHA-256 checksums, an SBOM, and a signature made with
-  Strife's own `attest` (dogfooding 4.1).
-- **Action:** download the release binary instead of building (saves ~15s per
-  job), pin by tag, then list it on the GitHub Marketplace.
-- **Container image** on `ghcr.io` for `strife` and `strife-agent`.
-- **Versioned schemas** (`schemas/report.v1.json`, `history.v1.json`,
-  `dossier.v1.json`) with a compatibility test. Enterprises archive these
-  files for years, so the format is a contract.
-- **CHANGELOG** and semver from here on.
+- Fuzz targets for RESP, PostgreSQL, MySQL and Kafka decoders, the Wasm
+  decoder, `history.jsonl`, and the list-append checker's soundness, run in
+  CI; they found a Wasm stack-underflow panic and a MySQL integer overflow.
+- Brute-force cross-checks: list-append 0 / 150,030 valid histories flagged,
+  99.81 % of 49,970 invalid ones caught; register transactions 0 / 40,000.
+  The cross-check exposed, and the rewrite fixed, the register checker adding
+  real-time edges at plain serializability.
+- Wasm workload determinism is checked in CI.
 
-### 5.3 Engine depth ⬜
+### 5.5 Carried forward
 
-- **Elle list-append workload:** the `txn` checker works on registers. With
-  list-append, every read reveals the full version order, which is what
-  makes Elle find G1c/G2 reliably without guessing write order. This is the
-  biggest checker gap compared with Jepsen.
-- **Live-run shrinking** (carried over from 1.1): re-run a reduced schedule
-  against a real cluster N times and report the result as a *candidate*
-  with its reproduction rate, never as a proof.
-- **Kubernetes target:** run the agent as a DaemonSet, inject faults by pod
-  label, and validate on `kind` in CI. Most enterprise databases run on
-  Kubernetes, so this reaches the most users.
+- Native netfilter in the agent (partitions still fork `iptables`: 4 ms vs
+  1.4 ms for signals).
+- `strife-agent` as a DaemonSet with host access, so `freeze` and `io-stall`
+  work on Kubernetes.
+- One practising auditor reviews the compliance citations before the
+  mapping is sold.
+- Tag `v0.2.0`, set `STRIFE_RELEASE_KEY`, list the Action on the
+  Marketplace.
+- The WGL search on one key with ~50 concurrent processes exceeds its
+  default budget; a smarter search (or a P-compositional split by value)
+  would move that limit.
 
-### 5.4 Correctness safety net ⬜
-
-- Fuzz tests (`go test -fuzz`) for every wire-protocol parser (RESP,
-  Postgres, MySQL, Kafka), the Wasm decoder, and `history.jsonl` parsing.
-  These parse untrusted bytes.
-- A cross-check of the `txn` checker against brute force on small random
-  histories, the same way `TestAgainstBruteForce` guards the linearizability
-  checker.
-- A determinism check for Wasm workloads in CI (`--determinism` with
-  `--workload`).
-
-## Phase 6: Commercial layer (after 5.0–5.2)
+## Phase 6: Commercial layer (next)
 
 - **Design partners:** 2–3 Indonesian fintechs or banks (the `bi-ojk`
   mapping is the hook) running Strife on staging. Success means one dossier

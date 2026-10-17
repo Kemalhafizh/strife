@@ -1,0 +1,659 @@
+{
+  "$defs": {
+    "checker.Counterexample": {
+      "additionalProperties": false,
+      "properties": {
+        "anomalies": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "concurrent": {
+          "items": {
+            "$ref": "#/$defs/checker.Step"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "diagnosis": {
+          "type": "string"
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "linearized": {
+          "items": {
+            "$ref": "#/$defs/checker.Step"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "state_after": {
+          "type": "string"
+        },
+        "stuck": {
+          "$ref": "#/$defs/checker.Step"
+        },
+        "witness": {
+          "items": {
+            "$ref": "#/$defs/checker.Step"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "explanation",
+        "linearized",
+        "state_after",
+        "stuck"
+      ],
+      "type": "object"
+    },
+    "checker.KeyResult": {
+      "additionalProperties": false,
+      "properties": {
+        "counterexample": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/checker.Counterexample"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "operations": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "integer"
+        },
+        "verdict": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "operations",
+        "steps",
+        "verdict"
+      ],
+      "type": "object"
+    },
+    "checker.Report": {
+      "additionalProperties": false,
+      "properties": {
+        "checked": {
+          "type": "integer"
+        },
+        "keys": {
+          "items": {
+            "$ref": "#/$defs/checker.KeyResult"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "operations": {
+          "type": "integer"
+        },
+        "stats": {
+          "$ref": "#/$defs/history.Stats"
+        },
+        "verdict": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "checked",
+        "keys",
+        "model",
+        "operations",
+        "stats",
+        "verdict"
+      ],
+      "type": "object"
+    },
+    "checker.Step": {
+      "additionalProperties": false,
+      "properties": {
+        "call": {
+          "type": "integer"
+        },
+        "description": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "process": {
+          "type": "integer"
+        },
+        "return": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "call",
+        "description",
+        "index",
+        "process",
+        "return"
+      ],
+      "type": "object"
+    },
+    "history.Stats": {
+      "additionalProperties": false,
+      "properties": {
+        "by_f": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/history.StatsCount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "fail": {
+          "type": "integer"
+        },
+        "info": {
+          "type": "integer"
+        },
+        "invocations": {
+          "type": "integer"
+        },
+        "ok": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "by_f",
+        "fail",
+        "info",
+        "invocations",
+        "ok"
+      ],
+      "type": "object"
+    },
+    "history.StatsCount": {
+      "additionalProperties": false,
+      "properties": {
+        "fail": {
+          "type": "integer"
+        },
+        "info": {
+          "type": "integer"
+        },
+        "ok": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "fail",
+        "info",
+        "ok"
+      ],
+      "type": "object"
+    },
+    "nemesis.Fault": {
+      "additionalProperties": false,
+      "properties": {
+        "delay": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "end": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "jitter": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "loss": {
+          "type": "number"
+        },
+        "nodes": {
+          "items": {
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "rate": {
+          "type": "number"
+        },
+        "start": {
+          "description": "nanoseconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "end",
+        "id",
+        "kind",
+        "nodes",
+        "start"
+      ],
+      "type": "object"
+    },
+    "nemesis.Schedule": {
+      "additionalProperties": false,
+      "properties": {
+        "duration": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "faults": {
+          "items": {
+            "$ref": "#/$defs/nemesis.Fault"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "nodes": {
+          "type": "integer"
+        },
+        "seed": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "duration",
+        "faults",
+        "nodes",
+        "seed"
+      ],
+      "type": "object"
+    },
+    "probe.Event": {
+      "additionalProperties": false,
+      "properties": {
+        "at_ns": {
+          "type": "integer"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "duration_ns": {
+          "type": "integer"
+        },
+        "end": {
+          "type": "integer"
+        },
+        "errno": {
+          "type": "string"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "process": {
+          "type": "string"
+        },
+        "signal": {
+          "type": "string"
+        },
+        "start": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "end",
+        "kind",
+        "node",
+        "start"
+      ],
+      "type": "object"
+    },
+    "probe.Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "type": "string"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/probe.Event"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "faults": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "hypothesis": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "server_event": {
+          "$ref": "#/$defs/probe.Event"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "window_end": {
+          "type": "integer"
+        },
+        "window_start": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hypothesis",
+        "operation",
+        "summary",
+        "window_end",
+        "window_start"
+      ],
+      "type": "object"
+    },
+    "report.Applied": {
+      "additionalProperties": false,
+      "properties": {
+        "actual": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "errors": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "fault_id": {
+          "type": "integer"
+        },
+        "jitter": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "landed": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "latency": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "method": {
+          "type": "string"
+        },
+        "planned": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "start": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "actual",
+        "fault_id",
+        "kind",
+        "planned",
+        "start"
+      ],
+      "type": "object"
+    },
+    "report.Report": {
+      "additionalProperties": false,
+      "properties": {
+        "applied": {
+          "items": {
+            "$ref": "#/$defs/report.Applied"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "check": {
+          "$ref": "#/$defs/checker.Report"
+        },
+        "config": {},
+        "duration": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "events": {
+          "type": "integer"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/probe.Finding"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "generated_at": {
+          "type": "string"
+        },
+        "history_hash": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "nodes": {
+          "type": "integer"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "probes": {
+          "items": {
+            "$ref": "#/$defs/probe.Event"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "reproduce": {
+          "type": "string"
+        },
+        "schedule": {
+          "$ref": "#/$defs/nemesis.Schedule"
+        },
+        "schedule_hash": {
+          "type": "string"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "shrink": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/report.ShrinkInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "trace_hash": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "check",
+        "fingerprint",
+        "history_hash",
+        "kind",
+        "schedule",
+        "seed",
+        "target",
+        "tool",
+        "verdict",
+        "version"
+      ],
+      "type": "object"
+    },
+    "report.ShrinkInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "budget_exhausted": {
+          "type": "boolean"
+        },
+        "elapsed": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "minimal_clients": {
+          "type": "integer"
+        },
+        "minimal_duration": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "minimal_faults": {
+          "type": "integer"
+        },
+        "minimal_ops": {
+          "type": "integer"
+        },
+        "original_clients": {
+          "type": "integer"
+        },
+        "original_duration": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "original_faults": {
+          "type": "integer"
+        },
+        "original_ops": {
+          "type": "integer"
+        },
+        "original_schedule_hash": {
+          "type": "string"
+        },
+        "runs": {
+          "type": "integer"
+        },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "elapsed",
+        "minimal_clients",
+        "minimal_duration",
+        "minimal_faults",
+        "minimal_ops",
+        "original_clients",
+        "original_duration",
+        "original_faults",
+        "original_ops",
+        "original_schedule_hash",
+        "runs",
+        "steps"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://strife.dev/schemas/report.v1.json",
+  "$ref": "#/$defs/report.Report",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Strife report (report.json)"
+}

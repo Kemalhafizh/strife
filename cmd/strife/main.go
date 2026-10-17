@@ -53,6 +53,7 @@ Usage:
   strife plan       [flags]   print a seeded fault schedule and its shell commands
   strife run        [flags]   run a live test against a real cluster
   strife workload   [flags]   list, inspect, or compile custom Wasm workload plugins
+  strife bench inject [flags] measure fault-injection precision on a real cluster
   strife keygen     [flags]   generate an Ed25519 signing keypair for compliance audits
   strife sign       [flags]   cryptographically sign a report artifact (in-toto attestation)
   strife verify     [flags]   verify a signed compliance bundle against a public key
@@ -90,6 +91,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdRun(rest, stdout, stderr)
 	case "workload":
 		code, err = cmdWorkload(rest, stdout, stderr)
+	case "bench":
+		code, err = cmdBench(rest, stdout, stderr)
 	case "keygen":
 		code, err = cmdKeygen(rest, stdout, stderr)
 	case "sign":
@@ -537,9 +540,28 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	maxRuns := fs.Int("max-runs", 600, "simulation budget")
 	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
 	keepWorkload := fs.Bool("keep-workload", false, "only shrink the fault schedule, not duration or clients")
+	live := fs.Bool("live", false, "shrink a live run's fault schedule against the real cluster (with --config and --report)")
+	cfgPath := fs.String("config", "strife.json", "live test config (with --live)")
+	attempts := fs.Int("attempts", 3, "live runs per candidate schedule; a candidate fails if any attempt fails (with --live)")
+	verify := fs.Int("verify", 5, "re-runs of the minimal schedule to measure its reproduction rate (with --live)")
+	dry := fs.Bool("dry-run", false, "log fault commands instead of executing them (with --live)")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
+	}
+	if *live {
+		budget := 40
+		var liveDuration time.Duration
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "max-runs":
+				budget = *maxRuns
+			case "duration": // overrides the config's for every live run
+				liveDuration = f.Value.(flag.Getter).Get().(time.Duration)
+			}
+		})
+		return cmdShrinkLive(liveShrinkArgs{config: *cfgPath, report: *from, out: *out, attempts: *attempts,
+			verify: *verify, maxRuns: budget, dry: *dry, duration: liveDuration}, *ci, stdout)
 	}
 
 	if *historyPath != "" {
@@ -586,6 +608,111 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	return emitCI(*ci, exitViolation, nil, suite)
 }
 
+type liveShrinkArgs struct {
+	config, report, out       string
+	attempts, verify, maxRuns int
+	dry                       bool
+	duration                  time.Duration
+}
+
+// cmdShrinkLive delta-debugs a live run's fault schedule on the real
+// cluster. Live clusters are not deterministic, so the result is a candidate
+// reproducer with a measured reproduction rate, not a proof of minimality.
+func cmdShrinkLive(a liveShrinkArgs, ci report.Outputs, stdout io.Writer) (int, error) {
+	start := time.Now()
+	name := "shrink --live"
+	cfg, err := runner.Load(a.config)
+	if err != nil {
+		return exitUsage, err
+	}
+	name += " · " + cfg.Name
+	if a.duration > 0 {
+		cfg.Duration = runner.Duration(a.duration)
+	}
+	sched := cfg.Schedule()
+	if a.report != "" {
+		data, err := os.ReadFile(a.report)
+		if err != nil {
+			return exitUsage, err
+		}
+		var rep report.Report
+		if err := json.Unmarshal(data, &rep); err != nil {
+			return exitUsage, fmt.Errorf("%s: %w", a.report, err)
+		}
+		if rep.Kind != report.KindLive {
+			return exitUsage, fmt.Errorf("%s: --live shrinks live reports (this one is %q)", a.report, rep.Kind)
+		}
+		sched = rep.Schedule
+	}
+	if len(sched.Faults) == 0 {
+		return exitUsage, fmt.Errorf("the schedule has no faults to shrink")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	run := func(ctx context.Context, s nemesis.Schedule) (checker.Verdict, error) {
+		opts := runner.Options{Schedule: &s}
+		if a.dry {
+			opts.Transport = &transport.DryRun{}
+		}
+		res, err := runner.Run(ctx, cfg, opts)
+		if err != nil {
+			return checker.Unknown, err
+		}
+		return res.Check.Verdict, nil
+	}
+	fmt.Fprintf(stdout, "\nshrinking %d faults of %q live (%d attempts per candidate, budget %d runs)…\n",
+		len(sched.Faults), cfg.Name, a.attempts, a.maxRuns)
+	res, err := shrink.Live(ctx, sched, shrink.LiveOptions{
+		Run: run, Attempts: a.attempts, MaxRuns: a.maxRuns, Verify: a.verify,
+		Logf: func(f string, args ...any) { fmt.Fprintf(stdout, "  "+f+"\n", args...) },
+	})
+	if errors.Is(err, shrink.ErrNotReproduced) {
+		return emitCI(ci, exitUsage, err, report.ErrorSuite(name, err))
+	}
+	if err != nil {
+		return emitCI(ci, exitError, err, report.ErrorSuite(name, err))
+	}
+	fmt.Fprintf(stdout, "candidate: %d → %d faults, reproduced %d/%d (%.0f%%) in %d live runs, %.1fs\n",
+		len(res.Original.Faults), len(res.Minimal.Faults), res.Reproduced, res.Verified, 100*res.Rate(), res.Runs, res.Elapsed.Seconds())
+	for _, f := range res.Minimal.Faults {
+		fmt.Fprintf(stdout, "         %s\n", f.Describe(res.Minimal.Nodes))
+	}
+	if res.Exhausted {
+		fmt.Fprintln(stdout, "note: the run budget ran out; the schedule may shrink further with --max-runs")
+	}
+	if a.out != "" {
+		dir := filepath.Join(a.out, fmt.Sprintf("%s-live-min-%s", cfg.Name, time.Now().UTC().Format("20060102T150405Z")))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return exitError, err
+		}
+		for file, v := range map[string]any{"schedule.json": res.Minimal, "shrink.json": res} {
+			data, err := json.MarshalIndent(v, "", "  ")
+			if err != nil {
+				return exitError, err
+			}
+			if err := os.WriteFile(filepath.Join(dir, file), append(data, '\n'), 0o644); err != nil {
+				return exitError, err
+			}
+		}
+		fmt.Fprintf(stdout, "replay: strife run --config %s --schedule %s\n", a.config, filepath.Join(dir, "schedule.json"))
+	}
+	suite := report.Suite{
+		Name:      name,
+		Time:      time.Since(start),
+		Headline:  fmt.Sprintf("candidate reproducer: %d of %d faults, reproduced in %d/%d runs", len(res.Minimal.Faults), len(res.Original.Faults), res.Reproduced, res.Verified),
+		Reproduce: fmt.Sprintf("strife run --config %s --schedule schedule.json", a.config),
+	}
+	suite.Cases = append(suite.Cases, report.Case{
+		Name:    "candidate reproducer",
+		Class:   "shrink.live",
+		Time:    suite.Time,
+		Status:  report.Failed,
+		Message: suite.Headline,
+		Detail:  strings.Join(res.Steps, "\n"),
+	})
+	return emitCI(ci, exitViolation, nil, suite)
+}
+
 func cmdShrinkHistory(path, modelName, isolation, outDir string, ci report.Outputs, stdout, stderr io.Writer) (int, error) {
 	start := time.Now()
 	f, err := os.Open(path)
@@ -603,10 +730,7 @@ func cmdShrinkHistory(path, modelName, isolation, outDir string, ci report.Outpu
 	if err != nil {
 		return exitUsage, err
 	}
-	if tm, ok := m.(model.TxnModel); ok {
-		tm.Level = isolation
-		m = tm
-	}
+	m = withIsolation(m, isolation)
 
 	fmt.Fprintf(stdout, "\nshrinking history %q (%d ops, model %s)…\n", path, len(ops), modelName)
 
@@ -763,7 +887,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	probesPath := fs.String("probes", "", "optional server-side probe events file (probes.jsonl) for root-cause correlation")
 	schedPath := fs.String("schedule", "", "optional fault schedule file (schedule.json) for root-cause correlation")
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
-	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
+	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn and append): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
 	out := fs.String("out", "", "write a report directory here")
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
 	timeout := fs.Duration("check-timeout", 0, "wall-clock budget per key (0 = none)")
@@ -781,10 +905,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitUsage, err
 	}
-	if tm, ok := m.(model.TxnModel); ok {
-		tm.Level = *isolation
-		m = tm
-	}
+	m = withIsolation(m, *isolation)
 	var r io.Reader = os.Stdin
 	if *path != "-" {
 		f, err := os.Open(*path)
@@ -896,7 +1017,7 @@ func cmdPlan(args []string, stdout, stderr io.Writer) (int, error) {
 	var env nemesis.Env
 	if cfg != nil {
 		env = cfg.Env()
-		for _, c := range env.Setup() {
+		for _, c := range env.Setup(cfg.Nemesis.Faults) {
 			fmt.Fprintf(stdout, "  setup  [%s] %s\n", cfg.Nodes[c.Node].Name, c.Script)
 		}
 		fmt.Fprintln(stdout)
@@ -938,6 +1059,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	quiet := fs.Bool("quiet", false, "less progress output")
 	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the verdict matches (for CI)")
 	faults := fs.String("faults", "", "override the config's fault kinds (comma separated, \"none\" for a baseline)")
+	schedPath := fs.String("schedule", "", "replay this fault schedule (JSON, e.g. from strife shrink --live) instead of the seeded one")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -969,6 +1091,17 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	if !*quiet {
 		opts.Logf = func(format string, a ...any) { fmt.Fprintf(stdout, format+"\n", a...) }
 	}
+	if *schedPath != "" {
+		data, err := os.ReadFile(*schedPath)
+		if err != nil {
+			return exitUsage, err
+		}
+		var sched nemesis.Schedule
+		if err := json.Unmarshal(data, &sched); err != nil {
+			return exitUsage, fmt.Errorf("%s: %w", *schedPath, err)
+		}
+		opts.Schedule = &sched
+	}
 	var dryLog *transport.DryRun
 	if *dry {
 		dryLog = &transport.DryRun{}
@@ -982,9 +1115,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return emitCI(*ci, exitError, err, report.ErrorSuite("live · "+cfg.Name, err))
 	}
-	addWitnesses(model.KV{}, res.History, &res.Check)
+	addWitnesses(cfg.Model(), res.History, &res.Check)
 	res.Findings = probe.Correlate(res.History, res.Check, res.Schedule, res.Probes)
-	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg, res.Schedule, res.History, res.Check, "")
+	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg.Redacted(), res.Schedule, res.History, res.Check, "")
 	if err != nil {
 		return exitError, err
 	}
@@ -1089,8 +1222,34 @@ func cmdSign(args []string, stdout, stderr io.Writer) (int, error) {
 	keyPath := fs.String("key", "", "path to ed25519 private key (.key)")
 	outPath := fs.String("out", "", "output bundle.json path (default: <report_dir>/bundle.json)")
 	signer := fs.String("signer", "strife-auditor", "signer identity or role name")
+	release := fs.Bool("release", false, "sign the files given as arguments (release artifacts) instead of a report")
+	version := fs.String("version", report.Version, "with --release: the version being released")
+	commit := fs.String("commit", "", "with --release: the source commit")
+	builder := fs.String("builder", "", "with --release: who built the files (e.g. a CI run URL)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
+	}
+	if *release {
+		if *keyPath == "" || *outPath == "" || fs.NArg() == 0 {
+			return exitUsage, fmt.Errorf("--release needs --key, --out and the files to sign")
+		}
+		priv, err := attest.LoadPrivateKey(*keyPath)
+		if err != nil {
+			return exitError, err
+		}
+		b, err := attest.SignRelease(fs.Args(), attest.ReleasePredicate{Version: *version, Commit: *commit, Builder: *builder, Signer: *signer}, priv)
+		if err != nil {
+			return exitError, err
+		}
+		data, err := json.MarshalIndent(b, "", "  ")
+		if err != nil {
+			return exitError, err
+		}
+		if err := os.WriteFile(*outPath, append(data, '\n'), 0o644); err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "signed %d files of %s with key %s: %s\n", len(b.Statement.Subject), *version, b.Signatures[0].KeyID, *outPath)
+		return exitOK, nil
 	}
 	if *reportPath == "" || *keyPath == "" {
 		return exitUsage, fmt.Errorf("both --report and --key are required")
@@ -1120,11 +1279,33 @@ func cmdVerify(args []string, stdout, stderr io.Writer) (int, error) {
 	bundlePath := fs.String("bundle", "", "path to bundle.json")
 	keyPath := fs.String("key", "", "path to ed25519 public key (.pub)")
 	histPath := fs.String("history", "", "optional: verify that this history.jsonl matches the signed digest")
+	releaseDir := fs.String("release-dir", "", "verify a release bundle against the files in this directory")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
 	if *bundlePath == "" || *keyPath == "" {
 		return exitUsage, fmt.Errorf("both --bundle and --key are required")
+	}
+	if *releaseDir != "" {
+		data, err := os.ReadFile(*bundlePath)
+		if err != nil {
+			return exitError, err
+		}
+		var b attest.ReleaseBundle
+		if err := json.Unmarshal(data, &b); err != nil {
+			return exitError, fmt.Errorf("%s: %w", *bundlePath, err)
+		}
+		pub, err := attest.LoadPublicKey(*keyPath)
+		if err != nil {
+			return exitError, err
+		}
+		st, err := attest.VerifyRelease(&b, pub, *releaseDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "verification FAILED: %v\n", err)
+			return exitViolation, err
+		}
+		fmt.Fprintf(stdout, "VERIFICATION: SUCCESS ✅ %s (commit %s), %d files match their signed SHA-256\n", st.Predicate.Version, st.Predicate.Commit, len(st.Subject))
+		return exitOK, nil
 	}
 
 	res, err := attest.VerifyBundleFile(*bundlePath, *keyPath, *histPath)
@@ -1323,7 +1504,7 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 	fmt.Fprintf(stdout, "compliance dossier: target=%s   kind=%s   verdict=%s   overall=%s\n",
 		dossier.Summary.Target, dossier.Summary.RunKind, strings.ToUpper(string(dossier.Summary.Verdict)), strings.ToUpper(string(dossier.Overall)))
 	for _, c := range dossier.Controls {
-		fmt.Fprintf(stdout, "  [%-7s] %-8s %-24s %s\n",
+		fmt.Fprintf(stdout, "  [%-7s] %-8s %-26s %s\n",
 			strings.ToUpper(string(c.Status)), strings.ToUpper(string(c.Framework)), c.ControlID, c.Title)
 	}
 	if *out != "" {
@@ -1407,4 +1588,17 @@ func cmdWorkload(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	tw.Flush()
 	return exitOK, nil
+}
+
+// withIsolation applies --isolation to the transactional models.
+func withIsolation(m model.Model, level string) model.Model {
+	switch t := m.(type) {
+	case model.TxnModel:
+		t.Level = level
+		return t
+	case model.Append:
+		t.Level = level
+		return t
+	}
+	return m
 }

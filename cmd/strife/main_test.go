@@ -101,6 +101,38 @@ func TestLiveDryRun(t *testing.T) {
 	}
 }
 
+func TestLiveShrinkAndScheduleReplay(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := os.ReadFile("../../testdata/memory.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	short := filepath.Join(dir, "short.json")
+	if err := os.WriteFile(short, []byte(strings.Replace(string(cfg), `"10s"`, `"2s"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The in-memory store never violates: nothing to shrink.
+	code, out := runCLI(t, "shrink", "--live", "--config", short, "--dry-run", "--attempts", "1", "--out", dir)
+	if code != exitUsage || !strings.Contains(out, "did not reproduce") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	sched := filepath.Join(dir, "schedule.json")
+	if err := os.WriteFile(sched, []byte(`{"nodes":0,"faults":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCLI(t, "run", "--config", "../../testdata/memory.json", "--duration", "1s", "--dry-run", "--quiet", "--schedule", sched, "--out", dir)
+	if code != exitOK {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	logs, _ := filepath.Glob(filepath.Join(dir, "*", "commands.log"))
+	if len(logs) != 1 {
+		t.Fatalf("commands.log: %v", logs)
+	}
+	if data, _ := os.ReadFile(logs[0]); strings.Contains(string(data), "inject") {
+		t.Fatalf("an empty schedule injected faults:\n%s", data)
+	}
+}
+
 func TestShrinkCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the simulator dozens of times")

@@ -46,12 +46,24 @@ const (
 	FTxn      = "txn"
 )
 
-// MicroOp is one read or write operation inside a transaction.
+// MicroOp is one operation inside a transaction.
 type MicroOp struct {
-	F     string `json:"f"` // "r" (read) or "w" (write)
+	// F is "r" (read), "w" (write a register) or "append" (append Value to
+	// the list stored at Key).
+	F     string `json:"f"`
 	Key   string `json:"key"`
-	Value *int64 `json:"value,omitempty"` // written or read value
+	Value *int64 `json:"value,omitempty"` // written, appended or read register value
+	// Values is the list a read of a list-append key returned, filled in on
+	// the completion event (nil and empty are both the empty list).
+	Values []int64 `json:"values,omitempty"`
 }
+
+// Micro-operation functions.
+const (
+	MicroRead   = "r"
+	MicroWrite  = "w"
+	MicroAppend = "append"
+)
 
 // Op is one event in a history.
 type Op struct {
@@ -90,6 +102,10 @@ func (o Op) String() string {
 			}
 			if m.F == "w" || m.F == "write" {
 				fmt.Fprintf(&b, "w(%s, %s)", m.Key, fmtVal(m.Value))
+			} else if m.F == MicroAppend {
+				fmt.Fprintf(&b, "append(%s, %s)", m.Key, fmtVal(m.Value))
+			} else if m.Values != nil {
+				fmt.Fprintf(&b, "r(%s)→%v", m.Key, m.Values)
 			} else {
 				if m.Value != nil {
 					fmt.Fprintf(&b, "r(%s)→%s", m.Key, fmtVal(m.Value))
@@ -133,6 +149,16 @@ type Operation struct {
 	Output  Op    // the completion event (Type Info when unknown or missing)
 }
 
+// Micro returns the transaction's micro-operations with what they observed:
+// the completion's when it reports results for every micro-op (the Jepsen
+// convention), the invocation's otherwise.
+func (o Operation) Micro() []MicroOp {
+	if len(o.Output.Txn) == len(o.Input.Txn) && o.Output.Type == OK {
+		return o.Output.Txn
+	}
+	return o.Input.Txn
+}
+
 // Status is the completion type of the operation.
 func (o Operation) Status() Type { return o.Output.Type }
 
@@ -150,6 +176,8 @@ func (o Operation) Describe() string {
 		return fmt.Sprintf("p%d read %s → %s", o.Process, in.Key, fmtVal(o.Output.Value))
 	case FCas:
 		return fmt.Sprintf("p%d cas %s %s→%s (%s)", o.Process, in.Key, fmtVal(in.Old), fmtVal(in.Value), o.Output.Type)
+	case FTxn:
+		return fmt.Sprintf("%s (%s)", Op{Process: o.Process, F: FTxn, Txn: o.Micro()}.String(), o.Output.Type)
 	default:
 		k := in.Key
 		if k != "" {

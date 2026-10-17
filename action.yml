@@ -58,7 +58,43 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Download the release binary
+      id: download
+      shell: bash
+      env:
+        REF: ${{ github.action_ref }}
+        REPO: ${{ github.action_repository }}
+      run: |
+        # Pinned to a release tag: use its signed-off archive instead of
+        # compiling (saves the Go setup and build). Anything else builds.
+        ok=false
+        case "$REF" in
+        v[0-9]*)
+          os=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+          [ "$os" = macos ] && os=darwin
+          arch=$(echo "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
+          [ "$arch" = x64 ] && arch=amd64
+          name="strife_${REF}_${os}_${arch}"
+          base="https://github.com/${REPO}/releases/download/${REF}"
+          dir="$RUNNER_TEMP/strife-dl"
+          mkdir -p "$dir" "$RUNNER_TEMP/strife-bin"
+          if [ "$os" != windows ] &&
+            curl -fsSL -o "$dir/$name.tar.gz" "$base/$name.tar.gz" &&
+            curl -fsSL -o "$dir/SHA256SUMS" "$base/SHA256SUMS" &&
+            (cd "$dir" && grep " $name.tar.gz\$" SHA256SUMS | sha256sum -c -); then
+            tar -xzf "$dir/$name.tar.gz" -C "$dir"
+            mv "$dir/$name/strife" "$RUNNER_TEMP/strife-bin/strife"
+            "$RUNNER_TEMP/strife-bin/strife" version
+            ok=true
+          else
+            echo "::notice::no verified release binary for $REF on $os/$arch; building from source"
+          fi
+          ;;
+        esac
+        echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
     - name: Set up Go
+      if: steps.download.outputs.ok != 'true'
       uses: actions/setup-go@v5
       with:
         go-version: ${{ inputs.go-version }}
@@ -66,6 +102,7 @@ runs:
         cache: false
 
     - name: Build strife
+      if: steps.download.outputs.ok != 'true'
       shell: bash
       run: |
         mkdir -p "$RUNNER_TEMP/strife-bin"

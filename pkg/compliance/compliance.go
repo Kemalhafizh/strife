@@ -91,9 +91,13 @@ const (
 
 // ControlResult records the evaluation of a single technical control requirement.
 type ControlResult struct {
-	Framework   FrameworkID   `json:"framework"`
+	Framework FrameworkID `json:"framework"`
+	// ControlID is Strife's own label for the technical check, not an
+	// identifier issued by the regulator or standard body: Citation names
+	// the provision the check supports.
 	ControlID   string        `json:"control_id"`
 	Title       string        `json:"title"`
+	Citation    string        `json:"citation,omitempty"`
 	Requirement string        `json:"requirement"`
 	Status      ControlStatus `json:"status"`
 	Evidence    string        `json:"evidence"`
@@ -350,7 +354,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 		return []ControlResult{
 			evalControl(
 				FrameworkDORA,
-				"DORA-Art.24-25",
+				"dora.resilience-testing",
 				"Digital Operational Resilience Testing",
 				"ICT systems supporting critical functions must undergo resilience testing under adverse network and infrastructure disruption scenarios.",
 				isClean,
@@ -361,7 +365,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			),
 			evalControl(
 				FrameworkDORA,
-				"DORA-Art.9.4(c)",
+				"dora.data-integrity",
 				"Protection of Data Integrity Under Disruption",
 				"ICT systems must prevent data corruption, stale reads, lost updates, or split-brain divergence during network or storage failures.",
 				isClean,
@@ -372,7 +376,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			),
 			evalControl(
 				FrameworkDORA,
-				"DORA-Art.11-12",
+				"dora.recovery",
 				"Crash Recovery & Storage Durability Verification",
 				"Recovery procedures and write-ahead log / fsync durability must preserve committed data across sudden termination and I/O stalls.",
 				isClean,
@@ -387,7 +391,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 		return []ControlResult{
 			evalControl(
 				FrameworkSOC2,
-				"PI1.3-PI1.4",
+				"soc2.processing-integrity",
 				"Processing Integrity (Completeness & Accuracy)",
 				"System processing is complete, valid, accurate, and authorized without anomaly cycles or stale state transitions.",
 				isClean,
@@ -398,7 +402,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			),
 			evalControl(
 				FrameworkSOC2,
-				"A1.2",
+				"soc2.recovery",
 				"Availability & Environmental Disruption Recovery",
 				"System maintains safety invariants and recovers processing capacity during network partitions and node failures.",
 				isClean,
@@ -409,9 +413,9 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			),
 			evalControl(
 				FrameworkSOC2,
-				"CC7.2-CC7.4",
-				"Tamper-Evident Audit Evidence & Root-Cause Telemetry",
-				"Security and resilience test artifacts are cryptographically bound and attributable to an authorized verifier.",
+				"soc2.test-evidence",
+				"Signed Evidence of Control Testing",
+				"Resilience test results used in a separate evaluation of controls are tamper-evident and attributable to the party that ran them.",
 				true,
 				sum.Attested,
 				attestEvidenceString(sum),
@@ -423,7 +427,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 		return []ControlResult{
 			evalControl(
 				FrameworkISO27001,
-				"A.8.13-A.8.14",
+				"iso27001.redundancy",
 				"Information Backup & Redundancy of Processing Facilities",
 				"Redundant cluster nodes preserve committed state and quorum safety when minority nodes fail or disconnect.",
 				isClean,
@@ -434,7 +438,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			),
 			evalControl(
 				FrameworkISO27001,
-				"A.8.17",
+				"iso27001.clock-sync",
 				"Clock Synchronization & Drift Resilience",
 				"Distributed coordination and leader leases remain safe under local clock skew or wall-clock jumps.",
 				isClean,
@@ -445,7 +449,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			),
 			evalControl(
 				FrameworkISO27001,
-				"A.8.29",
+				"iso27001.security-testing",
 				"Security & Resilience Testing in Development and Acceptance",
 				"Automated, reproducible chaos and consistency verification gates are executed with deterministic seed tracking.",
 				isClean,
@@ -460,7 +464,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 		return []ControlResult{
 			evalControl(
 				FrameworkBIOJK,
-				"SEOJK-29/MRTIK-DRC",
+				"bi-ojk.pemulihan-bencana",
 				"Ketahanan Sistem & Uji Pemulihan Bencana (Failover / Split-Brain)",
 				"Sistem pemrosesan transaksi mampu bertahan terhadap gangguan jaringan (partisi/latensi) dan kegagalan node tanpa mengalami split-brain.",
 				isClean,
@@ -471,7 +475,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			),
 			evalControl(
 				FrameworkBIOJK,
-				"SEOJK-29/Integritas-Data",
+				"bi-ojk.integritas-data",
 				"Integritas & Konsistensi Data Transaksi",
 				"Tidak terdapat kehilangan transaksi yang telah diakui (lost update), pembacaan basi (stale read), maupun anomali siklus transaksi.",
 				isClean,
@@ -482,7 +486,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			),
 			evalControl(
 				FrameworkBIOJK,
-				"SEOJK-29/Jejak-Audit",
+				"bi-ojk.jejak-audit",
 				"Integritas Bukti Audit Kriptografis (Non-Repudiation)",
 				"Artefak hasil pengujian memiliki jejak audit SHA-256 dan tanda tangan kriptografis Ed25519 (in-toto v0.1) yang dapat diverifikasi ulang secara independen.",
 				true,
@@ -495,11 +499,30 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 	return nil
 }
 
+// Citations name, for each of Strife's checks, the provision it supports.
+// They point to the text an auditor should read; they do not claim that a
+// passing check satisfies the provision on its own.
+var Citations = map[string]string{
+	"dora.resilience-testing":   "Regulation (EU) 2022/2554 (DORA), Art. 24 (general requirements for digital operational resilience testing) and Art. 25 (testing of ICT tools and systems)",
+	"dora.data-integrity":       "Regulation (EU) 2022/2554 (DORA), Art. 9(3)(b)-(c) (minimise the risk of corruption or loss of data; prevent the impairment of the integrity of data)",
+	"dora.recovery":             "Regulation (EU) 2022/2554 (DORA), Art. 11 (response and recovery) and Art. 12 (backup policies and procedures, restoration and recovery procedures)",
+	"soc2.processing-integrity": "AICPA Trust Services Criteria (2017, revised points of focus 2022), PI1.3 (processing) and PI1.4 (outputs)",
+	"soc2.recovery":             "AICPA Trust Services Criteria (2017, revised points of focus 2022), A1.2 (recovery infrastructure) and A1.3 (recovery plan testing)",
+	"soc2.test-evidence":        "AICPA Trust Services Criteria (2017, revised points of focus 2022), CC4.1 (ongoing and separate evaluations of controls)",
+	"iso27001.redundancy":       "ISO/IEC 27001:2022 Annex A, 8.13 (information backup) and 8.14 (redundancy of information processing facilities)",
+	"iso27001.clock-sync":       "ISO/IEC 27001:2022 Annex A, 8.17 (clock synchronization)",
+	"iso27001.security-testing": "ISO/IEC 27001:2022 Annex A, 8.29 (security testing in development and acceptance)",
+	"bi-ojk.pemulihan-bencana":  "POJK No. 11/POJK.03/2022 tentang Penyelenggaraan Teknologi Informasi oleh Bank Umum (rencana pemulihan bencana dan pengujiannya)",
+	"bi-ojk.integritas-data":    "POJK No. 11/POJK.03/2022 (pengamanan dan integritas data) dan SEOJK No. 29/SEOJK.03/2022 tentang Ketahanan dan Keamanan Siber bagi Bank Umum",
+	"bi-ojk.jejak-audit":        "POJK No. 11/POJK.03/2022 (jejak audit atas penyelenggaraan teknologi informasi)",
+}
+
 func evalControl(fw FrameworkID, id, title, req string, safetyOK, coverageOK bool, evidence, gapHint string) ControlResult {
 	cr := ControlResult{
 		Framework:   fw,
 		ControlID:   id,
 		Title:       title,
+		Citation:    Citations[id],
 		Requirement: req,
 		Evidence:    evidence,
 	}
@@ -586,7 +609,9 @@ func buildMethodology(sum EvidenceSummary) Methodology {
 		WhatIsNotTested: notTested,
 		ExecutionLimits: limits,
 		AuditorDisclaimer: "This dossier provides automated, cryptographically verifiable technical evidence of distributed consistency and fault tolerance. " +
-			"Final regulatory compliance determination must be reviewed by a qualified compliance officer or external auditor in conjunction with organizational controls.",
+			"Final regulatory compliance determination must be reviewed by a qualified compliance officer or external auditor in conjunction with organizational controls. " +
+			"Control IDs are Strife's labels for its technical checks, not identifiers issued by any regulator or standard body; each control cites the provision it supports. " +
+			"This dossier is technical evidence, not a certification or a legal opinion.",
 	}
 }
 
@@ -617,14 +642,15 @@ func Markdown(w io.Writer, d *Dossier) error {
 	b.WriteString("\n")
 
 	b.WriteString("## 2. Regulatory Control Mapping Matrix\n\n")
-	b.WriteString("| Framework | Control ID | Title | Status | Technical Evidence & Gap Analysis |\n|---|---|---|---|---|\n")
+	b.WriteString("Control IDs are Strife's labels for its technical checks; the citation names the provision each check supports.\n\n")
+	b.WriteString("| Framework | Control ID | Title | Supports | Status | Technical Evidence & Gap Analysis |\n|---|---|---|---|---|---|\n")
 	for _, c := range d.Controls {
 		note := c.Evidence
 		if c.Gap != "" {
 			note += " **Gap:** " + c.Gap
 		}
-		fmt.Fprintf(&b, "| `%s` | **%s** | %s | %s | %s |\n",
-			strings.ToUpper(string(c.Framework)), c.ControlID, c.Title, statusBadge(c.Status), note)
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s | %s | %s |\n",
+			strings.ToUpper(string(c.Framework)), c.ControlID, c.Title, c.Citation, statusBadge(c.Status), note)
 	}
 	b.WriteString("\n")
 

@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "history.MicroOp": {
+      "additionalProperties": false,
+      "properties": {
+        "f": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "value": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "values": {
+          "items": {
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "f",
+        "key"
+      ],
+      "type": "object"
+    },
+    "history.Op": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "f": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "old": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "process": {
+          "type": "integer"
+        },
+        "time": {
+          "type": "integer"
+        },
+        "txn": {
+          "items": {
+            "$ref": "#/$defs/history.MicroOp"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string"
+        },
+        "value": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "values": {
+          "items": {
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "f",
+        "index",
+        "process",
+        "time",
+        "type"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://strife.dev/schemas/history.v1.json",
+  "$ref": "#/$defs/history.Op",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "One line of a Strife history (history.jsonl)"
+}

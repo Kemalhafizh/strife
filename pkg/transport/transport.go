@@ -1,5 +1,6 @@
 // Package transport executes nemesis commands on real nodes: inside docker
-// containers, over SSH, or nowhere at all (dry run).
+// containers or Kubernetes pods, over SSH, through strife-agent, or nowhere
+// at all (dry run).
 package transport
 
 import (
@@ -10,14 +11,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/kemalhafizh/strife/internal/secret"
 )
 
 // Node is a machine or container under test.
 type Node struct {
 	Name      string `json:"name"`
 	Host      string `json:"host,omitempty"`       // SSH address; defaults to IP
-	IP        string `json:"ip"`                   // address peers use to reach this node
-	Container string `json:"container,omitempty"`  // docker container name
+	IP        string `json:"ip"`                   // address peers use to reach this node; "auto" with kubernetes
+	Container string `json:"container,omitempty"`  // docker container name, or the container within the pod
+	Pod       string `json:"pod,omitempty"`        // kubernetes pod, "name" or "namespace/name"
 	Cgroup    string `json:"cgroup,omitempty"`     // cgroup v2 dir of the db process (on the host)
 	AgentAddr string `json:"agent_addr,omitempty"` // strife-agent address (host:port or socket path)
 }
@@ -34,14 +38,19 @@ type Transport interface {
 
 // Config selects and configures a transport.
 type Config struct {
-	Type      string `json:"type"` // docker | ssh | agent | dry-run
-	Docker    string `json:"docker,omitempty"`
-	User      string `json:"user,omitempty"`
-	Port      int    `json:"port,omitempty"`
-	Key       string `json:"key,omitempty"`
-	Sudo      bool   `json:"sudo,omitempty"`
-	AgentPort int    `json:"agent_port,omitempty"` // strife-agent port, default 9292
-	Token     string `json:"token,omitempty"`      // strife-agent authorization token
+	Type   string `json:"type"` // docker | ssh | agent | kubernetes | dry-run
+	Docker string `json:"docker,omitempty"`
+	// Kubernetes: the kubectl binary, namespace, context and kubeconfig.
+	Kubectl    string `json:"kubectl,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
+	Context    string `json:"context,omitempty"`
+	Kubeconfig string `json:"kubeconfig,omitempty"`
+	User       string `json:"user,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	Key        string `json:"key,omitempty"`
+	Sudo       bool   `json:"sudo,omitempty"`       // ssh: remote sudo; docker: sudo for host commands (cgroup faults)
+	AgentPort  int    `json:"agent_port,omitempty"` // strife-agent port, default 9292
+	Token      string `json:"token,omitempty"`      // strife-agent token; "env:NAME" or "file:PATH" keeps it out of the config
 }
 
 // New builds the configured transport.
@@ -52,15 +61,26 @@ func New(c Config) (Transport, error) {
 		if bin == "" {
 			bin = "docker"
 		}
-		return &Docker{Binary: bin}, nil
+		return &Docker{Binary: bin, Sudo: c.Sudo}, nil
+	case "kubernetes", "k8s":
+		bin := c.Kubectl
+		if bin == "" {
+			bin = "kubectl"
+		}
+		return &Kubernetes{Binary: bin, Namespace: c.Namespace, Context: c.Context, Kubeconfig: c.Kubeconfig}, nil
 	case "ssh":
 		return &SSH{User: c.User, Port: c.Port, Key: c.Key, Sudo: c.Sudo}, nil
 	case "agent":
+		token, err := secret.Resolve(c.Token)
+		if err != nil {
+			return nil, fmt.Errorf("transport.token: %w", err)
+		}
+		c.Token = token
 		return NewAgent(c), nil
 	case "dry-run", "dryrun", "":
 		return &DryRun{}, nil
 	}
-	return nil, fmt.Errorf("transport: unknown type %q (docker, ssh, agent, dry-run)", c.Type)
+	return nil, fmt.Errorf("transport: unknown type %q (docker, ssh, agent, kubernetes, dry-run)", c.Type)
 }
 
 // Quote single-quotes s for a POSIX shell.
@@ -80,8 +100,12 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 }
 
 // Docker runs scripts with `docker exec` and host scripts locally, so Strife
-// must run on the docker host (as root for cgroup faults).
-type Docker struct{ Binary string }
+// must run on the docker host. Host scripts (the cgroup faults) need root:
+// run Strife as root or set Sudo to wrap them in `sudo -n`.
+type Docker struct {
+	Binary string
+	Sudo   bool
+}
 
 // Name implements Transport.
 func (d *Docker) Name() string { return "docker" }
@@ -96,7 +120,42 @@ func (d *Docker) Exec(ctx context.Context, n Node, script string) (string, error
 
 // HostExec implements Transport.
 func (d *Docker) HostExec(ctx context.Context, n Node, script string) (string, error) {
+	if d.Sudo {
+		return run(ctx, "sudo", "-n", "sh", "-c", script)
+	}
 	return run(ctx, "sh", "-c", script)
+}
+
+// ResolveCgroup implements HostResolver: the cgroup of the container's init
+// process, which with Docker's default settings holds every process of the
+// container.
+func (d *Docker) ResolveCgroup(ctx context.Context, n Node) (string, error) {
+	if n.Container == "" {
+		return "", fmt.Errorf("docker transport: node %s has no container", n.Name)
+	}
+	out, err := run(ctx, d.Binary, "inspect", "-f", "{{.State.Pid}}", n.Container)
+	if err != nil {
+		return "", err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || pid <= 0 {
+		return "", fmt.Errorf("docker transport: container %s is not running (pid %q)", n.Container, out)
+	}
+	return cgroupOfPID("/proc", "/sys/fs/cgroup", pid)
+}
+
+// ResolveIODevice implements HostResolver: the disk under Docker's data
+// root, where container filesystems and volumes live.
+func (d *Docker) ResolveIODevice(ctx context.Context) (string, error) {
+	root, err := run(ctx, d.Binary, "info", "-f", "{{.DockerRootDir}}")
+	if err != nil {
+		return "", err
+	}
+	dev, err := deviceOf(strings.TrimSpace(root))
+	if err != nil {
+		return "", err
+	}
+	return wholeDisk("/sys", dev)
 }
 
 // SSH runs scripts through the system ssh client, so keys, agents, jump

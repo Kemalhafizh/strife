@@ -1,406 +1,284 @@
 package client
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1" //nolint:gosec
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
 	"io"
 	"net"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/history"
 )
 
-// mockMySQLServer implements a minimal in-memory MySQL v10 wire protocol server.
-type mockMySQLServer struct {
-	listener     net.Listener
-	addr         string
-	store        map[string]int64
-	mu           sync.Mutex
-	failDeadlock bool
+// myFake is a MySQL server for tests. auth is "native", "sha2-fast" or
+// "sha2-full" (password "secret"); answer returns the result packets for a
+// query (each element one packet payload), or nil to drop the connection.
+type myFake struct {
+	auth   string
+	answer func(q string) [][]byte
+	key    *rsa.PrivateKey
 }
 
-func startMockMySQL(t *testing.T) *mockMySQLServer {
+func startMyFake(t *testing.T, f *myFake) string {
 	t.Helper()
+	if f.auth == "sha2-full" {
+		k, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.key = k
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("failed to start mock MySQL listener: %v", err)
+		t.Fatal(err)
 	}
-	s := &mockMySQLServer{
-		listener: ln,
-		addr:     ln.Addr().String(),
-		store:    make(map[string]int64),
-	}
-	go s.serve()
-	return s
-}
-
-func (s *mockMySQLServer) close() {
-	_ = s.listener.Close()
-}
-
-func (s *mockMySQLServer) serve() {
-	for {
-		conn, err := s.listener.Accept()
-		if err != nil {
-			return
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go f.serve(c)
 		}
-		go s.handleConn(conn)
-	}
+	}()
+	return ln.Addr().String()
 }
 
-func writePkt(w io.Writer, seq uint8, data []byte) error {
-	length := len(data)
-	hdr := [4]byte{
-		byte(length),
-		byte(length >> 8),
-		byte(length >> 16),
-		seq,
-	}
-	if _, err := w.Write(hdr[:]); err != nil {
-		return err
-	}
-	_, err := w.Write(data)
-	return err
+type myConn struct {
+	c   net.Conn
+	rd  *bufio.Reader
+	seq byte
 }
 
-func readPkt(r io.Reader) (uint8, []byte, error) {
-	var hdr [4]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return 0, nil, err
-	}
-	length := int(hdr[0]) | int(hdr[1])<<8 | int(hdr[2])<<16
-	seq := hdr[3]
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return 0, nil, err
-	}
-	return seq, payload, nil
+func (m *myConn) write(p []byte) {
+	_, _ = m.c.Write(append([]byte{byte(len(p)), byte(len(p) >> 8), byte(len(p) >> 16), m.seq}, p...))
+	m.seq++
 }
 
-func (s *mockMySQLServer) handleConn(conn net.Conn) {
-	defer conn.Close()
-
-	// 1. Send Handshake v10 packet
-	var hs []byte
-	hs = append(hs, 10) // Protocol v10
-	hs = append(hs, []byte("5.7.25-TiDB-v7.1.0\x00")...)
-	hs = binary.LittleEndian.AppendUint32(hs, 1) // connection id
-	salt := []byte("01234567890123456789")
-	hs = append(hs, salt[:8]...)
-	hs = append(hs, 0)                                // filler
-	hs = binary.LittleEndian.AppendUint16(hs, 0xffff) // capabilities 1
-	hs = append(hs, 45)                               // charset
-	hs = binary.LittleEndian.AppendUint16(hs, 0x0002) // status
-	hs = binary.LittleEndian.AppendUint16(hs, 0xffff) // capabilities 2
-	hs = append(hs, 21)                               // auth plugin data len
-	hs = append(hs, make([]byte, 10)...)              // reserved
-	hs = append(hs, salt[8:20]...)
-	hs = append(hs, []byte("mysql_native_password\x00")...)
-
-	if err := writePkt(conn, 0, hs); err != nil {
-		return
+func (m *myConn) read() []byte {
+	var h [4]byte
+	if _, err := io.ReadFull(m.rd, h[:]); err != nil {
+		return nil
 	}
-
-	// 2. Read Handshake Response 4.1
-	seq, _, err := readPkt(conn)
-	if err != nil {
-		return
+	m.seq = h[3] + 1
+	p := make([]byte, int(h[0])|int(h[1])<<8|int(h[2])<<16)
+	if _, err := io.ReadFull(m.rd, p); err != nil {
+		return nil
 	}
+	return p
+}
 
-	// 3. Send Auth OK Packet
-	okPkt := []byte{0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}
-	if err := writePkt(conn, seq+1, okPkt); err != nil {
-		return
-	}
+var myNonce = []byte("0123456789abcdefghij")
 
-	// 4. Command loop
-	for {
-		_, cmdPkt, err := readPkt(conn)
-		if err != nil {
-			return
-		}
-		if len(cmdPkt) == 0 {
+func myOK(status uint16) []byte {
+	return binary.LittleEndian.AppendUint16([]byte{0, 1, 0}, status)
+}
+
+func myErr(code uint16, state, msg string) []byte {
+	return append(append(binary.LittleEndian.AppendUint16([]byte{0xff}, code), '#'), state+msg...)
+}
+
+// myRows is a one-column result set; vals nil means NULL.
+func myRows(status uint16, vals ...*string) [][]byte {
+	out := [][]byte{{1}, []byte("coldef"), {0xfe, 0, 0, 2, 0}}
+	for _, v := range vals {
+		if v == nil {
+			out = append(out, []byte{0xfb})
 			continue
 		}
-		cmd := cmdPkt[0]
-		if cmd == 0x01 { // COM_QUIT
+		out = append(out, append([]byte{byte(len(*v))}, *v...))
+	}
+	return append(out, binary.LittleEndian.AppendUint16([]byte{0xfe, 0, 0}, status))
+}
+
+func (f *myFake) serve(c net.Conn) {
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+	m := &myConn{c: c, rd: bufio.NewReader(c)}
+	plugin := "mysql_native_password"
+	if f.auth != "native" {
+		plugin = "caching_sha2_password"
+	}
+	hs := []byte{10}
+	hs = append(hs, "8.4.0\x00"...)
+	hs = append(hs, 1, 0, 0, 0)
+	hs = append(hs, myNonce[:8]...)
+	hs = append(hs, 0, 0xff, 0xf7, 45, 2, 0, 0xff, 0x81, 21)
+	hs = append(hs, make([]byte, 10)...)
+	hs = append(hs, myNonce[8:]...)
+	hs = append(hs, 0)
+	hs = append(append(hs, plugin...), 0)
+	m.write(hs)
+	resp := m.read()
+	if len(resp) < 32 {
+		return
+	}
+	rest := resp[32:]
+	user := rest[:bytes.IndexByte(rest, 0)]
+	rest = rest[len(user)+1:]
+	auth := rest[1 : 1+int(rest[0])]
+	_ = user
+	switch f.auth {
+	case "native":
+		if !bytes.Equal(auth, nativePassword("secret", myNonce)) {
+			m.write(myErr(1045, "28000", "Access denied"))
 			return
 		}
-		if cmd != 0x03 { // COM_QUERY
-			continue
+	case "sha2-fast":
+		if !bytes.Equal(auth, cachingSHA2Password("secret", myNonce)) {
+			m.write(myErr(1045, "28000", "Access denied"))
+			return
 		}
-
-		sql := string(cmdPkt[1:])
-		s.handleQuery(conn, sql)
-	}
-}
-
-func (s *mockMySQLServer) handleQuery(conn net.Conn, sql string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.failDeadlock && strings.HasPrefix(sql, "INSERT") {
-		// Send Deadlock Error Packet (1213, SQLSTATE 40001)
-		var errPkt []byte
-		errPkt = append(errPkt, 0xff)
-		errPkt = binary.LittleEndian.AppendUint16(errPkt, 1213)
-		errPkt = append(errPkt, '#')
-		errPkt = append(errPkt, []byte("40001")...)
-		errPkt = append(errPkt, []byte("Deadlock found when trying to get lock; try restarting transaction")...)
-		_ = writePkt(conn, 1, errPkt)
-		return
-	}
-
-	// DDL / Transaction control commands
-	if strings.HasPrefix(sql, "CREATE TABLE") || strings.HasPrefix(sql, "START TRANSACTION") ||
-		strings.HasPrefix(sql, "COMMIT") || strings.HasPrefix(sql, "ROLLBACK") {
-		okPkt := []byte{0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}
-		_ = writePkt(conn, 1, okPkt)
-		return
-	}
-
-	// Read: SELECT v FROM ... WHERE k = 'x'
-	if strings.HasPrefix(sql, "SELECT v FROM") {
-		key := extractKey(sql)
-		val, exists := s.store[key]
-
-		// 1. Column Count Packet
-		_ = writePkt(conn, 1, []byte{0x01})
-
-		// 2. Column Def Packet
-		colDef := makeColumnDef("v")
-		_ = writePkt(conn, 2, colDef)
-
-		// 3. Column EOF Packet
-		eofPkt := []byte{0xfe, 0x00, 0x00, 0x02, 0x00}
-		_ = writePkt(conn, 3, eofPkt)
-
-		if exists {
-			// Row Packet
-			valStr := []byte(strings.TrimSpace(string([]byte{byte('0' + val)})))
-			if val >= 10 {
-				valStr = []byte(strings.TrimSpace(string([]byte{byte('0' + val/10), byte('0' + val%10)})))
-			}
-			rowPkt := append([]byte{byte(len(valStr))}, valStr...)
-			_ = writePkt(conn, 4, rowPkt)
+		m.write([]byte{1, 3})
+	case "sha2-full":
+		m.write([]byte{1, 4})
+		if req := m.read(); len(req) != 1 || req[0] != 2 {
+			return
 		}
-
-		// 4. Final EOF Packet
-		_ = writePkt(conn, 5, eofPkt)
-		return
-	}
-
-	// Write: INSERT INTO ... ON DUPLICATE KEY UPDATE
-	if strings.HasPrefix(sql, "INSERT INTO") {
-		key := extractKey(sql)
-		val := extractVal(sql)
-		s.store[key] = val
-
-		// OK packet with affectedRows = 1
-		okPkt := []byte{0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00}
-		_ = writePkt(conn, 1, okPkt)
-		return
-	}
-
-	// CAS: UPDATE ... SET v = new WHERE k = 'x' AND v = old
-	if strings.HasPrefix(sql, "UPDATE") {
-		key := extractKey(sql)
-		newVal := extractVal(sql)
-		oldVal := extractOldVal(sql)
-
-		curVal, exists := s.store[key]
-		affected := byte(0)
-		if exists && curVal == oldVal {
-			s.store[key] = newVal
-			affected = 1
+		der, _ := x509.MarshalPKIXPublicKey(&f.key.PublicKey)
+		m.write(append([]byte{1}, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})...))
+		enc := m.read()
+		plain, err := rsa.DecryptOAEP(sha1.New(), rand.Reader, f.key, enc, nil) //nolint:gosec
+		if err != nil {
+			m.write(myErr(1045, "28000", "Access denied"))
+			return
 		}
-
-		okPkt := []byte{0x00, affected, 0x00, 0x02, 0x00, 0x00, 0x00}
-		_ = writePkt(conn, 1, okPkt)
-		return
-	}
-
-	// Default OK
-	_ = writePkt(conn, 1, []byte{0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00})
-}
-
-func makeColumnDef(name string) []byte {
-	var b []byte
-	b = append(b, []byte("\x03def\x00\x00\x00")...)
-	b = append(b, byte(len(name)))
-	b = append(b, []byte(name)...)
-	b = append(b, byte(len(name)))
-	b = append(b, []byte(name)...)
-	b = append(b, 0x0c, 0x3f, 0x00)                 // len, charset
-	b = binary.LittleEndian.AppendUint32(b, 20)     // column length
-	b = append(b, 0x08)                             // type LONGLONG
-	b = binary.LittleEndian.AppendUint16(b, 0x0000) // flags
-	b = append(b, 0x00, 0x00, 0x00)                 // decimals, filler
-	return b
-}
-
-func extractKey(sql string) string {
-	parts := strings.Split(sql, "'")
-	if len(parts) >= 2 {
-		return parts[1]
-	}
-	return "x"
-}
-
-func extractVal(sql string) int64 {
-	idx := strings.Index(sql, "VALUES")
-	if idx != -1 {
-		sub := sql[idx:]
-		p := strings.Split(sub, ",")
-		if len(p) >= 2 {
-			cleaned := strings.Trim(strings.TrimSpace(p[1]), "() ;")
-			if len(cleaned) > 0 && cleaned[0] >= '0' && cleaned[0] <= '9' {
-				return int64(cleaned[0] - '0')
-			}
+		for i := range plain {
+			plain[i] ^= myNonce[i%len(myNonce)]
+		}
+		if string(plain) != "secret\x00" {
+			m.write(myErr(1045, "28000", "Access denied"))
+			return
 		}
 	}
-	idx = strings.Index(sql, "SET v = ")
-	if idx != -1 {
-		sub := sql[idx+8:]
-		p := strings.Split(sub, " ")
-		if len(p) > 0 && len(p[0]) > 0 && p[0][0] >= '0' && p[0][0] <= '9' {
-			return int64(p[0][0] - '0')
+	m.write(myOK(2))
+	for {
+		p := m.read()
+		if len(p) == 0 || p[0] != 0x03 {
+			return
+		}
+		q := string(p[1:])
+		var pkts [][]byte
+		switch {
+		case strings.HasPrefix(q, "CREATE TABLE"):
+			pkts = [][]byte{myOK(2 | moreResults), myOK(2)}
+		case q == "ROLLBACK":
+			pkts = [][]byte{myOK(2)}
+		default:
+			pkts = f.answer(q)
+		}
+		if pkts == nil {
+			return
+		}
+		for _, pk := range pkts {
+			m.write(pk)
 		}
 	}
-	return 0
 }
 
-func extractOldVal(sql string) int64 {
-	idx := strings.Index(sql, "AND v = ")
-	if idx != -1 {
-		sub := sql[idx+8:]
-		p := strings.Split(sub, ";")
-		cleaned := strings.TrimSpace(p[0])
-		if len(cleaned) > 0 && cleaned[0] >= '0' && cleaned[0] <= '9' {
-			return int64(cleaned[0] - '0')
+func str(s string) *string { return &s }
+
+func myClient(addr string) *MySQL {
+	return NewMySQL(addr, "t/", ConnOptions{User: "root", Password: "secret"})
+}
+
+func TestMySQLAuthentication(t *testing.T) {
+	read := func(string) [][]byte { return myRows(2, str("42")) }
+	for _, auth := range []string{"native", "sha2-fast", "sha2-full"} {
+		m := myClient(startMyFake(t, &myFake{auth: auth, answer: read}))
+		out := m.Invoke(context.Background(), history.Op{F: history.FRead, Key: "k"})
+		if out.Type != history.OK || out.Value == nil || *out.Value != 42 {
+			t.Fatalf("%s: %+v", auth, out)
+		}
+		m.Close()
+	}
+	m := NewMySQL(startMyFake(t, &myFake{auth: "sha2-fast", answer: read}), "t/", ConnOptions{Password: "wrong"})
+	defer m.Close()
+	if out := m.Invoke(context.Background(), history.Op{F: history.FWrite, Key: "k", Value: history.Int(1)}); out.Type != history.Fail {
+		t.Fatalf("access denied must be fail: %+v", out)
+	}
+}
+
+func TestCachingSHA2Scramble(t *testing.T) {
+	// Recompute from the definition: the server checks
+	// SHA256(XOR(scramble, SHA256(SHA256(SHA256(p)), nonce))) == SHA256(SHA256(p)).
+	s := cachingSHA2Password("secret", myNonce)
+	h1 := sha256.Sum256([]byte("secret"))
+	h2 := sha256.Sum256(h1[:])
+	h := sha256.Sum256(append(h2[:], myNonce...))
+	for i := range s {
+		s[i] ^= h[i]
+	}
+	if got := sha256.Sum256(s); got != h2 {
+		t.Fatal("caching_sha2 scramble does not verify")
+	}
+}
+
+func TestMySQLAppendTransaction(t *testing.T) {
+	var got string
+	m := myClient(startMyFake(t, &myFake{auth: "native", answer: func(q string) [][]byte {
+		got = q
+		more := uint16(2 | moreResults)
+		var p [][]byte
+		p = append(p, myOK(more), myOK(more))      // SET, START
+		p = append(p, myRows(more)...)             // read k1: no row
+		p = append(p, myOK(more))                  // append
+		p = append(p, myRows(more, str("3,5"))...) // read k2
+		return append(p, myOK(2))                  // COMMIT
+	}}))
+	m.opt.Isolation = "READ COMMITTED"
+	defer m.Close()
+	op := history.Op{F: history.FTxn, Txn: []history.MicroOp{
+		{F: history.MicroRead, Key: "k1"}, {F: history.MicroAppend, Key: "k1", Value: history.Int(9)}, {F: history.MicroRead, Key: "k2"},
+	}}
+	out := m.Invoke(context.Background(), op)
+	if out.Type != history.OK || len(out.Txn[0].Values) != 0 || out.Txn[0].Values == nil || len(out.Txn[2].Values) != 2 {
+		t.Fatalf("%+v %+v", out, out.Txn)
+	}
+	for _, want := range []string{"SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION;", "CONCAT(v, ',', VALUES(v))", "; COMMIT"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("query lacks %q: %s", want, got)
 		}
 	}
-	return 0
 }
 
-func TestMySQLClientReadWrite(t *testing.T) {
-	srv := startMockMySQL(t)
-	defer srv.close()
-
-	cli := NewMySQL(srv.addr, "test/")
-	defer cli.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	// 1. Initial Read on empty key should return nil
-	r1 := cli.Invoke(ctx, history.Op{
-		Process: 0,
-		Type:    history.Invoke,
-		F:       history.FRead,
-		Key:     "k0",
-	})
-	if r1.Type != history.OK || r1.Value != nil {
-		t.Fatalf("expected OK with nil value on initial read, got %+v", r1)
+func TestMySQLClassification(t *testing.T) {
+	more := uint16(2 | moreResults)
+	appendTxn := history.Op{F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "k", Value: history.Int(1)}}}
+	write := history.Op{F: history.FWrite, Key: "k", Value: history.Int(1)}
+	cases := []struct {
+		name string
+		pkts [][]byte
+		op   history.Op
+		want history.Type
+	}{
+		{"deadlock before commit", [][]byte{myOK(more), myOK(more), myErr(1213, "40001", "Deadlock")}, appendTxn, history.Fail},
+		{"unknown error before commit", [][]byte{myOK(more), myOK(more), myErr(1105, "HY000", "unknown")}, appendTxn, history.Fail},
+		{"server shutdown at commit", [][]byte{myOK(more), myOK(more), myOK(more), myErr(1053, "08S01", "shutdown")}, appendTxn, history.Info},
+		{"tidb write conflict at commit", [][]byte{myOK(more), myOK(more), myOK(more), myErr(9007, "HY000", "Write conflict")}, appendTxn, history.Fail},
+		{"connection dropped", nil, appendTxn, history.Info},
+		{"read only server", [][]byte{myErr(1290, "HY000", "--read-only")}, write, history.Fail},
+		{"query killed", [][]byte{myErr(1317, "70100", "interrupted")}, write, history.Info},
 	}
-
-	// 2. Write value 3
-	w1 := cli.Invoke(ctx, history.Op{
-		Process: 0,
-		Type:    history.Invoke,
-		F:       history.FWrite,
-		Key:     "k0",
-		Value:   history.Int(3),
-	})
-	if w1.Type != history.OK {
-		t.Fatalf("expected write to succeed, got %+v", w1)
-	}
-
-	// 3. Read back written value
-	r2 := cli.Invoke(ctx, history.Op{
-		Process: 1,
-		Type:    history.Invoke,
-		F:       history.FRead,
-		Key:     "k0",
-	})
-	if r2.Type != history.OK || r2.Value == nil || *r2.Value != 3 {
-		t.Fatalf("expected OK with value 3, got %+v", r2)
-	}
-}
-
-func TestMySQLClientCAS(t *testing.T) {
-	srv := startMockMySQL(t)
-	defer srv.close()
-
-	cli := NewMySQL(srv.addr, "test_cas/")
-	defer cli.Close()
-
-	ctx := context.Background()
-
-	// Initial write 5
-	_ = cli.Invoke(ctx, history.Op{
-		Process: 0,
-		Type:    history.Invoke,
-		F:       history.FWrite,
-		Key:     "k1",
-		Value:   history.Int(5),
-	})
-
-	// CAS with wrong old value (expected 5, supplied 4) -> Fail
-	casFail := cli.Invoke(ctx, history.Op{
-		Process: 0,
-		Type:    history.Invoke,
-		F:       history.FCas,
-		Key:     "k1",
-		Old:     history.Int(4),
-		Value:   history.Int(6),
-	})
-	if casFail.Type != history.Fail {
-		t.Fatalf("expected CAS mismatch to fail, got %+v", casFail)
-	}
-
-	// CAS with matching old value (5 -> 6) -> OK
-	casOk := cli.Invoke(ctx, history.Op{
-		Process: 0,
-		Type:    history.Invoke,
-		F:       history.FCas,
-		Key:     "k1",
-		Old:     history.Int(5),
-		Value:   history.Int(6),
-	})
-	if casOk.Type != history.OK || casOk.Value == nil || *casOk.Value != 6 {
-		t.Fatalf("expected CAS success with value 6, got %+v", casOk)
-	}
-}
-
-func TestMySQLDeadlockErrorClassification(t *testing.T) {
-	srv := startMockMySQL(t)
-	defer srv.close()
-
-	srv.mu.Lock()
-	srv.failDeadlock = true
-	srv.mu.Unlock()
-
-	cli := NewMySQL(srv.addr, "test_deadlock/")
-	defer cli.Close()
-
-	ctx := context.Background()
-	res := cli.Invoke(ctx, history.Op{
-		Process: 0,
-		Type:    history.Invoke,
-		F:       history.FWrite,
-		Key:     "k2",
-		Value:   history.Int(10),
-	})
-
-	// Deadlock must be classified as definite Fail (rolled back by database), not Info
-	if res.Type != history.Fail {
-		t.Fatalf("expected deadlock error to be classified as Fail, got %v", res.Type)
-	}
-	if !strings.Contains(res.Error, "Deadlock") {
-		t.Fatalf("expected deadlock error message, got: %s", res.Error)
+	for _, c := range cases {
+		pkts := c.pkts
+		m := myClient(startMyFake(t, &myFake{auth: "native", answer: func(string) [][]byte { return pkts }}))
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if out := m.Invoke(ctx, c.op); out.Type != c.want {
+			t.Errorf("%s: got %s (%s), want %s", c.name, out.Type, out.Error, c.want)
+		}
+		cancel()
+		m.Close()
 	}
 }

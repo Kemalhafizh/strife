@@ -2,7 +2,9 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,7 @@ import (
 type Redis struct {
 	addr   string
 	prefix string
+	opt    ConnOptions
 	conn   net.Conn
 	rd     *bufio.Reader
 }
@@ -37,6 +40,12 @@ return 0`
 
 // NewRedis returns a client for one server, e.g. "10.0.0.1:6379".
 func NewRedis(addr, prefix string) *Redis { return &Redis{addr: addr, prefix: prefix} }
+
+// NewRedisWith returns a client that authenticates (AUTH [user] password)
+// and optionally encrypts the connection.
+func NewRedisWith(addr, prefix string, opt ConnOptions) *Redis {
+	return &Redis{addr: addr, prefix: prefix, opt: opt}
+}
 
 // Close implements Client.
 func (r *Redis) Close() error {
@@ -70,7 +79,31 @@ func (r *Redis) dial(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	tcfg, err := r.opt.tlsConfig(r.addr)
+	if err != nil {
+		_ = c.Close()
+		return err
+	}
+	if tcfg != nil {
+		tc := tls.Client(c, tcfg)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			_ = c.Close()
+			return fmt.Errorf("redis: TLS: %w", err)
+		}
+		c = tc
+	}
 	r.conn, r.rd = c, bufio.NewReader(c)
+	if r.opt.Password != "" {
+		args := []string{"AUTH", r.opt.Password}
+		if r.opt.User != "" {
+			args = []string{"AUTH", r.opt.User, r.opt.Password}
+		}
+		if _, err := r.do(ctx, args...); err != nil {
+			r.Close()
+			// AUTH changes nothing: whatever failed, no operation ran.
+			return fmt.Errorf("redis: AUTH: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -108,7 +141,27 @@ func (r *Redis) do(ctx context.Context, args ...string) (any, error) {
 
 // readReply parses one RESP2 value: string, error, integer, bulk (nil-able)
 // or array.
-func readReply(rd *bufio.Reader) (any, error) {
+func readReply(rd *bufio.Reader) (any, error) { return readReplyDepth(rd, 0) }
+
+// readN reads exactly n bytes, allocating as data arrives rather than
+// trusting a length announced by the server.
+func readN(r io.Reader, n int) ([]byte, error) {
+	if n <= 64<<10 {
+		buf := make([]byte, n)
+		_, err := io.ReadFull(r, buf)
+		return buf, err
+	}
+	var b bytes.Buffer
+	if _, err := io.CopyN(&b, r, int64(n)); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+func readReplyDepth(rd *bufio.Reader, depth int) (any, error) {
 	line, err := rd.ReadString('\n')
 	if err != nil {
 		return nil, err
@@ -136,8 +189,8 @@ func readReply(rd *bufio.Reader) (any, error) {
 		if n == -1 {
 			return nil, nil
 		}
-		buf := make([]byte, n+2)
-		if _, err := io.ReadFull(rd, buf); err != nil {
+		buf, err := readN(rd, n+2)
+		if err != nil {
 			return nil, err
 		}
 		return string(buf[:n]), nil
@@ -149,11 +202,16 @@ func readReply(rd *bufio.Reader) (any, error) {
 		if n == -1 {
 			return nil, nil
 		}
-		out := make([]any, n)
-		for i := range out {
-			if out[i], err = readReply(rd); err != nil {
+		if depth >= 16 {
+			return nil, fmt.Errorf("redis: replies nested deeper than 16")
+		}
+		out := make([]any, 0, min(n, 1024)) // grows with what actually arrives
+		for i := 0; i < n; i++ {
+			v, err := readReplyDepth(rd, depth+1)
+			if err != nil {
 				return nil, err
 			}
+			out = append(out, v)
 		}
 		return out, nil
 	}
@@ -170,7 +228,7 @@ func (r *Redis) Invoke(ctx context.Context, op history.Op) history.Op {
 	var re *redisError
 	var se *sentError
 	switch {
-	case op.F == history.FRead:
+	case readOnly(op):
 		t = history.Fail // reads have no effect
 	case errors.As(err, &re):
 		t = history.Fail // e.g. READONLY on a replica: rejected, not executed
@@ -224,6 +282,67 @@ func (r *Redis) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 			return complete(op, history.Fail), nil
 		}
 		return history.Op{}, &sentError{fmt.Errorf("redis: cas script replied %v", v)}
+	case history.FTxn:
+		return r.txn(ctx, op)
 	}
 	return history.Op{}, &redisError{"unsupported op " + op.F}
+}
+
+// appendScript runs a list-append transaction atomically: KEYS[i] with
+// ARGV[2i-1] = "a" (RPUSH ARGV[2i]) or "r" (LRANGE), returning the reads.
+const appendScript = `local out = {}
+for i = 1, #KEYS do
+  if ARGV[2*i-1] == 'a' then
+    redis.call('RPUSH', KEYS[i], ARGV[2*i])
+  else
+    out[#out+1] = redis.call('LRANGE', KEYS[i], 0, -1)
+  end
+end
+return out`
+
+func (r *Redis) txn(ctx context.Context, op history.Op) (history.Op, error) {
+	args := []string{"EVAL", appendScript, strconv.Itoa(len(op.Txn))}
+	var argv []string
+	for _, m := range op.Txn {
+		args = append(args, r.prefix+m.Key)
+		switch m.F {
+		case history.MicroAppend:
+			argv = append(argv, "a", strconv.FormatInt(*m.Value, 10))
+		case history.MicroRead:
+			argv = append(argv, "r", "")
+		default:
+			return history.Op{}, &redisError{"unsupported micro-op " + m.F}
+		}
+	}
+	v, err := r.do(ctx, append(args, argv...)...)
+	if err != nil {
+		return history.Op{}, err
+	}
+	reads, ok := v.([]any)
+	if !ok {
+		return history.Op{}, &sentError{fmt.Errorf("redis: append script replied %T", v)}
+	}
+	out := complete(op, history.OK)
+	j := 0
+	for i, m := range op.Txn {
+		if m.F != history.MicroRead {
+			continue
+		}
+		if j >= len(reads) {
+			return history.Op{}, &sentError{fmt.Errorf("redis: append script returned %d reads", len(reads))}
+		}
+		list, _ := reads[j].([]any)
+		j++
+		vals := make([]int64, 0, len(list))
+		for _, e := range list {
+			s, _ := e.(string)
+			n, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				return history.Op{}, &sentError{fmt.Errorf("redis: list element %q", s)}
+			}
+			vals = append(vals, n)
+		}
+		out.Txn[i].Values = vals
+	}
+	return out, nil
 }

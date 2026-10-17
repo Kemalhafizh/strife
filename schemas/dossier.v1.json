@@ -1,0 +1,228 @@
+{
+  "$defs": {
+    "compliance.ControlResult": {
+      "additionalProperties": false,
+      "properties": {
+        "citation": {
+          "type": "string"
+        },
+        "control_id": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "framework": {
+          "type": "string"
+        },
+        "gap": {
+          "type": "string"
+        },
+        "requirement": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "control_id",
+        "evidence",
+        "framework",
+        "requirement",
+        "status",
+        "title"
+      ],
+      "type": "object"
+    },
+    "compliance.Dossier": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "items": {
+            "$ref": "#/$defs/compliance.ControlResult"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "dossier_hash": {
+          "type": "string"
+        },
+        "frameworks": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "generated_at": {
+          "type": "string"
+        },
+        "methodology": {
+          "$ref": "#/$defs/compliance.Methodology"
+        },
+        "overall": {
+          "type": "string"
+        },
+        "summary": {
+          "$ref": "#/$defs/compliance.EvidenceSummary"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "controls",
+        "dossier_hash",
+        "frameworks",
+        "generated_at",
+        "methodology",
+        "overall",
+        "summary",
+        "tool",
+        "version"
+      ],
+      "type": "object"
+    },
+    "compliance.EvidenceSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "attested": {
+          "type": "boolean"
+        },
+        "fault_count": {
+          "type": "integer"
+        },
+        "fault_kinds_exercised": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "history_hash": {
+          "type": "string"
+        },
+        "key_id": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "nodes": {
+          "type": "integer"
+        },
+        "probe_events": {
+          "type": "integer"
+        },
+        "run_kind": {
+          "type": "string"
+        },
+        "schedule_hash": {
+          "type": "string"
+        },
+        "seeds_linearizable": {
+          "type": "integer"
+        },
+        "seeds_tested": {
+          "type": "integer"
+        },
+        "seeds_violating": {
+          "type": "integer"
+        },
+        "signer": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "total_operations": {
+          "type": "integer"
+        },
+        "trace_hash": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attested",
+        "fault_count",
+        "fault_kinds_exercised",
+        "fingerprint",
+        "model",
+        "nodes",
+        "run_kind",
+        "seeds_linearizable",
+        "seeds_tested",
+        "seeds_violating",
+        "target",
+        "total_operations",
+        "verdict"
+      ],
+      "type": "object"
+    },
+    "compliance.Methodology": {
+      "additionalProperties": false,
+      "properties": {
+        "auditor_disclaimer": {
+          "type": "string"
+        },
+        "execution_limits": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "what_is_not_tested": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "what_is_tested": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "auditor_disclaimer",
+        "execution_limits",
+        "what_is_not_tested",
+        "what_is_tested"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://strife.dev/schemas/dossier.v1.json",
+  "$ref": "#/$defs/compliance.Dossier",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Strife compliance dossier (dossier.json)"
+}

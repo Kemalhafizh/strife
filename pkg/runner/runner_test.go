@@ -2,14 +2,17 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/client"
+	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/transport"
 )
@@ -106,5 +109,189 @@ func TestLoadRejectsBadConfigs(t *testing.T) {
 	}
 	if time.Duration(c.Duration) != 5*time.Second || c.Workload.Concurrency != 2 {
 		t.Fatalf("defaults not applied: %+v", c)
+	}
+}
+
+func TestLiveAppendWorkload(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workload = WorkloadConfig{Model: "append", Keys: 3, Concurrency: 6, Think: Duration(2 * time.Millisecond), WritesPerKey: 12, Isolation: "strict-serializable"}
+	cfg.Defaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Model != "append" || res.Check.Verdict != checker.Linearizable {
+		t.Fatalf("a strictly serializable store must pass: %s %s", res.Check.Model, res.Check.Verdict)
+	}
+	// Keys rotated: more distinct keys than slots, and every value unique.
+	keys, values := map[string]bool{}, map[int64]bool{}
+	reads := 0
+	for _, op := range res.History {
+		for _, m := range op.Txn {
+			keys[m.Key] = true
+			if op.Type == "invoke" && m.F == "append" {
+				if values[*m.Value] {
+					t.Fatalf("value %d appended twice", *m.Value)
+				}
+				values[*m.Value] = true
+			}
+			if op.Type == "ok" && m.F == "r" && len(m.Values) > 0 {
+				reads++
+			}
+		}
+	}
+	if len(keys) <= 3 || reads == 0 {
+		t.Fatalf("keys %d (want rotation past 3 slots), non-empty reads %d", len(keys), reads)
+	}
+}
+
+func TestAppendCatchesALostAppend(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workload = WorkloadConfig{Model: "append", Keys: 2, Concurrency: 4, Think: Duration(2 * time.Millisecond), Isolation: "strict-serializable"}
+	cfg.Defaults()
+	store := client.NewMemoryStore()
+	var n atomic.Int32
+	lossy := func(i int) (client.Client, error) { return &dropFirstAppend{Client: store.Client(), n: &n}, nil }
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Clients: lossy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Verdict != checker.Violation {
+		t.Fatalf("an acknowledged but lost append must be caught, got %s", res.Check.Verdict)
+	}
+}
+
+// dropFirstAppend acknowledges the first append transaction without
+// applying it.
+type dropFirstAppend struct {
+	client.Client
+	n *atomic.Int32
+}
+
+func (d *dropFirstAppend) Invoke(ctx context.Context, op history.Op) history.Op {
+	if op.F == history.FTxn && len(op.Txn) == 1 && op.Txn[0].F == history.MicroAppend && d.n.CompareAndSwap(0, 1) {
+		return history.Op{Process: op.Process, Type: history.OK, F: op.F, Txn: op.Txn}
+	}
+	return d.Client.Invoke(ctx, op)
+}
+
+func TestRedactedConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.DB.Password, cfg.Transport.Token = "hunter2", "env:STRIFE_AGENT_TOKEN"
+	r := cfg.Redacted()
+	if r.DB.Password != "[redacted]" || r.Transport.Token != "env:STRIFE_AGENT_TOKEN" || cfg.DB.Password != "hunter2" {
+		t.Fatalf("redaction wrong: %q %q (original %q)", r.DB.Password, r.Transport.Token, cfg.DB.Password)
+	}
+}
+
+func TestScheduleOverrideIsReplayed(t *testing.T) {
+	cfg := testConfig()
+	sched := cfg.Schedule()
+	if len(sched.Faults) < 2 {
+		t.Fatalf("seeded schedule too small: %d faults", len(sched.Faults))
+	}
+	sched.Faults = sched.Faults[1:2]
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Schedule: &sched})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Schedule.Faults) != 1 || res.Schedule.Faults[0].ID != sched.Faults[0].ID || len(res.Applied) != 2 {
+		t.Fatalf("schedule %+v, applied %d", res.Schedule.Faults, len(res.Applied))
+	}
+	bad := nemesis.Schedule{Nodes: 5}
+	if _, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Schedule: &bad}); err == nil {
+		t.Fatal("a schedule for another cluster size was accepted")
+	}
+}
+
+type podIPs struct{ transport.DryRun }
+
+func (p *podIPs) ResolveIP(_ context.Context, n transport.Node) (string, error) {
+	return map[string]string{"etcd-0": "10.244.0.5", "etcd-1": "10.244.0.6"}[n.Pod], nil
+}
+
+func TestKubernetesNodesResolve(t *testing.T) {
+	cfg := &Config{
+		Nodes: []transport.Node{
+			{Name: "n1", IP: "auto", Pod: "etcd-0"},
+			{Name: "n2", IP: "auto", Pod: "etcd-1"},
+		},
+		Transport: transport.Config{Type: "kubernetes", Namespace: "strife"},
+		DB:        DBConfig{Config: client.Config{Kind: "etcd", Endpoints: []string{"http://{ip}:2379"}}, Process: "etcd", Start: "/start.sh"},
+		Nemesis:   NemesisConfig{Faults: []nemesis.Kind{nemesis.Partition, nemesis.Kill}},
+	}
+	cfg.Defaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveNodes(context.Background(), cfg, &podIPs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Nodes[1].IP != "10.244.0.6" || cfg.Nodes[1].IP != "auto" {
+		t.Fatalf("resolved %+v, original %+v", got.Nodes, cfg.Nodes)
+	}
+	if e := got.DB.Config.Endpoints; len(e) != 2 || e[0] != "http://10.244.0.5:2379" || e[1] != "http://10.244.0.6:2379" {
+		t.Fatalf("endpoints %v", e)
+	}
+	if _, err := ResolveNodes(context.Background(), cfg, &transport.DryRun{}); err == nil {
+		t.Fatal("auto IPs resolved without a resolver")
+	}
+	for _, k := range []nemesis.Kind{nemesis.Freeze, nemesis.ClockSkew} {
+		bad := *cfg
+		bad.Nemesis.Faults = []nemesis.Kind{k}
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("%s accepted on kubernetes", k)
+		}
+	}
+	bad := *cfg
+	bad.Transport.Type = "docker"
+	if err := bad.Validate(); err == nil {
+		t.Fatal("auto IPs accepted with docker")
+	}
+}
+
+// TestKubernetesRunThroughKubectl drives a whole run through the kubernetes
+// transport with a stand-in kubectl that records its arguments.
+func TestKubernetesRunThroughKubectl(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "kubectl.log")
+	fake := filepath.Join(dir, "kubectl")
+	script := "#!/bin/sh\necho \"$*\" >> " + log + "\ncase \"$*\" in *'get pod'*) echo 10.244.0.$(echo \"$*\" | sed 's/.*etcd-\\([0-9]\\).*/\\1/');; esac\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.Transport = transport.Config{Type: "kubernetes", Kubectl: fake, Namespace: "strife", Context: "kind-strife"}
+	for i := range cfg.Nodes {
+		cfg.Nodes[i].IP, cfg.Nodes[i].Pod, cfg.Nodes[i].Container = "auto", fmt.Sprintf("etcd-%d", i), "etcd"
+	}
+	cfg.Nemesis.Faults = []nemesis.Kind{nemesis.Partition, nemesis.Kill, nemesis.Latency}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Verdict != checker.Linearizable {
+		t.Fatalf("verdict %s", res.Check.Verdict)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		"--context kind-strife --namespace strife get pod etcd-2 -o jsonpath={.status.podIP}",
+		"--context kind-strife --namespace strife exec etcd-0 --container etcd -- sh -c iptables -N STRIFE",
+		"-s 10.244.0.1 -j DROP",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("kubectl never ran %q:\n%s", want, got)
+		}
 	}
 }

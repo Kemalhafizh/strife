@@ -1,10 +1,11 @@
-# PostgreSQL cluster: 1 Primary (n1) and 2 asynchronous replicas (n2, n3).
-# NET_ADMIN capability gives the nemesis access to iptables and tc inside each container.
+# PostgreSQL 17: a primary (n1) and two asynchronous hot standbys (n2, n3).
+# NET_ADMIN lets the nemesis use iptables and tc inside each container.
 x-postgres: &postgres
   build: .
   cap_add: [NET_ADMIN]
-  environment:
-    POSTGRES_HOST_AUTH_METHOD: trust
+  environment: &env
+    STRIFE_PG_PASSWORD: "${STRIFE_PG_PASSWORD:?set STRIFE_PG_PASSWORD}"
+  # The standbys copy the primary at boot.
 
 services:
   n1:
@@ -14,16 +15,14 @@ services:
   n2:
     <<: *postgres
     container_name: strife-postgres2
-    environment:
-      POSTGRES_HOST_AUTH_METHOD: trust
-      STRIFE_PRIMARY: 172.31.1.11
+    environment: { <<: *env, STRIFE_PRIMARY: 172.31.1.11 }
+    depends_on: [n1]
     networks: { strife: { ipv4_address: 172.31.1.12 } }
   n3:
     <<: *postgres
     container_name: strife-postgres3
-    environment:
-      POSTGRES_HOST_AUTH_METHOD: trust
-      STRIFE_PRIMARY: 172.31.1.11
+    environment: { <<: *env, STRIFE_PRIMARY: 172.31.1.11 }
+    depends_on: [n1]
     networks: { strife: { ipv4_address: 172.31.1.13 } }
 
 networks:

@@ -68,6 +68,9 @@ type Counterexample struct {
 	Witness []Step `json:"witness,omitempty"`
 	// Diagnosis explains the witness in the model's terms, e.g. a stale read.
 	Diagnosis string `json:"diagnosis,omitempty"`
+	// Anomalies lists every kind of anomaly found, for models decided by
+	// dependency-graph analysis (e.g. ["G-realtime", "G2"]).
+	Anomalies []string `json:"anomalies,omitempty"`
 }
 
 // Summary is the most useful one-line description: the diagnosis of the
@@ -202,6 +205,25 @@ type cacheEntry struct {
 // expensive direction (every order must be refuted), while a diagnosis is a
 // direct certificate found in O(n log n).
 func checkKey(m model.Model, ops []history.Operation, opts Options) KeyResult {
+	if d, ok := m.(model.Decider); ok && !opts.SearchOnly {
+		bad, idx, diag, kinds := d.Decide(ops)
+		if !bad {
+			return KeyResult{Operations: len(ops), Verdict: Linearizable}
+		}
+		ce := &Counterexample{
+			Anomalies:   kinds,
+			Diagnosis:   diag,
+			Explanation: "Proved by dependency-graph analysis; no search was needed.",
+			StateAfter:  "?",
+		}
+		for _, i := range idx {
+			ce.Witness = append(ce.Witness, step(ops[i]))
+		}
+		if len(idx) > 0 {
+			ce.Stuck = step(ops[idx[len(idx)-1]])
+		}
+		return KeyResult{Operations: len(ops), Verdict: Violation, Counterexample: ce}
+	}
 	if d, ok := m.(model.Diagnoser); ok && !opts.SearchOnly {
 		if idx, diag, ok := d.Diagnose(ops); ok {
 			ce := &Counterexample{

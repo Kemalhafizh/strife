@@ -1,0 +1,34 @@
+{
+  "name": "tidb-optimistic",
+  "seed": 42,
+  "duration": "60s",
+  "nodes": [
+    { "name": "n1", "ip": "172.31.3.11", "container": "strife-tidb1", "cgroup": "auto" }
+  ],
+  "transport": {
+    "type": "docker",
+    "sudo": true
+  },
+  "db": {
+    "kind": "tidb",
+    "endpoints": ["172.31.3.11:4000"],
+    "user": "root",
+    "database": "test",
+    "init_sql": "SET SESSION tidb_txn_mode = 'optimistic'"
+  },
+  "workload": {
+    "model": "append",
+    "isolation": "snapshot-isolation",
+    "keys": 6,
+    "txn_len": 4,
+    "concurrency": 10,
+    "read_ratio": 0.5,
+    "think": "5ms",
+    "timeout": "5s"
+  },
+  "nemesis": {
+    "faults": ["freeze"],
+    "interval": "10s",
+    "length": "3s"
+  }
+}

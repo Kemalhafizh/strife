@@ -1,0 +1,38 @@
+{
+  "name": "postgres-replicas",
+  "seed": 42,
+  "duration": "60s",
+  "nodes": [
+    { "name": "n1", "ip": "172.31.1.11", "container": "strife-postgres1" },
+    { "name": "n2", "ip": "172.31.1.12", "container": "strife-postgres2" },
+    { "name": "n3", "ip": "172.31.1.13", "container": "strife-postgres3" }
+  ],
+  "transport": {
+    "type": "docker"
+  },
+  "db": {
+    "kind": "postgres",
+    "endpoints": ["172.31.1.11:5432", "172.31.1.12:5432", "172.31.1.13:5432"],
+    "user": "postgres",
+    "password": "env:STRIFE_PG_PASSWORD",
+    "process": "postgres",
+    "start": "/usr/local/bin/start-postgres.sh",
+    "txn_isolation": "repeatable-read"
+  },
+  "workload": {
+    "model": "append",
+    "isolation": "strict-serializable",
+    "keys": 6,
+    "txn_len": 4,
+    "concurrency": 9,
+    "read_ratio": 0.5,
+    "think": "5ms",
+    "timeout": "5s"
+  },
+  "nemesis": {
+    "faults": ["partition"],
+    "interval": "10s",
+    "length": "5s",
+    "interface": "eth0"
+  }
+}

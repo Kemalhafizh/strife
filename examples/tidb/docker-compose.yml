@@ -1,19 +1,11 @@
-# TiDB chaos environment for Strife
-# NET_ADMIN capability gives the nemesis access to iptables and tc inside the container.
+# TiDB (single server, embedded unistore) for Strife's transactional checks.
+# TiDB's REPEATABLE READ is snapshot isolation, which is what Strife checks.
 services:
   n1:
-    image: pingcap/tidb:v7.1.0
+    image: pingcap/tidb:v8.5.1
     container_name: strife-tidb1
-    cap_add: [NET_ADMIN]
-    command:
-      - -P=4000
-      - --status=10080
-      - --store=unistore
-    networks:
-      strife:
-        ipv4_address: 172.31.3.11
-    ports:
-      - "4000:4000"
+    command: ["-P=4000", "--status=10080", "--store=unistore", "--path=/tmp/tidb"]
+    networks: { strife: { ipv4_address: 172.31.3.11 } }
 
 networks:
   strife:

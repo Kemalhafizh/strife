@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kemalhafizh/strife/internal/stats"
 	"github.com/kemalhafizh/strife/pkg/checker"
 )
 
@@ -348,6 +349,9 @@ func SuiteFromReport(r *Report, elapsed time.Duration) Suite {
 	if r.Kind == KindLive {
 		inj := Case{Name: "fault injection", Class: class, Status: Passed,
 			Output: fmt.Sprintf("%d fault edges applied", len(r.Applied))}
+		if t := InjectionTiming(r.Applied); t.Count > 0 {
+			inj.Output += fmt.Sprintf("; landed p50 %v, p95 %v, max %v after plan", stats.Round(t.P50), stats.Round(t.P95), stats.Round(t.Max))
+		}
 		var errs []string
 		for _, a := range r.Applied {
 			for _, e := range a.Errors {

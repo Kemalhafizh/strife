@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -78,8 +79,8 @@ func (e Env) Validate(kinds []Kind) error {
 					return fmt.Errorf("nemesis: %s needs a cgroup path for node %s", k, n.Name)
 				}
 			}
-			if k == IOStall && !ioDevice.MatchString(e.IODevice) {
-				return fmt.Errorf("nemesis: io-stall needs nemesis.io_device as major:minor, got %q", e.IODevice)
+			if k == IOStall && !ioDevice.MatchString(e.IODevice) && e.IODevice != "auto" {
+				return fmt.Errorf("nemesis: io-stall needs nemesis.io_device as major:minor (or \"auto\" with the docker transport), got %q", e.IODevice)
 			}
 		}
 	}
@@ -108,8 +109,13 @@ func (e Env) pgrepPattern() string {
 
 func ms(d time.Duration) int64 { return d.Milliseconds() }
 
-// Setup prepares every node: a dedicated iptables chain hooked into INPUT.
-func (e Env) Setup() []Command {
+// Setup prepares every node for the given kinds: a dedicated iptables chain
+// hooked into INPUT when partitions are planned. Other kinds need no
+// preparation, so nodes without iptables can still take them.
+func (e Env) Setup(kinds []Kind) []Command {
+	if !slices.Contains(kinds, Partition) {
+		return nil
+	}
 	var out []Command
 	for i := range e.Nodes {
 		out = append(out, Command{Node: i, Script: fmt.Sprintf(
@@ -146,7 +152,7 @@ func (e Env) Inject(f Fault) []Command {
 		}
 	case Freeze:
 		for _, n := range f.Nodes {
-			out = append(out, Command{Node: n, Host: true, Script: fmt.Sprintf("echo 1 > %s/cgroup.freeze", e.Nodes[n].Cgroup)})
+			out = append(out, Command{Node: n, Host: true, Script: freezeScript(e.Nodes[n].Cgroup, 1)})
 		}
 	case IOStall:
 		for _, n := range f.Nodes {
@@ -160,6 +166,13 @@ func (e Env) Inject(f Fault) []Command {
 		}
 	}
 	return out
+}
+
+// freezeScript requests a freezer state and waits (up to 5s) until the
+// kernel reports it in cgroup.events: freezing is asynchronous, and a fault
+// must not be reported as applied before it is in effect.
+func freezeScript(cgroup string, state int) string {
+	return fmt.Sprintf(`echo %[2]d > %[1]s/cgroup.freeze || exit 1; i=0; while ! grep -qx 'frozen %[2]d' %[1]s/cgroup.events; do i=$((i+1)); [ $i -gt 500 ] && { echo 'cgroup %[1]s did not reach frozen=%[2]d within 5s' >&2; exit 1; }; sleep 0.01; done`, cgroup, state)
 }
 
 func (e Env) drop(from, to []int) []Command {
@@ -198,7 +211,7 @@ func (e Env) Heal(f Fault) []Command {
 		}
 	case Freeze:
 		for _, n := range f.Nodes {
-			out = append(out, Command{Node: n, Host: true, Script: fmt.Sprintf("echo 0 > %s/cgroup.freeze", e.Nodes[n].Cgroup)})
+			out = append(out, Command{Node: n, Host: true, Script: freezeScript(e.Nodes[n].Cgroup, 0)})
 		}
 	case IOStall:
 		for _, n := range f.Nodes {
@@ -223,7 +236,10 @@ func (e Env) Teardown(kinds []Kind) []Command {
 	}
 	var out []Command
 	for i, n := range e.Nodes {
-		parts := []string{"iptables -F " + Chain + " 2>/dev/null || true"}
+		var parts []string
+		if has[Partition] {
+			parts = append(parts, "iptables -F "+Chain+" 2>/dev/null || true")
+		}
 		if has[Latency] || has[Loss] {
 			parts = append(parts, fmt.Sprintf("tc qdisc del dev %s root 2>/dev/null || true", e.iface()))
 		}
@@ -234,7 +250,9 @@ func (e Env) Teardown(kinds []Kind) []Command {
 			// Interrupted mid-kill: bring the database back, but never twice.
 			parts = append(parts, "pgrep -f "+e.pgrepPattern()+" >/dev/null || ("+e.Start+")")
 		}
-		out = append(out, Command{Node: i, Script: strings.Join(parts, "; ")})
+		if len(parts) > 0 {
+			out = append(out, Command{Node: i, Script: strings.Join(parts, "; ")})
+		}
 		if has[Freeze] {
 			out = append(out, Command{Node: i, Host: true, Script: fmt.Sprintf("echo 0 > %s/cgroup.freeze || true", n.Cgroup)})
 		}

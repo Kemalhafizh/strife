@@ -1,42 +1,30 @@
-# 3-node Kafka cluster in KRaft mode (no Zookeeper required).
-# NET_ADMIN capability gives the nemesis access to iptables and tc inside each container.
+# Three combined Kafka brokers/controllers in KRaft mode on a fixed subnet.
+# NET_ADMIN lets the nemesis use iptables and tc inside each container.
+# KAFKA_VERSION selects the image (3.9.1 by default, 4.x works too).
 x-kafka: &kafka
-  build: .
+  build:
+    context: .
+    args: { KAFKA_VERSION: "${KAFKA_VERSION:-3.9.1}" }
   cap_add: [NET_ADMIN]
+  environment: &env
+    STRIFE_CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    STRIFE_VOTERS: 1@172.31.2.11:9093,2@172.31.2.12:9093,3@172.31.2.13:9093
 
 services:
   n1:
     <<: *kafka
     container_name: strife-kafka1
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: 'broker,controller'
-      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://172.31.2.11:9092'
-      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
-      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@172.31.2.11:9093,2@172.31.2.12:9093,3@172.31.2.13:9093'
+    environment: { <<: *env, STRIFE_NODE_ID: 1, STRIFE_IP: 172.31.2.11 }
     networks: { strife: { ipv4_address: 172.31.2.11 } }
   n2:
     <<: *kafka
     container_name: strife-kafka2
-    environment:
-      KAFKA_NODE_ID: 2
-      KAFKA_PROCESS_ROLES: 'broker,controller'
-      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://172.31.2.12:9092'
-      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
-      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@172.31.2.11:9093,2@172.31.2.12:9093,3@172.31.2.13:9093'
+    environment: { <<: *env, STRIFE_NODE_ID: 2, STRIFE_IP: 172.31.2.12 }
     networks: { strife: { ipv4_address: 172.31.2.12 } }
   n3:
     <<: *kafka
     container_name: strife-kafka3
-    environment:
-      KAFKA_NODE_ID: 3
-      KAFKA_PROCESS_ROLES: 'broker,controller'
-      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://172.31.2.13:9092'
-      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
-      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@172.31.2.11:9093,2@172.31.2.12:9093,3@172.31.2.13:9093'
+    environment: { <<: *env, STRIFE_NODE_ID: 3, STRIFE_IP: 172.31.2.13 }
     networks: { strife: { ipv4_address: 172.31.2.13 } }
 
 networks:
