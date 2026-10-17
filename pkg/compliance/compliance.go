@@ -517,8 +517,7 @@ func buildMethodology(sum EvidenceSummary) Methodology {
 	}
 
 	var missing []string
-	allKinds := nemesis.AllKinds()
-	for _, k := range allKinds {
+	for _, k := range nemesis.AllKinds {
 		if !hasAnyFault(sum.FaultKindsExercised, k) {
 			missing = append(missing, string(k))
 		}
