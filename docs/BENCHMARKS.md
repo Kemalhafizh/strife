@@ -20,7 +20,10 @@ cluster in Docker, and records for each transition the time from the planned
 instant until every involved node confirmed the change. 50 cycles per row
 (inject and heal are separate rows), one transition every 300 ms.
 For `strife-agent`, "agent-side" is the time inside the agent from receiving
-the request until the kernel call returned (slowest node).
+the request until the kernel call returned (slowest node). The agent now
+also waits for a pause or kill to show in `/proc` (process stopped or
+exited); the run below predates that change and counts from `kill(2)`
+returning.
 
 ```sh
 # .github/workflows/live.yml, job "agent"

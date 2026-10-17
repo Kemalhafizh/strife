@@ -79,6 +79,11 @@ registry.
   the agent. A heal inserts an accept rule instead of deleting (a deletion
   waits for an RCU grace period, ~14 ms), and the chain is compacted when
   idle. `iptables` (IPv4) remains the fallback where nf_tables is missing.
+- strife-agent confirms signal faults the way it confirms freezes: a pause
+  returns once `/proc` shows every process stopped, a resume once none is,
+  a kill once each has exited (at most 5 s, then an error). A signal is
+  delivered when its target is next scheduled, so before, a pause could be
+  reported before the process had stopped.
 - strife-agent sets up its packet filter on the first partition instead of
   at start, and reports the filter it uses (`filter:nftables`,
   `filter:iptables`) in its capabilities and in each fault's method.
