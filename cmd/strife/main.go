@@ -20,10 +20,12 @@ import (
 	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
+	"github.com/kemalhafizh/strife/pkg/compliance"
 	"github.com/kemalhafizh/strife/pkg/explore"
 	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/model"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
+	"github.com/kemalhafizh/strife/pkg/probe"
 	"github.com/kemalhafizh/strife/pkg/report"
 	"github.com/kemalhafizh/strife/pkg/runner"
 	"github.com/kemalhafizh/strife/pkg/shrink"
@@ -42,16 +44,17 @@ const (
 const usage = `Strife — deterministic chaos testing & linearizability checking
 
 Usage:
-  strife sim      [flags]   run systems in the deterministic simulator
-  strife campaign [flags]   run parallel seed campaigns & track regressions across commits
-  strife shrink   [flags]   minimise a failing simulation to its essential faults
-  strife check    [flags]   check a recorded history (JSONL) for linearizability
-  strife plan     [flags]   print a seeded fault schedule and its shell commands
-  strife run      [flags]   run a live test against a real cluster
-  strife keygen   [flags]   generate an Ed25519 signing keypair for compliance audits
-  strife sign     [flags]   cryptographically sign a report artifact (in-toto attestation)
-  strife verify   [flags]   verify a signed compliance bundle against a public key
-  strife systems            list the built-in simulated systems
+  strife sim        [flags]   run systems in the deterministic simulator
+  strife campaign   [flags]   run parallel seed campaigns & track regressions across commits
+  strife shrink     [flags]   minimise a failing simulation to its essential faults
+  strife check      [flags]   check a recorded history (JSONL) for linearizability
+  strife plan       [flags]   print a seeded fault schedule and its shell commands
+  strife run        [flags]   run a live test against a real cluster
+  strife keygen     [flags]   generate an Ed25519 signing keypair for compliance audits
+  strife sign       [flags]   cryptographically sign a report artifact (in-toto attestation)
+  strife verify     [flags]   verify a signed compliance bundle against a public key
+  strife compliance [flags]   generate a regulatory compliance & resilience audit dossier
+  strife systems              list the built-in simulated systems
   strife version
 
 Run "strife <command> -h" for flags.
@@ -88,6 +91,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdSign(rest, stdout, stderr)
 	case "verify":
 		code, err = cmdVerify(rest, stdout, stderr)
+	case "compliance":
+		code, err = cmdCompliance(rest, stdout, stderr)
 	case "systems":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "SYSTEM\tEXPECTED\tEXPOSED BY\tDESCRIPTION")
@@ -741,6 +746,8 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	path := fs.String("history", "", "history file (JSONL, one op per line; - for stdin)")
+	probesPath := fs.String("probes", "", "optional server-side probe events file (probes.jsonl) for root-cause correlation")
+	schedPath := fs.String("schedule", "", "optional fault schedule file (schedule.json) for root-cause correlation")
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
 	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
 	out := fs.String("out", "", "write a report directory here")
@@ -777,12 +784,30 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitError, err
 	}
+	var probeEvents []probe.Event
+	if *probesPath != "" {
+		probeEvents, err = probe.LoadEvents(*probesPath)
+		if err != nil {
+			return exitError, err
+		}
+	}
+	var sched nemesis.Schedule
+	if *schedPath != "" {
+		data, err := os.ReadFile(*schedPath)
+		if err != nil {
+			return exitError, err
+		}
+		if err := json.Unmarshal(data, &sched); err != nil {
+			return exitError, fmt.Errorf("%s: %w", *schedPath, err)
+		}
+	}
 	start := time.Now()
 	rep, err := checker.Check(m, ops, checker.Options{MaxSteps: *maxSteps, Timeout: *timeout})
 	if err != nil {
 		return exitError, err
 	}
 	addWitnesses(m, ops, &rep)
+	findings := probe.Correlate(ops, rep, sched, probeEvents)
 	fmt.Fprintf(stdout, "checked %d operations (%d relevant) across %d keys in %v\n", rep.Operations, rep.Checked, len(rep.Keys), time.Since(start).Round(time.Millisecond))
 	fmt.Fprintf(stdout, "verdict: %s\n", strings.ToUpper(string(rep.Verdict)))
 	for _, k := range rep.Failures() {
@@ -790,10 +815,15 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Summary())
 		}
 	}
-	rr, err := report.New(report.KindCheck, filepath.Base(*path), 0, map[string]string{"model": m.Name()}, nemesis.Schedule{}, ops, rep, "")
+	for _, f := range findings {
+		fmt.Fprintf(stdout, "  root-cause [%s]: %s\n", f.Confidence, f.Summary)
+	}
+	rr, err := report.New(report.KindCheck, filepath.Base(*path), 0, map[string]string{"model": m.Name()}, sched, ops, rep, "")
 	if err != nil {
 		return exitError, err
 	}
+	rr.Probes = probeEvents
+	rr.Findings = findings
 	if *out != "" {
 		if _, err := report.WriteDir(*out, rr, ops); err != nil {
 			return exitError, err
@@ -939,11 +969,14 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 		return emitCI(*ci, exitError, err, report.ErrorSuite("live · "+cfg.Name, err))
 	}
 	addWitnesses(model.KV{}, res.History, &res.Check)
+	res.Findings = probe.Correlate(res.History, res.Check, res.Schedule, res.Probes)
 	rep, err := report.New(report.KindLive, cfg.Name, cfg.Seed, cfg, res.Schedule, res.History, res.Check, "")
 	if err != nil {
 		return exitError, err
 	}
 	rep.Applied = res.Applied
+	rep.Probes = res.Probes
+	rep.Findings = res.Findings
 	rep.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 	rep.Reproduce = fmt.Sprintf("strife run --config %s --seed %d", *cfgPath, cfg.Seed)
 	rep.Notes = append(rep.Notes, "Live runs replay the same fault schedule and per-process operation sequence for a given seed; the interleaving chosen by the real cluster is recorded in history.jsonl and can be re-checked with `strife check`.")
@@ -970,6 +1003,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 		if ce := k.Counterexample; ce != nil {
 			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Summary())
 		}
+	}
+	for _, f := range res.Findings {
+		fmt.Fprintf(stdout, "  root-cause [%s]: %s\n", f.Confidence, f.Summary)
 	}
 	suite := report.SuiteFromReport(rep, time.Since(start))
 	code, rerr := verdictCode(c.Verdict), error(nil)
@@ -1203,4 +1239,90 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 		code = exitUnknown
 	}
 	return emitCI(*ci, code, verr, suite)
+}
+
+func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("compliance", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	reportPath := fs.String("report", "", "path to report.json")
+	campaignPath := fs.String("campaign", "", "path to campaign.json")
+	bundlePath := fs.String("bundle", "", "optional path to signed attestation bundle.json")
+	keyPath := fs.String("key", "", "optional path to Ed25519 public key (.pub) to verify --bundle")
+	frameworksStr := fs.String("frameworks", "all", "comma-separated frameworks: dora,soc2,iso27001,bi-ojk,all")
+	out := fs.String("out", "strife-compliance", "directory to write dossier.json, dossier.md, and dossier.html (\"\" to disable)")
+	strict := fs.Bool("strict", false, "exit with non-zero status if any control is PARTIAL (not just FAIL)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if *reportPath == "" && *campaignPath == "" {
+		return exitUsage, fmt.Errorf("either --report or --campaign is required")
+	}
+	fws, err := compliance.ParseFrameworks(*frameworksStr)
+	if err != nil {
+		return exitUsage, err
+	}
+
+	var rep *report.Report
+	if *reportPath != "" {
+		data, err := os.ReadFile(*reportPath)
+		if err != nil {
+			return exitError, err
+		}
+		var r report.Report
+		if err := json.Unmarshal(data, &r); err != nil {
+			return exitError, fmt.Errorf("%s: %w", *reportPath, err)
+		}
+		rep = &r
+	}
+
+	var camp *campaign.Manifest
+	if *campaignPath != "" {
+		m, err := campaign.LoadManifest(*campaignPath)
+		if err != nil {
+			return exitError, err
+		}
+		camp = m
+	}
+
+	var ver *attest.VerificationResult
+	if *bundlePath != "" {
+		if *keyPath == "" {
+			return exitUsage, fmt.Errorf("--key is required when --bundle is provided")
+		}
+		ver, err = attest.VerifyBundleFile(*bundlePath, *keyPath, "")
+		if err != nil {
+			return exitViolation, fmt.Errorf("attestation verification failed: %w", err)
+		}
+	}
+
+	dossier, err := compliance.Evaluate(compliance.Options{
+		Report:       rep,
+		Campaign:     camp,
+		Verification: ver,
+		Frameworks:   fws,
+	})
+	if err != nil {
+		return exitError, err
+	}
+
+	fmt.Fprintf(stdout, "compliance dossier: target=%s   kind=%s   verdict=%s   overall=%s\n",
+		dossier.Summary.Target, dossier.Summary.RunKind, strings.ToUpper(string(dossier.Summary.Verdict)), strings.ToUpper(string(dossier.Overall)))
+	for _, c := range dossier.Controls {
+		fmt.Fprintf(stdout, "  [%-7s] %-8s %-24s %s\n",
+			strings.ToUpper(string(c.Status)), strings.ToUpper(string(c.Framework)), c.ControlID, c.Title)
+	}
+	if *out != "" {
+		if _, err := compliance.WriteDir(*out, dossier); err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "dossier:   %s\n", filepath.Join(*out, "dossier.html"))
+	}
+
+	if dossier.Overall == compliance.StatusFail {
+		return exitViolation, nil
+	}
+	if *strict && dossier.Overall != compliance.StatusPass {
+		return exitViolation, nil
+	}
+	return exitOK, nil
 }

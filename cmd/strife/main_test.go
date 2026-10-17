@@ -275,3 +275,82 @@ func TestCampaignCLIAndRegression(t *testing.T) {
 		t.Fatalf("expected failing JUnit cases in campaign, got %+v", d)
 	}
 }
+
+func TestCheckWithProbesCorrelation(t *testing.T) {
+	dir := t.TempDir()
+	histPath := filepath.Join(dir, "history.jsonl")
+	probesPath := filepath.Join(dir, "probes.jsonl")
+	outDir := filepath.Join(dir, "out")
+
+	historyJSONL := strings.Join([]string{
+		`{"id":0,"process":1,"type":"invoke","f":"write","key":"k0","value":1,"time":100000000,"node":"n1"}`,
+		`{"id":1,"process":1,"type":"ok","f":"write","key":"k0","value":1,"time":120000000,"node":"n1"}`,
+		`{"id":2,"process":2,"type":"invoke","f":"write","key":"k0","value":2,"time":200000000,"node":"n1"}`,
+		`{"id":3,"process":2,"type":"ok","f":"write","key":"k0","value":2,"time":220000000,"node":"n1"}`,
+		`{"id":4,"process":3,"type":"invoke","f":"read","key":"k0","time":300000000,"node":"n2"}`,
+		`{"id":5,"process":3,"type":"ok","f":"read","key":"k0","value":1,"time":320000000,"node":"n2"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(histPath, []byte(historyJSONL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	probesJSONL := `{"id":1,"at_ns":250000000,"duration_ns":95000000,"node":"n2","kind":"fsync_stall","process":"etcd","detail":"fsync(/var/lib/etcd/member/wal/0.wal) stalled for 95ms"}` + "\n"
+	if err := os.WriteFile(probesPath, []byte(probesJSONL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "check", "--history", histPath, "--probes", probesPath, "--out", outDir)
+	if code != exitViolation {
+		t.Fatalf("expected exit %d, got %d:\n%s", exitViolation, code, out)
+	}
+	if !strings.Contains(out, "root-cause [high]") || !strings.Contains(out, "fsync_stall") {
+		t.Fatalf("expected high-confidence root-cause attribution in output, got:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "probes.jsonl")); err != nil {
+		t.Fatalf("expected probes.jsonl in report dir: %v", err)
+	}
+	mdBytes, err := os.ReadFile(filepath.Join(outDir, "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mdBytes), "Server-Side Probes & Root-Cause Attribution") {
+		t.Fatalf("expected probe section in report.md:\n%s", string(mdBytes))
+	}
+}
+
+func TestComplianceCLIAndDossier(t *testing.T) {
+	dir := t.TempDir()
+	simDir := filepath.Join(dir, "sim")
+	keyPrefix := filepath.Join(dir, "auditor")
+	bundlePath := filepath.Join(dir, "bundle.json")
+	dossierDir := filepath.Join(dir, "dossier")
+
+	code, out := runCLI(t, "sim", "--system", "raft", "--seed", "3", "--faults", "all", "--duration", "12s", "--out", simDir)
+	if code != exitOK {
+		t.Fatalf("sim failed (%d):\n%s", code, out)
+	}
+	repPath := filepath.Join(simDir, "report.json")
+
+	code, out = runCLI(t, "keygen", "--out", keyPrefix)
+	if code != exitOK {
+		t.Fatalf("keygen failed (%d):\n%s", code, out)
+	}
+
+	code, out = runCLI(t, "sign", "--report", repPath, "--key", keyPrefix+".key", "--out", bundlePath, "--signer", "bank-auditor")
+	if code != exitOK {
+		t.Fatalf("sign failed (%d):\n%s", code, out)
+	}
+
+	code, out = runCLI(t, "compliance", "--report", repPath, "--bundle", bundlePath, "--key", keyPrefix+".pub", "--out", dossierDir, "--strict")
+	if code != exitOK {
+		t.Fatalf("compliance failed (%d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "overall=PASS") {
+		t.Fatalf("expected overall=PASS in compliance output:\n%s", out)
+	}
+	for _, f := range []string{"dossier.json", "dossier.md", "dossier.html"} {
+		if _, err := os.Stat(filepath.Join(dossierDir, f)); err != nil {
+			t.Fatalf("missing %s: %v", f, err)
+		}
+	}
+}

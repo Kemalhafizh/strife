@@ -21,6 +21,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
+	"github.com/kemalhafizh/strife/pkg/probe"
 )
 
 // Version is the Strife version stamped into reports.
@@ -64,6 +65,8 @@ type Report struct {
 	Config       json.RawMessage  `json:"config,omitempty"`
 	Schedule     nemesis.Schedule `json:"schedule"`
 	Applied      []Applied        `json:"applied,omitempty"`
+	Probes       []probe.Event    `json:"probes,omitempty"`
+	Findings     []probe.Finding  `json:"findings,omitempty"`
 	Check        checker.Report   `json:"check"`
 	Reproduce    string           `json:"reproduce,omitempty"`
 	GeneratedAt  string           `json:"generated_at,omitempty"`
@@ -170,6 +173,15 @@ func WriteDir(dir string, r *Report, ops []history.Op) ([]string, error) {
 		}},
 		{"report.md", func(f *os.File) error { return Markdown(f, r) }},
 		{"report.html", func(f *os.File) error { return HTML(f, r, ops) }},
+	}
+	if len(r.Probes) > 0 {
+		steps = append(steps, struct {
+			name string
+			fn   func(f *os.File) error
+		}{
+			"probes.jsonl",
+			func(f *os.File) error { return probe.WriteEvents(f, r.Probes) },
+		})
 	}
 	for _, s := range steps {
 		if err := write(s.name, s.fn); err != nil {

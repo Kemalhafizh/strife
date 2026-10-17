@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/nemesis"
+	"github.com/kemalhafizh/strife/pkg/probe"
 )
 
 func startTestServer(t *testing.T, token string) (*Server, *Client, func()) {
@@ -279,5 +280,39 @@ func TestJitterCollector(t *testing.T) {
 	table := sum.FormatTable()
 	if table == "" {
 		t.Errorf("expected non-empty formatted markdown table")
+	}
+}
+
+func TestServerProbesEndpoint(t *testing.T) {
+	srv, client, cleanup := startTestServer(t, "")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv.Probes().RecordFsyncStall("etcd", "/var/lib/etcd/member/wal/0.wal", 125*time.Millisecond)
+	srv.Probes().RecordSignal("etcd", 4321, "SIGSTOP", "agent fault 7 pause etcd")
+
+	events, err := client.Probes(ctx, true)
+	if err != nil {
+		t.Fatalf("client.Probes failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 probe events, got %d", len(events))
+	}
+	if events[0].Kind != probe.KindFsyncStall || events[0].Node != "test-node-1" {
+		t.Errorf("unexpected first event: %+v", events[0])
+	}
+	if events[1].Kind != probe.KindProcessSignal || events[1].Signal != "SIGSTOP" {
+		t.Errorf("unexpected second event: %+v", events[1])
+	}
+
+	// After reset=true, subsequent fetch should be empty.
+	after, err := client.Probes(ctx, false)
+	if err != nil {
+		t.Fatalf("second client.Probes failed: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("expected 0 events after reset, got %d", len(after))
 	}
 }

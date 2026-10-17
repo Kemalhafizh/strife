@@ -13,6 +13,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/model"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
+	"github.com/kemalhafizh/strife/pkg/probe"
 	"github.com/kemalhafizh/strife/pkg/report"
 	"github.com/kemalhafizh/strife/pkg/transport"
 )
@@ -32,6 +33,8 @@ type Result struct {
 	Schedule nemesis.Schedule
 	History  []history.Op
 	Applied  []report.Applied
+	Probes   []probe.Event
+	Findings []probe.Finding
 	Check    checker.Report
 	// Namespace is the key namespace this run used ("" when the caller
 	// supplied its own clients).
@@ -109,6 +112,10 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 			logf("teardown errors: %v", errs)
 		}
 	}()
+
+	if pc, ok := tr.(transport.ProbeCollector); ok {
+		_, _ = pc.CollectProbes(ctx, cfg.Nodes, true)
+	}
 
 	start := time.Now()
 	clock := func() int64 { return int64(time.Since(start)) }
@@ -209,13 +216,32 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 		}
 	}
 
+	var probes []probe.Event
+	if pc, ok := tr.(transport.ProbeCollector); ok {
+		pctx, pcancel := context.WithTimeout(ctx, 10*time.Second)
+		probes, _ = pc.CollectProbes(pctx, cfg.Nodes, false)
+		pcancel()
+		if len(probes) > 0 {
+			logf("collected %d server-side probe events", len(probes))
+		}
+	}
+
 	ops := rec.Ops()
 	logf("checking %d events", len(ops))
 	rep, err := checker.Check(model.KV{}, ops, checker.Options{MaxSteps: cfg.Checker.MaxSteps, Timeout: time.Duration(cfg.Checker.Timeout)})
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Schedule: sched, History: ops, Applied: applied, Check: rep, Namespace: namespace}, nil
+	findings := probe.Correlate(ops, rep, sched, probes)
+	return &Result{
+		Schedule:  sched,
+		History:   ops,
+		Applied:   applied,
+		Probes:    probes,
+		Findings:  findings,
+		Check:     rep,
+		Namespace: namespace,
+	}, nil
 }
 
 // Namespace is the per-run key namespace: the checker assumes every key starts

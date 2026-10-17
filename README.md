@@ -304,8 +304,8 @@ flowchart LR
 ```
 
 ```
-cmd/strife        CLI: sim, shrink, check, plan, run, systems
-cmd/strife-agent  low-jitter per-node daemon (Linux RTNETLINK, syscalls, cgroup v2)
+cmd/strife        CLI: sim, campaign, shrink, check, plan, run, keygen, sign, verify, compliance, systems
+cmd/strife-agent  low-jitter per-node daemon (Linux RTNETLINK, syscalls, cgroup v2, /probes)
 internal/rng      pinned, forkable xoshiro256** PRNG
 pkg/history       Jepsen-style histories, JSONL, pairing
 pkg/model         sequential specs: kv, set, queue, counter, idgen, txn
@@ -315,13 +315,16 @@ pkg/nemesis       seeded fault schedules → shell commands
 pkg/sim           discrete-event world: network, timers, disks, clocks
 pkg/sim/raft      reference system under test (+ bug switches)
 pkg/explore       simulated runs, seed exploration, determinism checks
-pkg/shrink        delta debugging of failing scenarios down to 1-minimal
+pkg/campaign      multi-seed campaign runner, commit-to-commit regression tracker, HTML dashboard
+pkg/shrink        delta debugging of failing scenarios and histories down to 1-minimal
 pkg/transport     docker exec / ssh / strife-agent / dry-run
 pkg/agent         agent daemon protocol, server, client, and jitter analyzer
-pkg/client        etcd v3, Redis/Valkey (RESP2), PostgreSQL (v3.0), Kafka (wire v0), and in-memory store
+pkg/probe         server-side diagnostic telemetry (fsync, PSI, cgroup OOM, signals) & root-cause correlator
+pkg/client        etcd v3, Redis/Valkey (RESP2), PostgreSQL (v3.0), Kafka (wire v0), MySQL/TiDB (v10)
 pkg/runner        live test orchestration
 pkg/report        audit artifacts and fingerprints
 pkg/attest        in-toto v0.1 attestation statements and Ed25519 cryptographic signing
+pkg/compliance    regulatory control mapping (DORA, SOC 2, ISO 27001, BI/OJK) & audit dossiers
 ```
 
 ## For enterprise and compliance
@@ -336,6 +339,7 @@ failure."*
   history and trace. Anyone can recompute it and re-run `strife check` on the
   shipped history to confirm the verdict without trusting the tester.
 - **Cryptographic attestation:** `strife sign` produces an in-toto v0.1 signed statement (`bundle.json`) with an Ed25519 signature over the report fingerprint and artifact digests. `strife verify` checks the cryptographic signature and proves that neither the linearizability verdict nor the on-disk `history.jsonl` was tampered with.
+- **Regulatory compliance dossiers:** `strife compliance` maps empirical test artifacts and Ed25519 attestations to technical controls across **EU DORA**, **AICPA SOC 2**, **ISO/IEC 27001:2022**, and **BI/OJK**, producing `dossier.json`, `dossier.md`, and print-ready `dossier.html` with explicit scope and methodology disclosures.
 - **Regression gates:** `--expect linearizable` over a fixed seed range,
   through the GitHub Action or `--junit` on any CI system, turns a chaos
   campaign into a check that fails the build on the first violation. Each
@@ -348,11 +352,12 @@ Action (Phase 1.2), Redis/Valkey client & live validation (Phase 1.3),
 history shrinking (`strife shrink --history`) & checker hardening (Phase 1.4),
 `strife-agent` with socket / RTNETLINK injection (Phase 2.1), sequential
 models (`queue`, `counter`, `idgen`) and transactional anomaly detection
-(Phase 2.2), PostgreSQL, Kafka, MySQL & TiDB targets (Phase 2.3), Interactive
+(Phase 2.2), PostgreSQL, Kafka, MySQL & TiDB targets (Phase 2.3), Server-Side
+Diagnostic Probe & Root-Cause Correlator (`pkg/probe`, Phase 2.4), Interactive
 Timeline Analyzer & Visualizer (Phase 3.1), Campaign Runner & Regression
-Dashboard (`strife campaign`, Phase 3.2), and Cryptographic Report Attestation
-& Ed25519 Signing (Phase 4.1). Next up: Server-side diagnostic probes (Phase 2.4)
-or Regulatory Audit Dossier (Phase 4.2).
+Dashboard (`strife campaign`, Phase 3.2), Cryptographic Report Attestation
+& Ed25519 Signing (Phase 4.1), and Regulatory Audit Mapping & Compliance
+Dossier (`strife compliance`, Phase 4.2).
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, the
 reasoning behind it, and the claims we will and won't make.
 

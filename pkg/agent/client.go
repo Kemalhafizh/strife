@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kemalhafizh/strife/pkg/probe"
 )
 
 // Client communicates with a remote or local strife-agent daemon.
@@ -173,4 +175,36 @@ func (c *Client) Teardown(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	return nil
+}
+
+// Probes fetches server-side diagnostic telemetry events from the agent node.
+func (c *Client) Probes(ctx context.Context, reset bool) ([]probe.Event, error) {
+	url := c.baseURL + "/probes"
+	if reset {
+		url += "?reset=1"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("agent probes %s: %w", c.addr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("agent probes %s returned status %d: %s", c.addr, resp.StatusCode, string(body))
+	}
+
+	var probesResp ProbesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&probesResp); err != nil {
+		return nil, fmt.Errorf("agent probes %s decode: %w", c.addr, err)
+	}
+	return probesResp.Events, nil
 }

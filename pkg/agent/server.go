@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/nemesis"
+	"github.com/kemalhafizh/strife/pkg/probe"
 )
 
 // ServerConfig configures the strife-agent daemon.
@@ -32,6 +33,7 @@ type Server struct {
 	filter  *FilterEngine
 	process *ProcessEngine
 	cgroup  *CgroupEngine
+	probes  *probe.Collector
 
 	mu           sync.Mutex
 	activeFaults map[int]ApplyRequest
@@ -42,13 +44,18 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.Interface == "" {
 		cfg.Interface = "eth0"
 	}
+	now := time.Now()
 	s := &Server{
-		cfg:          cfg,
-		startTime:    time.Now(),
-		netlink:      NewNetlinkEngine(),
-		filter:       NewFilterEngine(),
-		process:      NewProcessEngine(),
-		cgroup:       NewCgroupEngine(),
+		cfg:       cfg,
+		startTime: now,
+		netlink:   NewNetlinkEngine(),
+		filter:    NewFilterEngine(),
+		process:   NewProcessEngine(),
+		cgroup:    NewCgroupEngine(),
+		probes: probe.NewCollector(probe.CollectorConfig{
+			Node:  cfg.NodeName,
+			Epoch: now,
+		}),
 		activeFaults: make(map[int]ApplyRequest),
 	}
 	mux := http.NewServeMux()
@@ -56,6 +63,7 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc("/status", s.handleHealth)
 	mux.HandleFunc("/apply", s.handleApply)
 	mux.HandleFunc("/exec", s.handleExec)
+	mux.HandleFunc("/probes", s.handleProbes)
 	mux.HandleFunc("/teardown", s.handleTeardown)
 	s.httpSrv = &http.Server{
 		Handler:      s.authMiddleware(mux),
@@ -64,6 +72,11 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	_ = s.filter.Setup()
 	return s
+}
+
+// Probes returns the server-side diagnostic probe collector.
+func (s *Server) Probes() *probe.Collector {
+	return s.probes
 }
 
 // Capabilities returns detected system capabilities.
@@ -184,28 +197,41 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 			pids, e := s.process.Kill(req.Process)
 			err = e
 			applied = fmt.Sprintf("kill:signaled_pids=%v", pids)
+			s.probes.RecordSignal(req.Process, firstPID(pids), "SIGKILL", fmt.Sprintf("agent fault %d kill %s", req.FaultID, req.Process))
 
 		case nemesis.Pause:
 			method = "process:sigstop"
 			pids, e := s.process.Pause(req.Process)
 			err = e
 			applied = fmt.Sprintf("pause:signaled_pids=%v", pids)
+			s.probes.RecordSignal(req.Process, firstPID(pids), "SIGSTOP", fmt.Sprintf("agent fault %d pause %s", req.FaultID, req.Process))
 
 		case nemesis.Freeze:
 			method = "cgroup:freeze"
 			err = s.cgroup.Freeze(req.Cgroup)
 			applied = fmt.Sprintf("freeze:%s", req.Cgroup)
+			s.probes.RecordSignal(req.Cgroup, 0, "CGROUP_FREEZE", fmt.Sprintf("agent fault %d freeze %s", req.FaultID, req.Cgroup))
 
 		case nemesis.IOStall:
 			method = "cgroup:io-stall"
 			err = s.cgroup.IOStall(req.Cgroup, req.IODevice)
 			applied = fmt.Sprintf("io-stall:%s:%s", req.Cgroup, req.IODevice)
+			s.probes.Record(probe.Event{
+				Kind:    probe.KindFsyncStall,
+				Process: req.Cgroup,
+				Detail:  fmt.Sprintf("agent fault %d io-stall on %s", req.FaultID, req.IODevice),
+			})
 
 		case nemesis.ClockSkew:
 			method = "clock:date"
 			cmd := exec.Command("sh", "-c", fmt.Sprintf(`date -s "@$(( $(date +%%s) + %d ))" >/dev/null`, int64(req.Offset/time.Second)))
 			err = cmd.Run()
 			applied = fmt.Sprintf("clock-skew:%v", req.Offset)
+			s.probes.Record(probe.Event{
+				Kind:       probe.KindClockJump,
+				DurationNs: int64(req.Offset),
+				Detail:     fmt.Sprintf("agent fault %d clock-skew %v", req.FaultID, req.Offset),
+			})
 
 		default:
 			if req.Script != "" {
@@ -247,6 +273,7 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 			pids, e := s.process.Resume(req.Process)
 			err = e
 			applied = fmt.Sprintf("resume:signaled_pids=%v", pids)
+			s.probes.RecordSignal(req.Process, firstPID(pids), "SIGCONT", fmt.Sprintf("agent fault %d resume %s", req.FaultID, req.Process))
 
 		case nemesis.Freeze:
 			method = "cgroup:freeze"
@@ -295,6 +322,13 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 		resp.Error = err.Error()
 	}
 	return resp
+}
+
+func firstPID(pids []int) int {
+	if len(pids) == 0 {
+		return 0
+	}
+	return pids[0]
 }
 
 // Teardown idempotently restores all modified network and process state.
@@ -351,6 +385,24 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.probes.SampleOnce()
+	events := s.probes.Events()
+	if r.URL.Query().Get("reset") == "1" {
+		s.probes.Reset()
+	}
+	resp := ProbesResponse{
+		Node:   s.cfg.NodeName,
+		Events: events,
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }

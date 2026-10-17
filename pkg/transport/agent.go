@@ -9,6 +9,7 @@ import (
 
 	"github.com/kemalhafizh/strife/pkg/agent"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
+	"github.com/kemalhafizh/strife/pkg/probe"
 )
 
 // FaultApplier is an optional fast-path interface implemented by transports
@@ -20,6 +21,14 @@ type FaultApplier interface {
 	HealFault(ctx context.Context, n Node, f nemesis.Fault, env nemesis.Env) (string, error)
 	TeardownNode(ctx context.Context, n Node) error
 	JitterSummary() agent.JitterSummary
+}
+
+// ProbeCollector is an optional interface implemented by transports that can
+// harvest server-side diagnostic telemetry (fsync stalls, PSI, OOMs, signals)
+// from target cluster nodes.
+type ProbeCollector interface {
+	Transport
+	CollectProbes(ctx context.Context, nodes []Node, reset bool) ([]probe.Event, error)
 }
 
 // Agent executes commands and faults through per-node strife-agent daemons.
@@ -213,4 +222,27 @@ func (a *Agent) JitterSummary() agent.JitterSummary {
 // Collector returns the underlying JitterCollector.
 func (a *Agent) Collector() *agent.JitterCollector {
 	return a.collector
+}
+
+// CollectProbes harvests server-side diagnostic probe events from all target nodes.
+func (a *Agent) CollectProbes(ctx context.Context, nodes []Node, reset bool) ([]probe.Event, error) {
+	var all []probe.Event
+	var firstErr error
+	for _, n := range nodes {
+		c := a.clientFor(n)
+		evs, err := c.Probes(ctx, reset)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, ev := range evs {
+			if ev.Node == "" {
+				ev.Node = n.Name
+			}
+			all = append(all, ev)
+		}
+	}
+	return all, firstErr
 }

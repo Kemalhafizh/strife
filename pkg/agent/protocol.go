@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/nemesis"
+	"github.com/kemalhafizh/strife/pkg/probe"
 )
 
 // DefaultPort is the default TCP listening port for strife-agent.
@@ -87,4 +88,10 @@ type ExecResponse struct {
 	ExitCode int    `json:"exit_code"`
 	Output   string `json:"output"`
 	Error    string `json:"error,omitempty"`
+}
+
+// ProbesResponse is returned by GET /probes with server-side diagnostic telemetry.
+type ProbesResponse struct {
+	Node   string        `json:"node"`
+	Events []probe.Event `json:"events"`
 }

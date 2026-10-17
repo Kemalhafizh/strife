@@ -259,22 +259,25 @@ Result: **>50x reduction in injection jitter**, enabling deterministic fault inj
   - **Honest error classification**: server abort codes (deadlock `1213`, lock wait timeout `1205`, duplicate entry `1062`, lock nowait `3572`, TiDB write conflict `9007`, TiDB retryable `9008`, SQLSTATE `40001`) mapped to `fail`; connection drops or timeouts on write/commit mapped to `info`; failed reads mapped to `fail`.
   - **Docker Compose example** (`examples/tidb/`): TiDB standalone / cluster environment, fault injection profiles, and chaos scenario configs.
 
-### 2.4 eBPF: scope narrowed
+### 2.4 Server-Side Diagnostic Probe & Root-Cause Correlator (`pkg/probe`) ✅ done
 
-The blueprint proposes recording history via eBPF. That is **not** the right
-approach: the checker needs the operation's semantics (key, value, result).
-Getting those from eBPF means parsing every database's protocol in the kernel,
-whereas a client recording its own history is the standard approach and costs
-almost nothing.
+The blueprint originally proposed recording history via eBPF. That is **not**
+the right approach for the history itself: the checker needs the operation's
+semantics (key, value, result), which clients record directly at near-zero cost.
 
-eBPF stays valuable for **server-side observation** alongside the history:
+Instead, server-side telemetry is implemented for **root-cause observation and
+correlation** alongside the client history (`pkg/probe`):
 
-- `fsync` / `fdatasync` latency and errors,
-- signal and OOM events.
-
-This lets a report explain *why* a violation happened ("the leader's fsync
-stalled for 2.3s"). It ships as an optional component, outside the core
-binary.
+- **Server-Side Telemetry Collector (`pkg/probe/collector.go`)**:
+  - Polls Linux Pressure Stall Information (`/proc/pressure/io`, `/proc/pressure/cpu` `some`/`full` `total=` microsecond deltas),
+  - Monitors cgroup v2 `memory.events` for `oom_kill` increments,
+  - Measures active `fsync` canary latency and errors (`EIO`/`ENOSPC`) on the target storage volume,
+  - Detects non-monotonic wall-clock jumps (`clock_jump`),
+  - Captures process signal delivery (`SIGKILL`, `SIGSTOP`, `SIGCONT`, `CGROUP_FREEZE`) inside `strife-agent` (`GET /probes`).
+- **Root-Cause Correlator (`pkg/probe/correlate.go`)**:
+  - Cross-references linearizability counterexample windows (and indeterminate `info` writes) against server-side probe events (`probes.jsonl`) and active nemesis faults,
+  - Produces ranked root-cause attributions (`high` / `medium` / `low` confidence) explaining *why* a violation or indeterminate write occurred (e.g., *"the node's fsync stalled for 95ms during the violating read window"*),
+  - Integrated into `strife check --probes probes.jsonl`, `strife run` (via `strife-agent`), and rendered in `report.md` and `report.json`.
 
 ### 2.5 Wasm workloads: deferred
 
@@ -337,12 +340,19 @@ there is real demand from users who are not writing Go.
   - `strife verify --bundle bundle.json --key <public.key> [--history history.jsonl]`: verifies cryptographic signature, checks payload integrity against tampering, and optionally verifies that `history.jsonl` on disk matches bit-for-bit.
 - **Auditor Proof**: Guarantees to compliance regulators (SOC 2, ISO 27001, banking resilience audits) that chaos testing results and linearizability verdicts cannot be retroactively altered, falsified, or backdated.
 
-### 4.2 Regulatory Audit Mapping & Compliance Templates
-- Report templates that map to audit frameworks, for example data resilience
-  requirements in financial regulation. These need a compliance consultant to
-  validate the mapping and must not be written by guesswork.
-- A documented methodology: what is tested, what is not, and the limits of
-  live runs.
+### 4.2 Regulatory Audit Mapping & Compliance Dossier (`pkg/compliance` & `strife compliance`) ✅ done
+
+- **Empirical Technical Control Mapping (`pkg/compliance/compliance.go`)**:
+  - Maps provable technical resilience and consistency properties (network partition survival, crash/`fsync` durability, clock-skew tolerance, linearizability/isolation verification, and Ed25519 `in-toto` non-repudiation) to four regulatory and audit standards:
+    - **EU DORA** (`dora`): `DORA-Art.24-25` (Operational Resilience Testing), `DORA-Art.9.4(c)` (Data Integrity Under Disruption), `DORA-Art.11-12` (Crash Recovery & Storage Durability).
+    - **AICPA SOC 2** (`soc2`): `PI1.3-PI1.4` (Processing Integrity), `A1.2` (Environmental Disruption Recovery), `CC7.2-CC7.4` (Tamper-Evident Audit Evidence).
+    - **ISO/IEC 27001:2022** (`iso27001`): `A.8.13-A.8.14` (Information Backup & Redundancy), `A.8.17` (Clock Synchronization Resilience), `A.8.29` (Resilience Testing in Development & Acceptance).
+    - **Bank Indonesia / OJK** (`bi-ojk`): `SEOJK-29/MRTIK-DRC` (Uji Ketahanan & Pemulihan Bencana), `SEOJK-29/Integritas-Data` (Integritas & Konsistensi Data Transaksi), `SEOJK-29/Jejak-Audit` (Bukti Audit Kriptografis).
+  - Evaluates each control as `PASS`, `PARTIAL` (with explicit remediation hints when fault coverage or cryptographic signing is incomplete), or `FAIL`.
+- **Documented Methodology & Scope Boundaries**:
+  - Explicitly states *What Is Tested*, *What Is Not Tested* (omitted fault classes, Byzantine/hardware bit-rot, organizational policies), and *Execution & Reproducibility Boundaries* (simulation bit-for-bit replay vs. live cluster interleavings), plus a clear auditor disclaimer.
+- **Audit Dossier Artifacts & CLI (`strife compliance`)**:
+  - Generates tamper-evident `dossier.json`, `dossier.md`, and a self-contained, print-ready `dossier.html` from either a single `report.json` or a multi-seed `campaign.json` (plus optional `bundle.json` + Ed25519 public key).
 
 ## Wording guidelines
 
