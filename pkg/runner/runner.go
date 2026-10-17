@@ -31,6 +31,9 @@ type Options struct {
 	Clients client.Factory
 	// Logf receives progress messages.
 	Logf func(format string, args ...any)
+	// Schedule replaces the seeded fault schedule, to replay a recorded or
+	// shrunk one (it must be for the same number of nodes).
+	Schedule *nemesis.Schedule
 }
 
 // Result is the outcome of a live run.
@@ -77,6 +80,12 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	}
 	env := cfg.Env()
 	sched := cfg.Schedule()
+	if opts.Schedule != nil {
+		if opts.Schedule.Nodes != 0 && opts.Schedule.Nodes != len(cfg.Nodes) {
+			return nil, fmt.Errorf("the schedule is for %d nodes, the cluster has %d", opts.Schedule.Nodes, len(cfg.Nodes))
+		}
+		sched = *opts.Schedule
+	}
 	inj := &Injector{Transport: tr, Nodes: cfg.Nodes, Env: env}
 
 	logf("setup: preparing %d nodes via %s", len(cfg.Nodes), tr.Name())

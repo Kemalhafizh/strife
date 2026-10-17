@@ -185,3 +185,23 @@ func TestRedactedConfig(t *testing.T) {
 		t.Fatalf("redaction wrong: %q %q (original %q)", r.DB.Password, r.Transport.Token, cfg.DB.Password)
 	}
 }
+
+func TestScheduleOverrideIsReplayed(t *testing.T) {
+	cfg := testConfig()
+	sched := cfg.Schedule()
+	if len(sched.Faults) < 2 {
+		t.Fatalf("seeded schedule too small: %d faults", len(sched.Faults))
+	}
+	sched.Faults = sched.Faults[1:2]
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Schedule: &sched})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Schedule.Faults) != 1 || res.Schedule.Faults[0].ID != sched.Faults[0].ID || len(res.Applied) != 2 {
+		t.Fatalf("schedule %+v, applied %d", res.Schedule.Faults, len(res.Applied))
+	}
+	bad := nemesis.Schedule{Nodes: 5}
+	if _, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Schedule: &bad}); err == nil {
+		t.Fatal("a schedule for another cluster size was accepted")
+	}
+}

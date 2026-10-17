@@ -540,9 +540,24 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	maxRuns := fs.Int("max-runs", 600, "simulation budget")
 	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
 	keepWorkload := fs.Bool("keep-workload", false, "only shrink the fault schedule, not duration or clients")
+	live := fs.Bool("live", false, "shrink a live run's fault schedule against the real cluster (with --config and --report)")
+	cfgPath := fs.String("config", "strife.json", "live test config (with --live)")
+	attempts := fs.Int("attempts", 3, "live runs per candidate schedule; a candidate fails if any attempt fails (with --live)")
+	verify := fs.Int("verify", 5, "re-runs of the minimal schedule to measure its reproduction rate (with --live)")
+	dry := fs.Bool("dry-run", false, "log fault commands instead of executing them (with --live)")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
+	}
+	if *live {
+		budget := 40
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "max-runs" {
+				budget = *maxRuns
+			}
+		})
+		return cmdShrinkLive(liveShrinkArgs{config: *cfgPath, report: *from, out: *out, attempts: *attempts,
+			verify: *verify, maxRuns: budget, dry: *dry}, *ci, stdout)
 	}
 
 	if *historyPath != "" {
@@ -587,6 +602,107 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	suite := report.SuiteFromReport(rep, time.Since(start))
 	suite.Name = name
 	return emitCI(*ci, exitViolation, nil, suite)
+}
+
+type liveShrinkArgs struct {
+	config, report, out       string
+	attempts, verify, maxRuns int
+	dry                       bool
+}
+
+// cmdShrinkLive delta-debugs a live run's fault schedule on the real
+// cluster. Live clusters are not deterministic, so the result is a candidate
+// reproducer with a measured reproduction rate, not a proof of minimality.
+func cmdShrinkLive(a liveShrinkArgs, ci report.Outputs, stdout io.Writer) (int, error) {
+	start := time.Now()
+	name := "shrink --live"
+	cfg, err := runner.Load(a.config)
+	if err != nil {
+		return exitUsage, err
+	}
+	name += " · " + cfg.Name
+	sched := cfg.Schedule()
+	if a.report != "" {
+		data, err := os.ReadFile(a.report)
+		if err != nil {
+			return exitUsage, err
+		}
+		var rep report.Report
+		if err := json.Unmarshal(data, &rep); err != nil {
+			return exitUsage, fmt.Errorf("%s: %w", a.report, err)
+		}
+		if rep.Kind != report.KindLive {
+			return exitUsage, fmt.Errorf("%s: --live shrinks live reports (this one is %q)", a.report, rep.Kind)
+		}
+		sched = rep.Schedule
+	}
+	if len(sched.Faults) == 0 {
+		return exitUsage, fmt.Errorf("the schedule has no faults to shrink")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	run := func(ctx context.Context, s nemesis.Schedule) (checker.Verdict, error) {
+		opts := runner.Options{Schedule: &s}
+		if a.dry {
+			opts.Transport = &transport.DryRun{}
+		}
+		res, err := runner.Run(ctx, cfg, opts)
+		if err != nil {
+			return checker.Unknown, err
+		}
+		return res.Check.Verdict, nil
+	}
+	fmt.Fprintf(stdout, "\nshrinking %d faults of %q live (%d attempts per candidate, budget %d runs)…\n",
+		len(sched.Faults), cfg.Name, a.attempts, a.maxRuns)
+	res, err := shrink.Live(ctx, sched, shrink.LiveOptions{
+		Run: run, Attempts: a.attempts, MaxRuns: a.maxRuns, Verify: a.verify,
+		Logf: func(f string, args ...any) { fmt.Fprintf(stdout, "  "+f+"\n", args...) },
+	})
+	if errors.Is(err, shrink.ErrNotReproduced) {
+		return emitCI(ci, exitUsage, err, report.ErrorSuite(name, err))
+	}
+	if err != nil {
+		return emitCI(ci, exitError, err, report.ErrorSuite(name, err))
+	}
+	fmt.Fprintf(stdout, "candidate: %d → %d faults, reproduced %d/%d (%.0f%%) in %d live runs, %.1fs\n",
+		len(res.Original.Faults), len(res.Minimal.Faults), res.Reproduced, res.Verified, 100*res.Rate(), res.Runs, res.Elapsed.Seconds())
+	for _, f := range res.Minimal.Faults {
+		fmt.Fprintf(stdout, "         %s\n", f.Describe(res.Minimal.Nodes))
+	}
+	if res.Exhausted {
+		fmt.Fprintln(stdout, "note: the run budget ran out; the schedule may shrink further with --max-runs")
+	}
+	if a.out != "" {
+		dir := filepath.Join(a.out, fmt.Sprintf("%s-live-min-%s", cfg.Name, time.Now().UTC().Format("20060102T150405Z")))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return exitError, err
+		}
+		for file, v := range map[string]any{"schedule.json": res.Minimal, "shrink.json": res} {
+			data, err := json.MarshalIndent(v, "", "  ")
+			if err != nil {
+				return exitError, err
+			}
+			if err := os.WriteFile(filepath.Join(dir, file), append(data, '\n'), 0o644); err != nil {
+				return exitError, err
+			}
+		}
+		fmt.Fprintf(stdout, "replay: strife run --config %s --schedule %s\n", a.config, filepath.Join(dir, "schedule.json"))
+	}
+	suite := report.Suite{
+		Name:      name,
+		Time:      time.Since(start),
+		Headline:  fmt.Sprintf("candidate reproducer: %d of %d faults, reproduced in %d/%d runs", len(res.Minimal.Faults), len(res.Original.Faults), res.Reproduced, res.Verified),
+		Reproduce: fmt.Sprintf("strife run --config %s --schedule schedule.json", a.config),
+	}
+	suite.Cases = append(suite.Cases, report.Case{
+		Name:    "candidate reproducer",
+		Class:   "shrink.live",
+		Time:    suite.Time,
+		Status:  report.Failed,
+		Message: suite.Headline,
+		Detail:  strings.Join(res.Steps, "\n"),
+	})
+	return emitCI(ci, exitViolation, nil, suite)
 }
 
 func cmdShrinkHistory(path, modelName, isolation, outDir string, ci report.Outputs, stdout, stderr io.Writer) (int, error) {
@@ -935,6 +1051,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	quiet := fs.Bool("quiet", false, "less progress output")
 	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the verdict matches (for CI)")
 	faults := fs.String("faults", "", "override the config's fault kinds (comma separated, \"none\" for a baseline)")
+	schedPath := fs.String("schedule", "", "replay this fault schedule (JSON, e.g. from strife shrink --live) instead of the seeded one")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -965,6 +1082,17 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	opts := runner.Options{}
 	if !*quiet {
 		opts.Logf = func(format string, a ...any) { fmt.Fprintf(stdout, format+"\n", a...) }
+	}
+	if *schedPath != "" {
+		data, err := os.ReadFile(*schedPath)
+		if err != nil {
+			return exitUsage, err
+		}
+		var sched nemesis.Schedule
+		if err := json.Unmarshal(data, &sched); err != nil {
+			return exitUsage, fmt.Errorf("%s: %w", *schedPath, err)
+		}
+		opts.Schedule = &sched
 	}
 	var dryLog *transport.DryRun
 	if *dry {

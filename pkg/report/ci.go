@@ -3,13 +3,13 @@ package report
 import (
 	"encoding/xml"
 	"fmt"
-	"github.com/kemalhafizh/strife/internal/stats"
 	"io"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/kemalhafizh/strife/internal/stats"
 	"github.com/kemalhafizh/strife/pkg/checker"
 )
 
