@@ -134,11 +134,16 @@ func (in *Injector) Teardown(ctx context.Context, kinds []nemesis.Kind) []string
 }
 
 // Setup prepares the nodes for the given fault kinds. Transports that apply
-// faults themselves (strife-agent) need no preparation: running the shell
-// setup would only require tools the agent does not use (iptables in every
-// pod, say).
+// faults themselves (strife-agent) need no shell setup: it would only
+// require tools the agent does not use (iptables in every pod, say). Those
+// with slow lookups do them now, so the first fault lands on time.
 func (in *Injector) Setup(ctx context.Context, kinds []nemesis.Kind) []string {
 	if _, ok := in.Transport.(transport.FaultApplier); ok {
+		if p, ok := in.Transport.(transport.Preparer); ok {
+			if err := p.Prepare(ctx, in.Nodes); err != nil {
+				return []string{err.Error()}
+			}
+		}
 		return nil
 	}
 	return in.Exec(ctx, in.Env.Setup(kinds))

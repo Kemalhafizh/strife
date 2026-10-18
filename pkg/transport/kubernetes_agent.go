@@ -130,6 +130,22 @@ func (k *KubernetesAgent) target(ctx context.Context, n Node) (kubeTarget, error
 	return t, nil
 }
 
+// Prepare implements Preparer: it finds every node's container and agent
+// up front (two kubectl calls per pod, otherwise paid by the first fault).
+func (k *KubernetesAgent) Prepare(ctx context.Context, nodes []Node) error {
+	errs := make([]error, len(nodes))
+	var wg sync.WaitGroup
+	for i, n := range nodes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = k.target(ctx, n)
+		}()
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
 func (k *KubernetesAgent) forget(n Node) {
 	k.mu.Lock()
 	delete(k.targets, n.Name)

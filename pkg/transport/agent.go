@@ -25,6 +25,13 @@ type FaultApplier interface {
 	LatencySummary() stats.Summary
 }
 
+// Preparer is an optional interface for transports with slow per-node
+// lookups (the Kubernetes API): Prepare does them before the first fault,
+// so that fault lands on time and a missing node fails the setup.
+type Preparer interface {
+	Prepare(ctx context.Context, nodes []Node) error
+}
+
 // ProbeCollector is an optional interface implemented by transports that can
 // harvest server-side diagnostic telemetry (fsync stalls, PSI, OOMs, signals)
 // from target cluster nodes.

@@ -99,3 +99,65 @@ esac
 		t.Fatalf("cgroup: %q %v", cg, err)
 	}
 }
+
+// Prepare looks every pod up before the first fault, so faults pay no
+// kubectl call, and a pod that cannot be found fails the setup. Host
+// scripts are refused: the DaemonSet runs nothing on the nodes.
+func TestKubernetesAgentPrepare(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in kubectl is a shell script")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(agent.ApplyResponse{Success: true})
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$*" >> %[1]s
+case "$*" in
+*"--selector app=strife-agent"*) echo 127.0.0.1 ;;
+*"get pod etcd-"[01]*) echo "node-a containerd://%[2]s" ;;
+*) echo "not found: $*" >&2; exit 1 ;;
+esac
+`, calls, strings.Repeat("c", 64))
+	kubectl := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(kubectl, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := strconv.Atoi(port)
+	tr, err := New(Config{Type: "kubernetes-agent", Kubectl: kubectl, Namespace: "strife", AgentPort: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ka := tr.(*KubernetesAgent)
+	var _ Preparer = ka
+	nodes := []Node{{Name: "n1", Pod: "etcd-0", IP: "10.0.0.1"}, {Name: "n2", Pod: "etcd-1", IP: "10.0.0.2"}}
+	if err := ka.Prepare(context.Background(), nodes); err != nil {
+		t.Fatal(err)
+	}
+	countCalls := func() int {
+		data, _ := os.ReadFile(calls)
+		return strings.Count(string(data), "\n")
+	}
+	before := countCalls()
+	if before != 4 {
+		t.Fatalf("prepare made %d kubectl calls, want 2 per pod", before)
+	}
+	env := nemesis.Env{Nodes: []nemesis.Target{{Name: "n1", IP: "10.0.0.1"}, {Name: "n2", IP: "10.0.0.2"}}}
+	for _, n := range nodes {
+		if _, err := ka.InjectFault(context.Background(), n, nemesis.Fault{ID: 1, Kind: nemesis.Pause, Nodes: []int{0}}, env); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := countCalls(); after != before {
+		t.Fatalf("faults after prepare called kubectl %d more times", after-before)
+	}
+	if err := ka.Prepare(context.Background(), append(nodes, Node{Name: "n3", Pod: "etcd-9"})); err == nil || !strings.Contains(err.Error(), "etcd-9") {
+		t.Fatalf("a missing pod must fail prepare: %v", err)
+	}
+	if _, err := ka.HostExec(context.Background(), nodes[0], "true"); err == nil {
+		t.Fatal("host scripts must be refused")
+	}
+}

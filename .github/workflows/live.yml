@@ -127,10 +127,13 @@ jobs:
           name: bench-k8s
           path: live-out/bench-k8s*
           if-no-files-found: ignore
+      # Seed 710 draws every kind within 60 s when all seven are available
+      # (partition,kill,pause,latency,loss,freeze,io-stall, in that order):
+      # 8 faults, among them a kill whose restart runs inside the pod.
       - name: etcd on Kubernetes stays linearizable with every fault through the DaemonSet agent
         uses: ./
         with:
-          command: run --config examples/kubernetes/strife-agent.json --duration 60s --faults ${{ steps.faults.outputs.faults }},${{ steps.host.outputs.faults }} --expect linearizable --quiet
+          command: run --config examples/kubernetes/strife-agent.json --duration 60s --seed 710 --faults ${{ steps.faults.outputs.faults }},${{ steps.host.outputs.faults }} --expect linearizable --quiet
           out: live-out/kubernetes-agent
           junit: live-out/kubernetes-agent.xml
           artifact-name: live-kubernetes-agent
