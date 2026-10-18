@@ -6,8 +6,8 @@
 #      generated/: example reports produced by the CLI;
 #   2. assets/wasm/: the engine compiled to WebAssembly, then smoke-tested in
 #      Node against the native presets;
-#   3. the pages (Hugo), then a check that no wording the roadmap rules out
-#      made it into them.
+#   3. the pages (Hugo), then checks that every link and anchor within the
+#      site resolves and that no wording the roadmap rules out made it in.
 #
 # Environment: BASE_URL (default: hugo.toml's), HUGO (default: hugo),
 # OFFLINE=1 to skip asking GitHub for the latest release.
@@ -39,8 +39,14 @@ out=$(pwd)/generated/demos
   # shrink and campaign exit 1 when they find the violation they are shown for
   "$s" shrink --system raft-unsafe-fsync --faults kill,io-stall --seed 13 --out strife-out >/dev/null || [ $? -eq 1 ]
   cp strife-out/raft-unsafe-fsync-seed13-min/report.html "$out/timeline.html"
-  "$s" campaign --system raft-lease --faults clock-skew,partition --seeds 1..40 --keep 0 --out strife-campaign >/dev/null || [ $? -eq 1 ]
+  "$s" campaign --system raft-lease --faults clock-skew,partition --seeds 1..40 --out strife-campaign >/dev/null || [ $? -eq 1 ]
   cp strife-campaign/campaign.html "$out/campaign.html"
+  # with the report of each violating seed it links to
+  for d in strife-campaign/*/; do
+    [ -f "$d/report.html" ] || continue
+    mkdir -p "$out/$(basename "$d")"
+    cp "$d/report.html" "$out/$(basename "$d")/"
+  done
   "$s" sim --system raft --seed 7 --out strife-out >/dev/null
   "$s" keygen --out example-auditor >/dev/null
   "$s" sign --report strife-out/raft-seed7/report.json --key example-auditor.key \
@@ -68,11 +74,12 @@ node wasm/smoke.cjs assets/wasm/wasm_exec.js assets/wasm/strife.wasm data/preset
 
 echo "==> pages"
 rm -rf public
-if [ -n "${BASE_URL:-}" ]; then
-  "$hugo" --gc --minify --baseURL "${BASE_URL%/}/"
-else
-  "$hugo" --gc --minify
-fi
+base=$(sed -n 's/^baseURL *= *"\(.*\)"/\1/p' hugo.toml)
+[ -n "${BASE_URL:-}" ] && base=${BASE_URL%/}/
+"$hugo" --gc --minify --baseURL "$base"
+
+echo "==> links"
+node scripts/check-links.cjs public "$base"
 
 echo "==> wording"
 scripts/check-wording.sh public ../docs/ROADMAP.md

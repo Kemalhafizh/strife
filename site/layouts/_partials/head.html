@@ -1,7 +1,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {{- $title := .Title }}
-{{- if .IsHome }}{{ $title = i18n "home_title" }}{{ else }}{{ $title = printf "%s · Strife" .Title }}{{ end }}
+{{- /* Titles taken from the repository's headings can carry Markdown, such as `strife-agent`. */}}
+{{- if .IsHome }}{{ $title = i18n "home_title" }}{{ else }}{{ $title = printf "%s · Strife" (.Title | markdownify | plainify | htmlUnescape) }}{{ end }}
 <title>{{ $title }}</title>
 {{- $desc := .Description | default .Summary | default site.Params.description }}
 {{- if .IsHome }}{{ $desc = i18n "home_description" }}{{ end }}
