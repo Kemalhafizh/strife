@@ -1,18 +1,19 @@
-//go:build windows
+//go:build windows || js || wasip1
 
 package agent
 
 import (
 	"fmt"
 	"os"
+	"runtime"
 )
 
 func sendStop(pid int) error {
-	return fmt.Errorf("process: SIGSTOP not supported on windows (pid %d)", pid)
+	return fmt.Errorf("process: SIGSTOP not supported on %s (pid %d)", runtime.GOOS, pid)
 }
 
 func sendCont(pid int) error {
-	return fmt.Errorf("process: SIGCONT not supported on windows (pid %d)", pid)
+	return fmt.Errorf("process: SIGCONT not supported on %s (pid %d)", runtime.GOOS, pid)
 }
 
 func sendKill(pid int) error {
