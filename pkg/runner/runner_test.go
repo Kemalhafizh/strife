@@ -295,3 +295,60 @@ func TestKubernetesRunThroughKubectl(t *testing.T) {
 		}
 	}
 }
+
+// TestKubernetesHostFaultsThroughNodeHelper runs freeze and io-stall on
+// pods: cgroups and the data disk are discovered through the node helper,
+// and the cgroup writes run in the helper on the pod's node.
+func TestKubernetesHostFaultsThroughNodeHelper(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "kubectl.log")
+	fake := filepath.Join(dir, "kubectl")
+	script := `#!/bin/sh
+echo "$*" >> ` + log + `
+case "$*" in
+*'{.spec.nodeName}'*) echo node-a ;;
+*'get pods'*) echo strife-node-x ;;
+*containerStatuses*) echo "containerd://c0ffee00000$(echo "$*" | sed 's/.*etcd-\([0-9]\).*/\1/')" ;;
+*'{.status.podIP}'*) echo "10.244.0.$(echo "$*" | sed 's/.*etcd-\([0-9]\).*/\1/')" ;;
+*'exec strife-node-x'*'find '*) id=$(echo "$*" | sed "s/.*-name '\*\([0-9a-f]*\)\*'.*/\1/"); echo "/host/sys/fs/cgroup/kubepods.slice/cri-containerd-$id.scope" ;;
+*'exec strife-node-x'*'stat -c'*) echo 8:0 ;;
+esac
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.Transport = transport.Config{Type: "kubernetes", Kubectl: fake, Namespace: "strife",
+		NodeHelper: &transport.NodeHelper{Namespace: "strife-system", Selector: "app=strife-node"}}
+	for i := range cfg.Nodes {
+		cfg.Nodes[i].IP, cfg.Nodes[i].Pod, cfg.Nodes[i].Container, cfg.Nodes[i].Cgroup = "auto", fmt.Sprintf("etcd-%d", i), "etcd", "auto"
+	}
+	cfg.Nemesis.Faults = []nemesis.Kind{nemesis.Freeze, nemesis.IOStall}
+	cfg.Nemesis.IODevice = "auto"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Verdict != checker.Linearizable || len(res.Applied) == 0 {
+		t.Fatalf("verdict %s, %d transitions", res.Check.Verdict, len(res.Applied))
+	}
+	data, _ := os.ReadFile(log)
+	got := string(data)
+	for _, want := range []string{
+		"--namespace strife-system get pods --selector app=strife-node --field-selector spec.nodeName=node-a,status.phase=Running",
+		"/host/sys/fs/cgroup/kubepods.slice/cri-containerd-c0ffee000001.scope/cgroup.freeze",
+		"8:0 rbps=1 wbps=1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("kubectl never ran %q:\n%s", want, got)
+		}
+	}
+	// Without a node helper, host faults are refused up front.
+	cfg.Transport.NodeHelper = nil
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("freeze accepted on kubernetes without a node helper")
+	}
+}

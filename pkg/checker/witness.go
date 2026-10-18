@@ -76,10 +76,10 @@ func AddWitnesses(m model.Model, ops []history.Op, rep *Report, o WitnessOptions
 }
 
 func partitions(m model.Model, ops []history.Operation) ([]string, [][]history.Operation) {
-	var relevant []history.Operation
-	for _, o := range ops {
-		if m.Relevant(o) {
-			relevant = append(relevant, o)
+	relevant := make([]history.Operation, 0, len(ops))
+	for i := range ops {
+		if m.Relevant(ops[i]) {
+			relevant = append(relevant, ops[i])
 		}
 	}
 	return m.Partition(relevant)

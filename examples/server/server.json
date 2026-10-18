@@ -1,0 +1,20 @@
+{
+  "listen": ":8080",
+  "data": "/var/lib/strife",
+  "public_url": "https://strife.internal.example",
+  "projects": [
+    {
+      "name": "payments",
+      "token": "env:STRIFE_PAYMENTS_TOKEN",
+      "read_token": "env:STRIFE_PAYMENTS_READ_TOKEN",
+      "trusted_keys": ["keys/ci-release.pub"],
+      "require_signature": true,
+      "webhook": "env:STRIFE_PAYMENTS_WEBHOOK",
+      "retain": 2000
+    },
+    {
+      "name": "ledger",
+      "token": "file:/run/secrets/strife-ledger-token"
+    }
+  ]
+}

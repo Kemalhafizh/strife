@@ -36,6 +36,7 @@ type Model interface {
 	Relevant(op history.Operation) bool
 	// Partition splits a history into independently checkable sub-histories
 	// (P-compositionality). Returning a single partition is always valid.
+	// A part may share ops' backing array.
 	Partition(ops []history.Operation) (keys []string, parts [][]history.Operation)
 }
 
@@ -93,18 +94,33 @@ func ByName(name string) (Model, error) {
 func Names() []string { return []string{"kv", "set", "queue", "counter", "idgen", "txn", "append"} }
 
 func partitionByKey(ops []history.Operation) ([]string, [][]history.Operation) {
+	// Two passes so that each part is allocated once at its final size:
+	// operations are large and growing the parts by appending copied most
+	// of a big history several times over.
 	idx := map[string]int{}
 	var keys []string
-	var parts [][]history.Operation
-	for _, o := range ops {
-		i, ok := idx[o.Input.Key]
+	var count []int
+	for i := range ops {
+		k := ops[i].Input.Key
+		j, ok := idx[k]
 		if !ok {
-			i = len(keys)
-			idx[o.Input.Key] = i
-			keys = append(keys, o.Input.Key)
-			parts = append(parts, nil)
+			j = len(keys)
+			idx[k] = j
+			keys = append(keys, k)
+			count = append(count, 0)
 		}
-		parts[i] = append(parts[i], o)
+		count[j]++
+	}
+	if len(keys) == 1 {
+		return keys, [][]history.Operation{ops}
+	}
+	parts := make([][]history.Operation, len(keys))
+	for j, c := range count {
+		parts[j] = make([]history.Operation, 0, c)
+	}
+	for i := range ops {
+		j := idx[ops[i].Input.Key]
+		parts[j] = append(parts[j], ops[i])
 	}
 	// Report keys in a stable, human friendly order.
 	order := make([]int, len(keys))

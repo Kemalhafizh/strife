@@ -8,7 +8,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// signalTimeout bounds how long a signal fault waits for the kernel to apply
+// it: a process in uninterruptible sleep stops or dies only when the call it
+// is blocked in returns.
+const signalTimeout = 5 * time.Second
 
 // ProcessEngine manages process signals (SIGSTOP, SIGCONT, SIGKILL) with direct syscalls.
 type ProcessEngine struct{}
@@ -82,49 +88,73 @@ func (p *ProcessEngine) scanProc(pattern string, myPID int) ([]int, error) {
 	return pids, nil
 }
 
-// Pause sends SIGSTOP to all matching processes.
+// Pause sends SIGSTOP to all matching processes and returns once each is
+// stopped (or gone): a signal is delivered when its target is next
+// scheduled, not when kill returns.
 func (p *ProcessEngine) Pause(pattern string) ([]int, error) {
-	pids, err := p.FindPIDs(pattern)
-	if err != nil {
-		return nil, err
-	}
-	var signaled []int
-	for _, pid := range pids {
-		if err := sendStop(pid); err == nil {
-			signaled = append(signaled, pid)
-		}
-	}
-	return signaled, nil
+	return p.signal(pattern, sendStop, "stopped", func(st byte) bool {
+		return st == 'T' || st == 't' || st == 'Z' || st == 'X'
+	})
 }
 
-// Resume sends SIGCONT to all matching processes.
+// Resume sends SIGCONT to all matching processes and returns once none is
+// stopped.
 func (p *ProcessEngine) Resume(pattern string) ([]int, error) {
-	pids, err := p.FindPIDs(pattern)
-	if err != nil {
-		return nil, err
-	}
-	var signaled []int
-	for _, pid := range pids {
-		if err := sendCont(pid); err == nil {
-			signaled = append(signaled, pid)
-		}
-	}
-	return signaled, nil
+	return p.signal(pattern, sendCont, "running", func(st byte) bool { return st != 'T' })
 }
 
-// Kill sends SIGKILL to all matching processes.
+// Kill sends SIGKILL to all matching processes and returns once each has
+// exited.
 func (p *ProcessEngine) Kill(pattern string) ([]int, error) {
+	return p.signal(pattern, sendKill, "dead", func(st byte) bool { return st == 'Z' || st == 'X' })
+}
+
+func (p *ProcessEngine) signal(pattern string, send func(int) error, want string, done func(byte) bool) ([]int, error) {
 	pids, err := p.FindPIDs(pattern)
 	if err != nil {
 		return nil, err
 	}
 	var signaled []int
 	for _, pid := range pids {
-		if err := sendKill(pid); err == nil {
+		if err := send(pid); err == nil {
 			signaled = append(signaled, pid)
 		}
 	}
-	return signaled, nil
+	return signaled, waitState(signaled, want, done)
+}
+
+// waitState waits until every process's state satisfies done or the process
+// is gone. Without /proc there is nothing to observe and it returns at once.
+func waitState(pids []int, want string, done func(byte) bool) error {
+	deadline := time.Now().Add(signalTimeout)
+	for _, pid := range pids {
+		for {
+			st := procState(pid)
+			if st == 0 || done(st) {
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("process: pid %d still in state %c, not %s, %v after the signal", pid, st, want, signalTimeout)
+			}
+			time.Sleep(20 * time.Microsecond)
+		}
+	}
+	return nil
+}
+
+// procState is the state letter in /proc/<pid>/stat (R, S, D, T, Z…), or 0
+// when the process is gone or /proc is unavailable.
+func procState(pid int) byte {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0
+	}
+	// The command name in parentheses may itself contain ") ".
+	i := bytes.LastIndexByte(data, ')')
+	if i < 0 || i+2 >= len(data) {
+		return 0
+	}
+	return data[i+2]
 }
 
 // Restart executes startCmd in a background shell process.

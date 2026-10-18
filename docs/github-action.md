@@ -41,6 +41,9 @@ jobs:
 | `artifact-name` | `strife-reports` | Artifact name. It must be unique per workflow run when you use the action twice. |
 | `fail` | `true` | Fail the step when Strife exits non-zero. |
 | `go-version` | Strife's `go.mod` | Go version used to build Strife. |
+| `push-server` | `""` | URL of a [`strife server`](server.md). When set, the run's reports (or its `campaign.json`) are pushed there after the run, with the commit, branch and a link to the job, also when Strife failed. |
+| `push-project` | `""` | Project on the server. |
+| `push-token-env` | `STRIFE_TOKEN` | Name of the environment variable that holds the project's write token. |
 
 ### Outputs
 
@@ -90,6 +93,28 @@ seed violates. `--shrink` attaches a minimal reproducer to the reports:
     fail: "false"
 - if: steps.strife.outputs.outcome == 'violation'
   run: echo "found one, see ${{ steps.strife.outputs.report-dir }}"
+```
+
+**Keep every run and flag regressions across commits.** Push to your
+[`strife server`](server.md). The server verifies each run, compares it with
+the previous run of its series, and calls its webhook on a regression; the
+step annotates the job with an error when the server reports one:
+
+```yaml
+- uses: kemalhafizh/strife@main
+  env:
+    STRIFE_TOKEN: ${{ secrets.STRIFE_TOKEN }}
+  with:
+    command: campaign --system raft --seeds 1..200
+    push-server: https://strife.internal
+    push-project: payments
+```
+
+Outside GitHub, run `strife push` yourself after the run; it exits 1 on a
+regression:
+
+```sh
+STRIFE_TOKEN=... strife push --server https://strife.internal --project payments strife-out/campaign.json
 ```
 
 **Show results in the PR's Checks tab.** Feed the JUnit file to any JUnit

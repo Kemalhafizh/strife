@@ -280,7 +280,7 @@ func ResolveHost(ctx context.Context, cfg *Config, tr transport.Transport) (*Con
 	}
 	hr, ok := tr.(transport.HostResolver)
 	if !ok {
-		return nil, fmt.Errorf("\"auto\" cgroups and io_device need the docker transport, not %s", tr.Name())
+		return nil, fmt.Errorf("\"auto\" cgroups and io_device need the docker transport, or kubernetes with a node helper, not %s", tr.Name())
 	}
 	c := *cfg
 	c.Nodes = append([]transport.Node(nil), cfg.Nodes...)

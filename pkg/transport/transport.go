@@ -41,16 +41,17 @@ type Config struct {
 	Type   string `json:"type"` // docker | ssh | agent | kubernetes | dry-run
 	Docker string `json:"docker,omitempty"`
 	// Kubernetes: the kubectl binary, namespace, context and kubeconfig.
-	Kubectl    string `json:"kubectl,omitempty"`
-	Namespace  string `json:"namespace,omitempty"`
-	Context    string `json:"context,omitempty"`
-	Kubeconfig string `json:"kubeconfig,omitempty"`
-	User       string `json:"user,omitempty"`
-	Port       int    `json:"port,omitempty"`
-	Key        string `json:"key,omitempty"`
-	Sudo       bool   `json:"sudo,omitempty"`       // ssh: remote sudo; docker: sudo for host commands (cgroup faults)
-	AgentPort  int    `json:"agent_port,omitempty"` // strife-agent port, default 9292
-	Token      string `json:"token,omitempty"`      // strife-agent token; "env:NAME" or "file:PATH" keeps it out of the config
+	Kubectl    string      `json:"kubectl,omitempty"`
+	Namespace  string      `json:"namespace,omitempty"`
+	Context    string      `json:"context,omitempty"`
+	Kubeconfig string      `json:"kubeconfig,omitempty"`
+	NodeHelper *NodeHelper `json:"node_helper,omitempty"` // privileged per-node pods for host faults
+	User       string      `json:"user,omitempty"`
+	Port       int         `json:"port,omitempty"`
+	Key        string      `json:"key,omitempty"`
+	Sudo       bool        `json:"sudo,omitempty"`       // ssh: remote sudo; docker: sudo for host commands (cgroup faults)
+	AgentPort  int         `json:"agent_port,omitempty"` // strife-agent port, default 9292
+	Token      string      `json:"token,omitempty"`      // strife-agent token; "env:NAME" or "file:PATH" keeps it out of the config
 }
 
 // New builds the configured transport.
@@ -67,7 +68,7 @@ func New(c Config) (Transport, error) {
 		if bin == "" {
 			bin = "kubectl"
 		}
-		return &Kubernetes{Binary: bin, Namespace: c.Namespace, Context: c.Context, Kubeconfig: c.Kubeconfig}, nil
+		return &Kubernetes{Binary: bin, Namespace: c.Namespace, Context: c.Context, Kubeconfig: c.Kubeconfig, Helper: c.NodeHelper}, nil
 	case "ssh":
 		return &SSH{User: c.User, Port: c.Port, Key: c.Key, Sudo: c.Sudo}, nil
 	case "agent":

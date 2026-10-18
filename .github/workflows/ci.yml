@@ -16,6 +16,13 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
         run: go vet ./...
+      - name: every release platform builds
+        run: |
+          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            GOOS=${p%/*} GOARCH=${p#*/} go build ./... || { echo "build failed for $p"; exit 1; }
+          done
+      - name: the libraries the website runs in the browser build for js/wasm
+        run: GOOS=js GOARCH=wasm go build ./pkg/explore ./pkg/checker ./pkg/report ./pkg/attest ./pkg/compliance ./pkg/model
       - name: lint the GitHub Action and workflows
         run: |
           shellcheck scripts/*.sh
@@ -130,3 +137,35 @@ jobs:
           print("JUnit ok:", root.get("tests"), "tests,", root.get("failures"), "failures")
           PY
           test -f strife-out/raft-stale-reads-seed2-min/report.html
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: start a run registry (strife server)
+        env:
+          STRIFE_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-registry
+        run: |
+          go build -o bin/strife ./cmd/strife
+          mkdir -p registry
+          echo '{"listen":"127.0.0.1:8088","data":"registry/data","projects":[{"name":"ci","token":"env:STRIFE_TOKEN"}]}' > registry/server.json
+          nohup bin/strife server --config registry/server.json > registry/server.log 2>&1 &
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8088/healthz && exit 0; sleep 0.5; done
+          cat registry/server.log; exit 1
+      - name: the action pushes a campaign to the registry
+        uses: ./
+        env:
+          STRIFE_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-registry
+        with:
+          command: campaign --system raft-stale-reads --faults partition --seeds 1..8 --duration 3s
+          out: registry-out
+          artifact-name: strife-registry
+          fail: "false"
+          push-server: http://127.0.0.1:8088
+          push-project: ci
+      - name: the registry holds the campaign
+        env:
+          STRIFE_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-registry
+        run: |
+          runs=$(curl -fsS -H "Authorization: Bearer $STRIFE_TOKEN" http://127.0.0.1:8088/api/v1/projects/ci/runs)
+          echo "$runs"
+          python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert len(r)==1 and r[0]["kind"]=="campaign" and r[0]["source"].endswith(sys.argv[2]), r' "$runs" "$GITHUB_RUN_ID"
+          curl -fsS -u "x:$STRIFE_TOKEN" http://127.0.0.1:8088/ui/ci | grep -q raft-stale-reads
