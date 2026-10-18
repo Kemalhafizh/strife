@@ -30,7 +30,8 @@ only gain optional fields.
   `kubernetes-agent` no longer both read `agent:direct`.
 - The `kubernetes-agent` transport looks up every pod's node and container
   during setup, so the first fault lands on time (a benchmark's first
-  partition took 329 ms) and a missing pod fails the setup.
+  partition took 329 ms, now at most 3.88 ms) and a missing pod fails the
+  setup.
 - The live Kubernetes check through the DaemonSet runs seed 710, which
   draws all seven fault kinds, a kill among them, within 60 s.
 

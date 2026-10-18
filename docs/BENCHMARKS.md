@@ -5,7 +5,7 @@ on this page comes with the command that produced it, the machine it ran on
 and the date. Numbers without a reproduction do not belong in the README.
 
 Measured on 2026-10-17 and 2026-10-18 at commits `e5527d8`, `0249500`,
-`1dc5577`, `32ef8a8` and `69d5930` (CI, named per table) and on the working
+`1dc5577`, `32ef8a8`, `69d5930` and `89a26a7` (CI, named per table) and on the working
 tree of the same branch (local). Shared
 CI runners are noisy: treat a single run as a sample, not a specification.
 Where two runs differ, both are shown.
@@ -179,9 +179,10 @@ No transition failed (0 errors in every row).
 ¹ One slow transition per benchmark run: 329 ms for a partition, ~200 ms for
 a freeze, the first of each run. Before its first fault the transport had
 not yet looked up the pods' nodes and container IDs (two `kubectl` calls per
-pod, cached afterwards). A test run always did these lookups before the
-first fault (its fault timing below peaks at 3.65 ms); the transport now
-does them during setup for benchmarks too.
+pod, cached afterwards). It now does them during setup: in run
+[39123114580](https://github.com/Kemalhafizh/strife/actions/runs/39123114580)
+(commit `89a26a7`, EPYC 9V45) the slowest partition inject took 3.88 ms and
+the slowest freeze inject 2.6 ms.
 
 **Reading it:**
 
@@ -203,9 +204,13 @@ does them during setup for benchmarks too.
   faults: a partition changes every node, and the slowest of the three
   parallel execs decides.
 
-The same job runs etcd for 60 s through the DaemonSet with all seven kinds
-enabled. Seed 42 draws pause, packet loss and io-stall: 19,269 operations,
-LINEARIZABLE, faults confirmed at P50 1.21 ms, maximum 3.65 ms.
+The same job runs etcd for 60 s through the DaemonSet with seed 710, whose
+schedule draws all seven kinds: packet loss, a kill (the database restarted
+inside its pod), latency, pause, io-stall, two partitions and a freeze. Run
+[39123114580](https://github.com/Kemalhafizh/strife/actions/runs/39123114580):
+14,221 operations, LINEARIZABLE, its 16 transitions confirmed at P50 1.15 ms,
+maximum 3.47 ms. (Seed 42, used before, drew only pause, packet loss and
+io-stall: 19,269 operations, LINEARIZABLE.)
 `scripts/live/check-k8s-agent-partition.sh` checks that a partition through
 the agent cuts `etcd-0` from `etcd-1` and from nothing else, that a fault
 naming no pod is refused, and that the heal restores the traffic.
@@ -332,7 +337,7 @@ that does not produce the expected verdict fails the job.
 | cgroup | etcd | freeze, io-stall | linearizable | pass |
 | kubernetes | etcd StatefulSet in kind | partition, kill, pause, latency ², loss ² | linearizable | pass |
 | kubernetes | same, through the node helper | freeze, io-stall ³ | linearizable | pass |
-| kubernetes | same, through the strife-agent DaemonSet | all seven kinds ², ³ (seed 42 draws pause, loss, io-stall) | linearizable | pass |
+| kubernetes | same, through the strife-agent DaemonSet | all seven kinds ², ³ (seed 710 draws each, a kill included) | linearizable | pass |
 | kubernetes | two etcd pods, through the DaemonSet agent | one partition, then its heal; a fault naming no pod | only that traffic cut, then restored; refused | pass |
 | valkey | Valkey 8, primary + 2 async replicas | partition, pause | linearizable | **violation** (stale replica reads) |
 | valkey | Valkey 8, single primary, `appendfsync always` | kill -9 | linearizable | pass |
@@ -363,5 +368,6 @@ and checked in `go test ./pkg/txn`.
 
 Runs [39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049)
 (commit `0249500`), [39056797048](https://github.com/Kemalhafizh/strife/actions/runs/39056797048)
-(commit `1dc5577`) and [39109099995](https://github.com/Kemalhafizh/strife/actions/runs/39109099995)
-(commit `69d5930`) passed all ten jobs.
+(commit `1dc5577`), [39109099995](https://github.com/Kemalhafizh/strife/actions/runs/39109099995)
+(commit `69d5930`) and [39123114580](https://github.com/Kemalhafizh/strife/actions/runs/39123114580)
+(commit `89a26a7`) passed all ten jobs.

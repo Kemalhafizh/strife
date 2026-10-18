@@ -465,12 +465,13 @@ reports the filter it actually uses.
 
 ### 5.7 strife-agent as a Kubernetes DaemonSet ✅ (phase-6/k8s-agent)
 
-Measured in [`BENCHMARKS.md`](BENCHMARKS.md) §1 and §5, run
-[39109099995](https://github.com/Kemalhafizh/strife/actions/runs/39109099995).
+Measured in [`BENCHMARKS.md`](BENCHMARKS.md) §1 and §5, runs
+[39109099995](https://github.com/Kemalhafizh/strife/actions/runs/39109099995)
+and [39123114580](https://github.com/Kemalhafizh/strife/actions/runs/39123114580).
 
 | Carried forward | Done |
 |---|---|
-| Kubernetes faults took 130–230 ms each through `kubectl exec` and needed tools (iptables, tc) and `NET_ADMIN` in every pod | One agent per node applies each fault inside the target pod: nf_tables and netem in its network namespace, signals on its processes only, freeze and io-stall on its cgroup. 1.1–1.9 ms per network or cgroup fault, 2.8 ms per signal, 4.5 ms for a restart, at P50 in kind. Pods need no privileges or tools. A 60 s etcd run with all seven kinds enabled stays linearizable (its schedule drew pause, loss and io-stall); the benchmark exercises every kind. |
+| Kubernetes faults took 130–230 ms each through `kubectl exec` and needed tools (iptables, tc) and `NET_ADMIN` in every pod | One agent per node applies each fault inside the target pod: nf_tables and netem in its network namespace, signals on its processes only, freeze and io-stall on its cgroup. 1.1–1.9 ms per network or cgroup fault, 2.8 ms per signal, 4.5 ms for a restart, at P50 in kind. Pods need no privileges or tools. A 60 s etcd run whose schedule draws all seven kinds, a kill and its in-pod restart included, stays linearizable (14,221 operations). |
 | An agent sharing the node's namespaces could fault the node itself | `-require-target` refuses faults that name no pod, network faults on `hostNetwork` pods, cgroups outside the target, and every script (`/exec`, the shell fallback). Teardown leaves the node's interface and packet filter alone, and netem deletion names its kind. |
 | A restart after a kill ran as root with every capability | The agent's own static binary enters the container and takes on its init's user, groups, capability sets and `no_new_privs` before it starts `db.start`; it never inherits the agent's environment. |
 
