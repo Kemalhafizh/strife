@@ -1,0 +1,4 @@
+{{- /* The README uses a little inline TeX ($\le 3$); render it as text. */ -}}
+{{- $t := .Inner | replaceRE `\\le\b` "≤" | replaceRE `\\ge\b` "≥" | replaceRE `\\log\b` "log" | replaceRE `\\times\b` "×" | replaceRE `\\,` " " -}}
+<span class="math">{{ $t }}</span>
+{{- /* chomp */ -}}

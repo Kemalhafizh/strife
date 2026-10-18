@@ -1,0 +1,242 @@
+# The website. Build it with site/build.sh, which first generates data/ and
+# the WebAssembly module; see site/README.md.
+
+# CI passes the address GitHub Pages reports, so a custom domain set in the
+# repository's Pages settings takes effect on the next build. This value is
+# only the default for local builds.
+baseURL = "https://kemalhafizh.github.io/strife/"
+title = "Strife"
+defaultContentLanguage = "id"
+defaultContentLanguageInSubdir = false
+enableRobotsTXT = true
+disableKinds = ["taxonomy", "term", "rss"]
+timeZone = "Asia/Jakarta"
+
+[languages.id]
+languageName = "Bahasa Indonesia"
+languageCode = "id-ID"
+contentDir = "content/id"
+weight = 1
+
+[languages.en]
+languageName = "English"
+languageCode = "en"
+contentDir = "content/en"
+weight = 2
+
+[markup.goldmark.renderer]
+unsafe = true # the repository's own Markdown uses a little HTML
+
+[markup.goldmark.parser]
+autoHeadingIDType = "github" # so README anchors keep working
+
+[markup.goldmark.extensions.passthrough]
+enable = true
+[markup.goldmark.extensions.passthrough.delimiters]
+inline = [["$", "$"]]
+
+[markup.highlight]
+noClasses = false
+guessSyntax = false
+
+[markup.tableOfContents]
+startLevel = 2
+endLevel = 3
+
+# Documentation is rendered from the repository's own Markdown at build time,
+# so the site never carries a stale copy. ROADMAP.md stays internal.
+[[module.mounts]]
+source = "assets"
+target = "assets"
+
+[[module.mounts]]
+source = "static"
+target = "static"
+
+# Example reports made by the CLI during the build (build.sh).
+[[module.mounts]]
+source = "generated"
+target = "static"
+
+[[module.mounts]]
+source = "../README.md"
+target = "assets/repo/README.md"
+
+[[module.mounts]]
+source = "../CHANGELOG.md"
+target = "assets/repo/CHANGELOG.md"
+
+[[module.mounts]]
+source = "../docs"
+target = "assets/repo/docs"
+includeFiles = ["BENCHMARKS.md", "github-action.md"]
+
+[[module.mounts]]
+source = "../examples"
+target = "assets/repo/examples"
+includeFiles = ["*/README.md"]
+
+[params]
+repo = "https://github.com/Kemalhafizh/strife"
+description = "Deterministic fault injection, linearizability checking and signed audit evidence for distributed systems."
+
+# Contact channels. Leave a field empty to hide it. The contact form needs at
+# least one of email, whatsapp or formEndpoint.
+[params.contact]
+email = ""        # e.g. halo@example.co.id
+whatsapp = ""     # international format, digits only, e.g. 6281234567890
+calendar = ""     # a booking page (Cal.com, Google Calendar appointments, ...)
+formEndpoint = "" # optional Formspree-compatible endpoint; email is used otherwise
+security = ""     # address for vulnerability reports; email is used otherwise
+
+[sitemap]
+changeFreq = "weekly"
+
+# Navigation, per language (the slugs differ).
+[[languages.id.menus.main]]
+name = "Coba"
+pageRef = "/coba"
+weight = 10
+[[languages.id.menus.main]]
+name = "Unduh"
+pageRef = "/unduh"
+weight = 20
+[[languages.id.menus.main]]
+name = "Dokumentasi"
+pageRef = "/docs"
+weight = 30
+[[languages.id.menus.main]]
+name = "Kepatuhan"
+pageRef = "/kepatuhan"
+weight = 40
+[[languages.id.menus.main]]
+name = "Harga"
+pageRef = "/harga"
+weight = 50
+[[languages.id.menus.main]]
+name = "Teknologi"
+pageRef = "/teknologi"
+weight = 60
+
+[[languages.id.menus.product]]
+name = "Coba di browser"
+pageRef = "/coba"
+weight = 10
+[[languages.id.menus.product]]
+name = "Unduh"
+pageRef = "/unduh"
+weight = 20
+[[languages.id.menus.product]]
+name = "Dokumentasi"
+pageRef = "/docs"
+weight = 30
+[[languages.id.menus.product]]
+name = "Teknologi"
+pageRef = "/teknologi"
+weight = 40
+[[languages.id.menus.product]]
+name = "Harga"
+pageRef = "/harga"
+weight = 50
+[[languages.id.menus.tools]]
+name = "Playground simulasi"
+pageRef = "/coba"
+weight = 10
+[[languages.id.menus.tools]]
+name = "Studio riwayat"
+pageRef = "/studio"
+weight = 20
+[[languages.id.menus.tools]]
+name = "Verifikasi bukti"
+pageRef = "/verifikasi"
+weight = 30
+[[languages.id.menus.trust]]
+name = "Kepatuhan"
+pageRef = "/kepatuhan"
+weight = 10
+[[languages.id.menus.trust]]
+name = "Keamanan & data"
+pageRef = "/keamanan"
+weight = 20
+[[languages.id.menus.trust]]
+name = "Catatan rilis"
+pageRef = "/rilis"
+weight = 30
+[[languages.id.menus.trust]]
+name = "Kontak"
+pageRef = "/kontak"
+weight = 40
+
+[[languages.en.menus.main]]
+name = "Try it"
+pageRef = "/try"
+weight = 10
+[[languages.en.menus.main]]
+name = "Download"
+pageRef = "/download"
+weight = 20
+[[languages.en.menus.main]]
+name = "Docs"
+pageRef = "/docs"
+weight = 30
+[[languages.en.menus.main]]
+name = "Compliance"
+pageRef = "/compliance"
+weight = 40
+[[languages.en.menus.main]]
+name = "Pricing"
+pageRef = "/pricing"
+weight = 50
+[[languages.en.menus.main]]
+name = "Engine"
+pageRef = "/engine"
+weight = 60
+
+[[languages.en.menus.product]]
+name = "Try it in the browser"
+pageRef = "/try"
+weight = 10
+[[languages.en.menus.product]]
+name = "Download"
+pageRef = "/download"
+weight = 20
+[[languages.en.menus.product]]
+name = "Docs"
+pageRef = "/docs"
+weight = 30
+[[languages.en.menus.product]]
+name = "Engine"
+pageRef = "/engine"
+weight = 40
+[[languages.en.menus.product]]
+name = "Pricing"
+pageRef = "/pricing"
+weight = 50
+[[languages.en.menus.tools]]
+name = "Simulation playground"
+pageRef = "/try"
+weight = 10
+[[languages.en.menus.tools]]
+name = "History studio"
+pageRef = "/studio"
+weight = 20
+[[languages.en.menus.tools]]
+name = "Verify evidence"
+pageRef = "/verify"
+weight = 30
+[[languages.en.menus.trust]]
+name = "Compliance"
+pageRef = "/compliance"
+weight = 10
+[[languages.en.menus.trust]]
+name = "Security & data"
+pageRef = "/security"
+weight = 20
+[[languages.en.menus.trust]]
+name = "Changelog"
+pageRef = "/changelog"
+weight = 30
+[[languages.en.menus.trust]]
+name = "Contact"
+pageRef = "/contact"
+weight = 40

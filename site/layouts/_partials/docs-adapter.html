@@ -1,0 +1,93 @@
+{{- /*
+Builds the documentation section from the repository's Markdown, mounted
+under assets/repo by hugo.toml. It runs once per language; the text is the
+same English source in both, so nothing here can drift from the code.
+
+README.md is split at its "## " headings (outside code fences); each chapter
+becomes a page; the files under docs/ and each example's README become one page each.
+*/ -}}
+{{- $L := site.Language.Lang }}
+{{- $chapters := dict
+  "Design Constraints" (dict "slug" "overview" "group" "guides" "weight" 10 "en" "What Strife is, the guarantees it keeps, and the constraints it is built under." "id" "Apa itu Strife, jaminan yang dipegangnya, dan batasan desainnya.")
+  "Quick Start" (dict "slug" "quick-start" "group" "guides" "weight" 20 "en" "Install, run a first simulation and read its report." "id" "Instal, jalankan simulasi pertama, dan baca laporannya.")
+  "Shrinking Failures" (dict "slug" "shrinking" "group" "guides" "weight" 30 "en" "Reduce a failure to a minimal, replayable scenario." "id" "Perkecil kegagalan menjadi skenario minimal yang bisa diputar ulang.")
+  "Consistency Models & Anomaly Detection" (dict "slug" "models" "group" "guides" "weight" 40 "en" "Linearizability, transactional isolation and the anomalies each checker finds." "id" "Linearizability, isolasi transaksi, dan anomali yang ditemukan tiap checker.")
+  "Live Clusters & `strife-agent`" (dict "slug" "live-clusters" "group" "guides" "weight" 50 "en" "Test real clusters over Docker, SSH, Kubernetes or the strife-agent." "id" "Uji cluster sungguhan lewat Docker, SSH, Kubernetes, atau strife-agent.")
+  "Custom Workloads & Wasm VM" (dict "slug" "workloads" "group" "guides" "weight" 60 "en" "Deterministic custom workloads compiled to WebAssembly." "id" "Beban kerja kustom yang deterministik, dikompilasi ke WebAssembly.")
+  "Regression Campaigns" (dict "slug" "campaigns" "group" "guides" "weight" 70 "en" "Sweep many seeds and gate releases on regressions." "id" "Uji banyak seed sekaligus dan jadikan penjaga rilis.")
+  "Cryptographic Attestation & Compliance Dossiers" (dict "slug" "attestation" "group" "guides" "weight" 80 "en" "Sign results with Ed25519 and produce compliance dossiers." "id" "Tanda tangani hasil dengan Ed25519 dan buat dossier kepatuhan.")
+  "CI Integration" (dict "slug" "ci" "group" "guides" "weight" 90 "en" "Run Strife in any CI system." "id" "Jalankan Strife di sistem CI apa pun.")
+  "Empirical Validation" (dict "slug" "validation" "group" "reference" "weight" 110 "en" "How the checkers and fault injectors are validated." "id" "Cara checker dan injektor gangguan divalidasi.")
+  "Architecture" (dict "slug" "architecture" "group" "reference" "weight" 120 "en" "Packages, data flow and the CLI reference." "id" "Paket, alur data, dan referensi CLI.")
+  "Development" (dict "slug" "development" "group" "reference" "weight" 140 "en" "Build, test and contribute." "id" "Membangun, menguji, dan berkontribusi.")
+}}
+
+{{- with resources.Get "repo/README.md" }}
+  {{- $title := "" }}
+  {{- $body := slice }}
+  {{- $intro := slice }}
+  {{- $inFence := false }}
+  {{- $parts := slice }}
+  {{- range split .Content "\n" }}
+    {{- if hasPrefix (strings.TrimLeft " " .) "```" }}{{ $inFence = not $inFence }}{{ end }}
+    {{- if and (not $inFence) (hasPrefix . "## ") }}
+      {{- if $title }}{{ $parts = $parts | append (dict "title" $title "body" $body) }}{{ else }}{{ $intro = $body }}{{ end }}
+      {{- $title = strings.TrimPrefix "## " . }}
+      {{- $body = slice }}
+    {{- else }}
+      {{- $body = $body | append . }}
+    {{- end }}
+  {{- end }}
+  {{- if $title }}{{ $parts = $parts | append (dict "title" $title "body" $body) }}{{ end }}
+
+  {{- /* The text before the first chapter is the README's header (title,
+         badges, links) followed by the introduction: keep what follows the
+         first horizontal rule. */}}
+  {{- $introText := delimit $intro "\n" | replaceRE `(?s)^.*?\n---\n` "" | replaceRE `(?s)\n---\s*$` "" }}
+
+  {{- range $parts }}
+    {{- $meta := index $chapters .title }}
+    {{- if $meta }}
+      {{- $text := delimit .body "\n" | replaceRE `(?s)\n---\s*$` "" }}
+      {{- if eq $meta.slug "overview" }}{{ $text = printf "%s\n\n## Design Constraints\n\n%s" $introText $text }}{{ end }}
+      {{- /* Anchors this chapter answers to, so README-internal links resolve. */}}
+      {{- $anchors := slice (anchorize .title) }}
+      {{- $fence := false }}
+      {{- range .body }}
+        {{- if hasPrefix (strings.TrimLeft " " .) "```" }}{{ $fence = not $fence }}{{ end }}
+        {{- if and (not $fence) (hasPrefix . "#") }}{{ $anchors = $anchors | append (anchorize (strings.TrimLeft "# " .)) }}{{ end }}
+      {{- end }}
+      {{- $shift := cond (eq $meta.slug "overview") 0 1 }}
+      {{- $.AddPage (dict
+        "path" $meta.slug
+        "title" (cond (eq $meta.slug "overview") "Overview" .title)
+        "content" (dict "mediaType" "text/markdown" "value" $text)
+        "params" (dict "group" $meta.group "order" $meta.weight "blurb" (index $meta $L) "source" "README.md" "anchors" $anchors "headingShift" $shift "docsLang" "en")
+      ) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
+{{- $files := slice
+  (dict "file" "repo/docs/BENCHMARKS.md" "slug" "benchmarks" "source" "docs/BENCHMARKS.md" "group" "reference" "weight" 100 "en" "Every published number, with the command, machine and date behind it." "id" "Setiap angka yang dipublikasikan, beserta perintah, mesin, dan tanggalnya.")
+  (dict "file" "repo/docs/github-action.md" "slug" "github-action" "source" "docs/github-action.md" "group" "guides" "weight" 95 "en" "Inputs, outputs and recipes for the GitHub Action." "id" "Input, output, dan resep untuk GitHub Action.")
+}}
+{{- range resources.Match "repo/examples/*/README.md" }}
+  {{- $name := path.Base (path.Dir .Name) }}
+  {{- $files = $files | append (dict "file" .Name "slug" (printf "examples/%s" $name) "source" (printf "examples/%s/README.md" $name) "group" "examples" "weight" 200 "en" "" "id" "") }}
+{{- end }}
+{{- range $f := $files }}
+  {{- with resources.Get $f.file }}
+    {{- $raw := .Content }}
+    {{- $title := $f.slug }}
+    {{- with findRESubmatch `(?m)^# (.+)$` $raw 1 }}{{ $title = index (index . 0) 1 }}{{ end }}
+    {{- if eq $f.group "examples" }}{{ $title = $title | replaceRE `^Example: ` "" | replaceRE ` under Strife$` "" }}{{ end }}
+    {{- $text := replaceRE `\A# .+\n` "" $raw 1 }}
+    {{- $.AddPage (dict
+      "path" $f.slug
+      "title" $title
+      "content" (dict "mediaType" "text/markdown" "value" $text)
+      "params" (dict "group" $f.group "order" $f.weight "blurb" (index $f $L) "source" $f.source "headingShift" 0 "docsLang" "en")
+    ) }}
+  {{- end }}
+{{- end }}

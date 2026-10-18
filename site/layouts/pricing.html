@@ -1,0 +1,21 @@
+{{ define "main" }}
+<article class="page">
+  {{ partial "page-hero.html" (dict "Title" .Title "Params" (merge .Params (dict "wide" true))) }}
+  <div class="wrap">
+    <div class="plans">
+      {{- range $plan := .Params.plans }}
+      <section class="plan{{ if $plan.featured }} featured{{ end }}" aria-labelledby="plan-{{ anchorize $plan.name }}">
+        <h2 id="plan-{{ anchorize $plan.name }}">{{ $plan.name }}</h2>
+        <p class="price">{{ $plan.price }}</p>
+        <p class="muted small">{{ $plan.note }}</p>
+        <ul>{{ range $plan.features }}<li>{{ . | markdownify }}</li>{{ end }}</ul>
+        {{- with site.GetPage $plan.link }}
+        <a class="btn {{ if $plan.featured }}btn-primary{{ else }}btn-secondary{{ end }}" href="{{ .RelPermalink }}">{{ $plan.cta }}</a>
+        {{- end }}
+      </section>
+      {{- end }}
+    </div>
+    <div class="prose narrow-prose">{{ .Content }}</div>
+  </div>
+</article>
+{{ end }}

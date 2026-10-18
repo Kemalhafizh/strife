@@ -1,0 +1,9 @@
+{{ define "main" }}
+<article class="page">
+  {{ partial "page-hero.html" . }}
+  <div class="wrap narrow prose">
+    {{ .Content }}
+    <ul>{{ range .Pages }}<li><a href="{{ .RelPermalink }}">{{ .Title | markdownify }}</a></li>{{ end }}</ul>
+  </div>
+</article>
+{{ end }}

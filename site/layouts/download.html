@@ -1,0 +1,81 @@
+{{ define "main" }}
+{{- $r := site.Data.release }}
+{{- $L := site.Language.Lang }}
+{{- $try := site.GetPage (cond (eq $L "id") "/coba" "/try") }}
+{{- $contact := site.GetPage (cond (eq $L "id") "/kontak" "/contact") }}
+{{- $verify := site.GetPage (cond (eq $L "id") "/verifikasi" "/verify") }}
+<article class="page">
+  {{ partial "page-hero.html" . }}
+  <div class="wrap narrow">
+    {{- if $r.available }}
+    {{- $archives := where $r.assets "kind" "archive" }}
+    <section class="panel dl-hero" id="dl" data-assets="{{ $archives | jsonify }}">
+      <p class="eyebrow">{{ i18n "dl_recommended" }}</p>
+      <div class="dl-primary">
+        {{- with index (where (where $archives "os" "linux") "arch" "amd64") 0 }}
+        <a class="btn btn-primary btn-lg" id="dl-best" href="{{ .url }}">{{ i18n "nav_download" }} · <span id="dl-best-label">Linux x86-64</span></a>
+        {{- end }}
+        <span class="os-tag" id="dl-os"></span>
+      </div>
+      <p class="small muted">{{ i18n "dl_version" }} <code>{{ $r.tag }}</code>{{ with $r.published }} · {{ i18n "dl_released" }} {{ time.Format ":date_long" (time.AsTime .) }}{{ end }}</p>
+    </section>
+
+    <div class="prose">
+      <h2 id="install">{{ i18n "dl_install" }}</h2>
+      <p class="small muted">Linux, macOS</p>
+      <div class="code-line"><code id="cmd-sh">curl -fsSL {{ "install.sh" | absURL }} | sh</code><button type="button" class="copy-btn" data-copy-target="cmd-sh">{{ i18n "copy" }}</button></div>
+      <p class="small muted">Windows (PowerShell)</p>
+      <div class="code-line"><code id="cmd-ps">irm {{ "install.ps1" | absURL }} | iex</code><button type="button" class="copy-btn" data-copy-target="cmd-ps">{{ i18n "copy" }}</button></div>
+
+      <h2 id="files">{{ i18n "dl_all" }}</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>{{ i18n "dl_platform" }}</th><th>{{ i18n "dl_file" }}</th><th class="al-right">{{ i18n "dl_size" }}</th></tr></thead>
+        <tbody>
+          {{- range sort $r.assets "name" }}
+          <tr>
+            <td>{{ if eq .kind "archive" }}{{ .os }} / {{ .arch }}{{ else }}{{ .kind }}{{ end }}</td>
+            <td><a href="{{ .url }}">{{ .name }}</a></td>
+            <td class="al-right">{{ if gt .size 1048576 }}{{ printf "%.1f MB" (div (float .size) 1048576) }}{{ else }}{{ printf "%.0f KB" (div (float .size) 1024) }}{{ end }}</td>
+          </tr>
+          {{- end }}
+        </tbody>
+      </table></div>
+
+      <h2 id="verify">{{ i18n "dl_verify" }}</h2>
+      {{ .Params.verify_text | .RenderString (dict "display" "block") }}
+      <div class="highlight"><pre><code>sha256sum -c --ignore-missing SHA256SUMS
+strife verify --bundle strife_{{ $r.tag }}.intoto.json --key release.pub --release-dir .</code></pre></div>
+      <p><a href="{{ $verify.RelPermalink }}">{{ i18n "footer_verify" }} →</a></p>
+
+      <h2 id="containers">{{ i18n "dl_docker" }}</h2>
+      <div class="highlight"><pre><code>docker run --rm ghcr.io/kemalhafizh/strife:{{ $r.tag }} version
+docker run --rm ghcr.io/kemalhafizh/strife-agent:{{ $r.tag }} -h</code></pre></div>
+    </div>
+    {{- else }}
+    <section class="panel dl-hero">
+      <p class="eyebrow">{{ i18n "dl_recommended" }}</p>
+      <h2>{{ i18n "dl_none_title" }}</h2>
+      <p>{{ i18n "dl_none_body" }}</p>
+      <div class="code-line"><code id="cmd-go">go install github.com/kemalhafizh/strife/cmd/strife@latest</code><button type="button" class="copy-btn" data-copy-target="cmd-go">{{ i18n "copy" }}</button></div>
+      <div class="actions">
+        <a class="btn btn-primary" href="{{ $try.RelPermalink }}">{{ i18n "home_cta_try" }}</a>
+        <a class="btn btn-secondary" href="{{ $contact.RelPermalink }}">{{ i18n "dl_notify" }}</a>
+      </div>
+    </section>
+    {{- end }}
+
+    <div class="prose">
+      <h2 id="source">{{ i18n "dl_source" }}</h2>
+      <div class="highlight"><pre><code>go install github.com/kemalhafizh/strife/cmd/strife@latest
+go install github.com/kemalhafizh/strife/cmd/strife-agent@latest  # Linux</code></pre></div>
+      {{ .Content }}
+    </div>
+  </div>
+</article>
+{{ end }}
+{{ define "scripts" }}
+{{- if site.Data.release.available }}
+{{- $js := (resources.Get "js/download.js" | minify | fingerprint) }}
+<script src="{{ $js.RelPermalink }}" integrity="{{ $js.Data.Integrity }}" defer></script>
+{{- end }}
+{{ end }}

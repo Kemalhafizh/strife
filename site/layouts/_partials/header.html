@@ -1,0 +1,38 @@
+{{- $contact := site.GetPage (cond (eq site.Language.Lang "id") "/kontak" "/contact") }}
+<header class="site-header">
+  <div class="wrap header-row">
+    <a class="brand" href="{{ site.Home.RelPermalink }}" aria-label="Strife">
+      <span class="brand-mark" aria-hidden="true">S</span>
+      <span class="brand-name">STRIFE</span>
+    </a>
+    <nav class="nav" aria-label="{{ i18n "menu" }}">
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-list">
+        <span class="nav-burger" aria-hidden="true"></span><span class="sr-only">{{ i18n "menu" }}</span>
+      </button>
+      <ul class="nav-list" id="nav-list">
+        {{- $current := . }}
+        {{- range site.Menus.main }}
+        {{- $active := or ($current.IsMenuCurrent "main" .) ($current.HasMenuCurrent "main" .) (and .Page (eq .Page.Kind "section") (eq .Page.Section $current.Section)) }}
+        <li><a href="{{ .URL }}"{{ if $active }} aria-current="page"{{ end }}>{{ .Name }}</a></li>
+        {{- end }}
+        {{- with $contact }}
+        <li class="nav-cta-item"><a class="btn btn-primary btn-sm" href="{{ .RelPermalink }}">{{ i18n "nav_demo" }}</a></li>
+        {{- end }}
+      </ul>
+    </nav>
+    <div class="lang" aria-label="{{ i18n "language" }}">
+      {{- $page := . }}
+      {{- range site.Languages }}
+        {{- $lang := .Lang }}
+        {{- $target := "" }}
+        {{- range $page.AllTranslations }}{{ if eq .Language.Lang $lang }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
+        {{- if not $target }}{{ range site.Home.AllTranslations }}{{ if eq .Language.Lang $lang }}{{ $target = .RelPermalink }}{{ end }}{{ end }}{{ end }}
+        {{- if eq $lang site.Language.Lang }}
+        <span class="lang-item" aria-current="true" lang="{{ $lang }}">{{ upper $lang }}</span>
+        {{- else }}
+        <a class="lang-item" href="{{ $target }}" hreflang="{{ $lang }}" lang="{{ $lang }}" title="{{ .LanguageName }}">{{ upper $lang }}</a>
+        {{- end }}
+      {{- end }}
+    </div>
+  </div>
+</header>

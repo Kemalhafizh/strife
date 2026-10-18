@@ -1,0 +1,28 @@
+<footer class="site-footer">
+  <div class="wrap footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="{{ site.Home.RelPermalink }}" aria-label="Strife">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span class="brand-name">STRIFE</span>
+      </a>
+      <p>{{ i18n "footer_tagline" }}</p>
+      <p class="footer-fine">{{ i18n "footer_license" }}
+        {{- with site.Data.presets }} {{ i18n "footer_built" }} <code>{{ .engine }}</code>.{{ end }}</p>
+    </div>
+    <nav aria-label="{{ i18n "footer_product" }}">
+      <h2>{{ i18n "footer_product" }}</h2>
+      <ul>{{ range site.Menus.product }}<li><a href="{{ .URL }}">{{ .Name }}</a></li>{{ end }}</ul>
+    </nav>
+    <nav aria-label="{{ i18n "footer_tools" }}">
+      <h2>{{ i18n "footer_tools" }}</h2>
+      <ul>{{ range site.Menus.tools }}<li><a href="{{ .URL }}">{{ .Name }}</a></li>{{ end }}</ul>
+    </nav>
+    <nav aria-label="{{ i18n "footer_trust" }}">
+      <h2>{{ i18n "footer_trust" }}</h2>
+      <ul>
+        {{- range site.Menus.trust }}<li><a href="{{ .URL }}">{{ .Name }}</a></li>{{ end }}
+        <li><a href="{{ site.Params.repo }}" rel="noopener">{{ i18n "footer_source" }} ↗</a></li>
+      </ul>
+    </nav>
+  </div>
+</footer>

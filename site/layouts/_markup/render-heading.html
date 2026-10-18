@@ -1,0 +1,4 @@
+{{- $level := sub .Level (int (.Page.Params.headingShift | default 0)) }}
+{{- if lt $level 2 }}{{ $level = 2 }}{{ end -}}
+<h{{ $level }} id="{{ .Anchor }}">{{ .Text }}<a class="anchor" href="#{{ .Anchor }}" aria-hidden="true" tabindex="-1">#</a></h{{ $level }}>
+{{- /* chomp */ -}}

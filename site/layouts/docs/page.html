@@ -1,0 +1,26 @@
+{{ define "main" }}
+<div class="wrap docs-layout">
+  {{ partial "docs-sidebar.html" . }}
+  <article class="docs-main" lang="{{ .Params.docsLang | default site.Language.Lang }}">
+    <header class="docs-head">
+      <p class="eyebrow"><a href="{{ .Parent.RelPermalink }}">{{ .Parent.Title }}</a></p>
+      <h1 id="{{ anchorize .Title }}">{{ .Title | markdownify }}</h1>
+      {{- if eq site.Language.Lang "id" }}<p class="docs-note" lang="id">{{ i18n "docs_lang_note" }}</p>{{ end }}
+    </header>
+    <div class="prose">
+      {{ .Content }}
+    </div>
+    <footer class="docs-foot">
+      {{- with .Params.source }}
+      <a href="{{ site.Params.repo }}/blob/main/{{ . }}" rel="noopener">{{ i18n "page_source" }}: <code>{{ . }}</code> ↗</a>
+      {{- end }}
+      {{- $pages := sort (where site.RegularPages "Section" "docs") "Params.order" }}
+      <nav class="docs-pager" aria-label="pager">
+        {{- with $pages.Prev . }}<a href="{{ .RelPermalink }}">← {{ .Title | markdownify }}</a>{{ end }}
+        {{- with $pages.Next . }}<a href="{{ .RelPermalink }}">{{ .Title | markdownify }} →</a>{{ end }}
+      </nav>
+    </footer>
+  </article>
+  {{ partial "toc.html" . }}
+</div>
+{{ end }}

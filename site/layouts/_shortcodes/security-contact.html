@@ -1,0 +1,9 @@
+{{- $c := site.Params.contact }}
+{{- $to := $c.security | default $c.email }}
+{{- $L := .Page.Language.Lang }}
+{{- $contact := site.GetPage (cond (eq $L "id") "/kontak" "/contact") }}
+{{- if $to }}
+<p>{{ if eq $L "id" }}Kirim laporan secara privat ke{{ else }}Send reports privately to{{ end }} <a href="mailto:{{ $to }}">{{ $to }}</a>. {{ if eq $L "id" }}Mohon jangan membuka issue publik untuk celah yang belum diperbaiki.{{ else }}Please do not open a public issue for an unfixed vulnerability.{{ end }}</p>
+{{- else }}
+<p>{{ if eq $L "id" }}Kanal pelaporan khusus sedang disiapkan. Sementara itu, hubungi kami lewat{{ else }}A dedicated reporting channel is being set up. Meanwhile, reach us through the{{ end }} <a href="{{ $contact.RelPermalink }}">{{ if eq $L "id" }}halaman kontak{{ else }}contact page{{ end }}</a>{{ if eq $L "id" }} dan minta kanal privat. Jangan sertakan detail celah di sana.{{ else }} and ask for a private channel. Do not include details of the vulnerability there.{{ end }}</p>
+{{- end }}
