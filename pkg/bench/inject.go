@@ -204,6 +204,15 @@ func measure(ctx context.Context, inj *runner.Injector, name string, kind nemesi
 	return rows
 }
 
+// label names the row's transport: two transports can share a method
+// (agent and kubernetes-agent both apply faults directly).
+func (r Row) label() string {
+	if r.Transport != "" {
+		return r.Transport
+	}
+	return r.Method
+}
+
 func host() Host {
 	h := Host{OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU(), GoVersion: runtime.Version()}
 	if b, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
@@ -234,7 +243,7 @@ func (r *InjectResult) Markdown() string {
 			side = fmt.Sprintf("%v / %v", stats.Round(row.Agent.P50), stats.Round(row.Agent.P95))
 			agentRows = true
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %d | %v | %v | %v | %v | %v | %s | %d |\n", row.Method, row.Kind, row.Edge, l.Count,
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %v | %v | %v | %v | %v | %s | %d |\n", row.label(), row.Kind, row.Edge, l.Count,
 			stats.Round(l.P50), stats.Round(l.P95), stats.Round(l.P99), stats.Round(l.Max), stats.Round(l.StdDev), side, row.Errors)
 	}
 	fmt.Fprintf(&b, "\nLatency: from the planned instant until every involved node confirmed the change. %d cycles per row, one transition every %v, %d nodes.\n",
@@ -253,7 +262,7 @@ func (r *InjectResult) Markdown() string {
 	fmt.Fprintf(&b, ", %s, %s.\n", r.Host.GoVersion, r.Started.Format("2006-01-02"))
 	for _, row := range r.Rows {
 		if row.FirstError != "" {
-			fmt.Fprintf(&b, "\n- %s %s %s: %s", row.Method, row.Kind, row.Edge, row.FirstError)
+			fmt.Fprintf(&b, "\n- %s %s %s: %s", row.label(), row.Kind, row.Edge, row.FirstError)
 		}
 	}
 	return b.String()

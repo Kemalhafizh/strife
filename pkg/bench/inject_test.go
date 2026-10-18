@@ -79,7 +79,7 @@ func TestAgentSideTimeIsReported(t *testing.T) {
 		}
 	}
 	md := (&InjectResult{Rows: rows, Cycles: 3}).Markdown()
-	if !strings.Contains(md, "300µs / 300µs") || !strings.Contains(md, "Agent-side:") {
+	if !strings.Contains(md, "300µs / 300µs") || !strings.Contains(md, "Agent-side:") || !strings.Contains(md, "| agent | pause |") {
 		t.Fatalf("markdown:\n%s", md)
 	}
 }

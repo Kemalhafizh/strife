@@ -8,3 +8,6 @@ import "errors"
 func (p *ProcessEngine) RestartIn(startCmd string, c *container) error {
 	return errors.New("process: restarting inside a container needs Linux")
 }
+
+// RunHelper does nothing outside Linux: RestartIn never starts a helper.
+func RunHelper() {}

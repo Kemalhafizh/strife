@@ -112,15 +112,26 @@ strife run --config examples/kubernetes/strife-agent.json
   address (port 9292, token required), and the node's PID namespace, so it
   sees the pods' processes. It runs privileged to enter their namespaces
   and write their cgroups.
-- `-require-target` makes it refuse any fault that names no container: it
-  never partitions, slows or signals the node itself.
+- `-require-target` keeps it off the node itself. It refuses any fault that
+  names no container, and network faults on a pod that uses the node's
+  network (`hostNetwork`). A cgroup named in a request must lie inside the
+  target container's (use `"auto"`). It runs no scripts: `/exec` and the
+  shell fallback for unknown fault kinds are disabled. Its teardown heals
+  only what it applied to containers, never the node's interface or packet
+  filter.
 - The pods need nothing: no `NET_ADMIN`, no iptables or tc in the image.
   Restarting after a kill runs `db.start` inside the container through
-  `nsenter`, cloned into the container's cgroup.
+  `nsenter`, cloned into the container's cgroup, with its init's
+  environment, working directory and credentials: user, groups, capability
+  sets and `no_new_privs`. The container's seccomp and AppArmor/SELinux
+  profiles are not applied to the restarted process. The agent's own binary
+  does the switch inside the container, so it must be static (release
+  builds and the image are).
 - If Kubernetes replaces a container (new ID), Strife looks the ID up again.
 - The agent heals everything it applied when it stops (`SIGTERM`).
-- Anyone holding the token controls the nodes: keep it, and the
-  `strife-system` namespace, to whoever runs Strife.
+- The token lets its holder apply any fault to any container on the nodes
+  and restart processes in them: keep it, and the `strife-system`
+  namespace, to whoever runs Strife.
 
 ## Limits
 

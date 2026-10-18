@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,10 +292,38 @@ func TestRequireTarget(t *testing.T) {
 			t.Fatalf("%s %s without a target: %+v", req.Action, req.Kind, resp)
 		}
 	}
+	// Teardown (every agent shutdown runs one) leaves the node's own
+	// interface alone: a targets-only agent never put netem there.
+	nl := &recordNetlink{}
+	srv.netlink = nl
 	if resp := srv.executeApply(ApplyRequest{Action: ActionTeardown}); !resp.Success {
 		t.Fatalf("teardown: %+v", resp)
+	}
+	if len(nl.deleted) != 0 {
+		t.Fatalf("teardown removed the qdisc of the node's %v", nl.deleted)
 	}
 	if caps := srv.Capabilities(); caps.NFTables || caps.IPTables {
 		t.Fatalf("a targets-only agent probed its own packet filter: %+v", caps)
 	}
+	// Scripts would run on the node, with the agent's privileges.
+	rec := httptest.NewRecorder()
+	srv.httpSrv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/exec", strings.NewReader(`{"script":"true"}`)))
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "require-target") {
+		t.Fatalf("exec on a targets-only agent: %d %s", rec.Code, rec.Body)
+	}
+	// Without a target there is no container for a script to run in;
+	// with one it would still run on the node.
+	if resp := srv.executeApply(ApplyRequest{Action: ActionInject, FaultID: 4, Kind: "custom", Script: "true"}); resp.Success {
+		t.Fatalf("script fallback on a targets-only agent: %+v", resp)
+	}
+}
+
+// recordNetlink records which interfaces lost their netem.
+type recordNetlink struct{ deleted []string }
+
+func (r *recordNetlink) Available() bool                                              { return true }
+func (r *recordNetlink) SetNetem(string, time.Duration, time.Duration, float64) error { return nil }
+func (r *recordNetlink) DelNetem(iface string) error {
+	r.deleted = append(r.deleted, iface)
+	return nil
 }

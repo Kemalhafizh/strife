@@ -20,7 +20,7 @@ import (
 // the pod's node, which applies it in the pod's network namespace, to the
 // pod's processes and to its cgroup, in about a millisecond instead of a
 // kubectl exec round trip. Commands (setup scripts) still go through
-// kubectl, and host commands through the agent.
+// kubectl; nothing runs on the nodes themselves.
 type KubernetesAgent struct {
 	*Kubernetes
 	Agent KubeAgent
@@ -176,14 +176,11 @@ func (k *KubernetesAgent) TeardownNode(ctx context.Context, n Node) error {
 	return k.agent.clientFor(Node{AgentAddr: t.addr}).Teardown(ctx)
 }
 
-// HostExec implements Transport: scripts run in the agent on n's node,
-// which shares the node's PID namespace and sees its cgroup filesystem.
+// HostExec implements Transport by refusing: the DaemonSet agents act on
+// containers only (-require-target) and run no scripts on the nodes. Every
+// host fault (freeze, io-stall) goes to them as a structured fault instead.
 func (k *KubernetesAgent) HostExec(ctx context.Context, n Node, script string) (string, error) {
-	t, err := k.target(ctx, n)
-	if err != nil {
-		return "", err
-	}
-	return k.agent.clientFor(Node{AgentAddr: t.addr}).Exec(ctx, script)
+	return "", fmt.Errorf("kubernetes-agent transport: no host scripts on node of %s: the strife-agent DaemonSet applies host faults itself and runs no scripts on the node", n.Name)
 }
 
 // ResolveCgroup implements HostResolver: the agent finds the container's

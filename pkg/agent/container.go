@@ -199,3 +199,30 @@ func environOf(proc string, pid int) []string {
 	}
 	return env
 }
+
+// nsOf names a process's namespace of the given type ("net", "user",
+// "cgroup"), e.g. "net:[4026531840]", or "" when it cannot be read. pid
+// may be "self".
+func nsOf(proc, pid, ns string) string {
+	l, err := os.Readlink(filepath.Join(proc, pid, "ns", ns))
+	if err != nil {
+		return ""
+	}
+	return l
+}
+
+// sameNamespace reports whether pid shares the agent's namespace of the
+// given type.
+func sameNamespace(proc string, pid int, ns string) bool {
+	own := nsOf(proc, "self", ns)
+	return own != "" && own == nsOf(proc, strconv.Itoa(pid), ns)
+}
+
+// onNodeNetwork reports whether pid uses the node's network namespace (a
+// hostNetwork pod: the one of the node's init, which a DaemonSet agent
+// sees) or the agent's own. A network fault "in its container" would hit
+// the node.
+func onNodeNetwork(proc string, pid int) bool {
+	ns := nsOf(proc, strconv.Itoa(pid), "net")
+	return ns != "" && (ns == nsOf(proc, "self", "net") || ns == nsOf(proc, "1", "net"))
+}

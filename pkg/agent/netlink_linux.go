@@ -93,7 +93,9 @@ func (n *LinuxNetlink) SetNetem(iface string, delay, jitter time.Duration, loss 
 	return nil
 }
 
-// DelNetem removes root qdisc on the given interface.
+// DelNetem removes the root qdisc on the given interface if it is netem.
+// Any other root qdisc (a CNI's bandwidth shaping, an operator's) is not
+// Strife's and stays.
 func (n *LinuxNetlink) DelNetem(iface string) error {
 	err := n.delNetemNetlink(iface)
 	if err == nil {
@@ -233,6 +235,8 @@ func (n *LinuxNetlink) delNetemNetlink(iface string) error {
 	if err := binary.Write(&tcBuf, binary.LittleEndian, tcHdr); err != nil {
 		return err
 	}
+	// With a kind, the kernel deletes the root qdisc only if it is one.
+	writeAttr(&tcBuf, tcaKind, append([]byte("netem"), 0))
 
 	nlHdr := syscall.NlMsghdr{
 		Len:   uint32(syscall.SizeofNlMsghdr + tcBuf.Len()),
@@ -262,7 +266,9 @@ func (n *LinuxNetlink) delNetemNetlink(iface string) error {
 		respHdr := (*syscall.NlMsghdr)(unsafe.Pointer(&rb[0]))
 		if respHdr.Type == syscall.NLMSG_ERROR {
 			errno := -int32(binary.LittleEndian.Uint32(rb[syscall.SizeofNlMsghdr : syscall.SizeofNlMsghdr+4]))
-			if errno != 0 && errno != int32(syscall.ENOENT) {
+			// ENOENT: only the default qdisc is there. EINVAL: the root
+			// qdisc is not netem. Either way there is nothing of ours.
+			if errno != 0 && errno != int32(syscall.ENOENT) && errno != int32(syscall.EINVAL) {
 				return syscall.Errno(errno)
 			}
 		}
@@ -303,7 +309,7 @@ func (n *LinuxNetlink) setNetemTC(iface string, delay, jitter time.Duration, los
 }
 
 func (n *LinuxNetlink) delNetemTC(iface string) error {
-	cmd := exec.Command("tc", "qdisc", "del", "dev", iface, "root")
+	cmd := exec.Command("tc", "qdisc", "del", "dev", iface, "root", "netem")
 	_ = cmd.Run() // Ignore errors if already deleted
 	return nil
 }

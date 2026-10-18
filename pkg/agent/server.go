@@ -34,10 +34,12 @@ type ServerConfig struct {
 	// IORoot is a directory on the disk that holds container data; an
 	// io-stall with "io_device": "auto" stalls that disk.
 	IORoot string
-	// RequireTarget makes the agent act only on target containers: an
-	// agent that shares its node's network and PID namespaces (a
-	// DaemonSet) would otherwise partition, slow down or signal the node
-	// itself when a request names no container.
+	// RequireTarget makes the agent act only on target containers, never
+	// on the node: an agent that shares its node's network and PID
+	// namespaces (a DaemonSet) would otherwise partition, slow down or
+	// signal the node itself when a request names no container. It also
+	// turns off /exec and the shell fallback, and teardown leaves the
+	// node's interface and packet filter alone.
 	RequireTarget bool
 
 	// filters overrides the packet filter backends (tests).
@@ -228,15 +230,23 @@ func faultKey(req ApplyRequest) string {
 }
 
 // cgroupOf is the cgroup a request's cgroup fault acts on: the one it
-// names, or the target container's for "auto".
+// names, or the target container's for "auto". A request that targets a
+// container may only name a cgroup inside that container's, so it cannot
+// freeze or throttle the rest of the node.
 func (sc scope) cgroupOf(req ApplyRequest) (string, error) {
-	if sc.c == nil || (req.Cgroup != "" && req.Cgroup != "auto") {
+	if sc.c == nil {
 		return req.Cgroup, nil
 	}
 	if sc.c.cgroup == "" {
 		return "", fmt.Errorf("agent: no cgroup v2 directory found for container %.12s (set -cgroup-root to the node's cgroup filesystem)", sc.c.id)
 	}
-	return sc.c.cgroup, nil
+	if req.Cgroup == "" || req.Cgroup == "auto" {
+		return sc.c.cgroup, nil
+	}
+	if p := filepath.Clean(req.Cgroup); p == sc.c.cgroup || strings.HasPrefix(p, sc.c.cgroup+"/") {
+		return p, nil
+	}
+	return "", fmt.Errorf("agent: cgroup %s is outside container %.12s's cgroup %s (use \"auto\")", req.Cgroup, sc.c.id, sc.c.cgroup)
 }
 
 // ioDevice resolves "auto" to the disk under the configured IORoot.
@@ -327,6 +337,9 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 	if sc.c != nil && req.Kind == nemesis.ClockSkew {
 		return ApplyResponse{Success: false, Error: "agent: containers share their node's clock; clock-skew would skew the whole node", KernelAtNs: time.Now().UnixNano()}
 	}
+	if sc.c != nil && (req.Kind == nemesis.Partition || req.Kind == nemesis.Latency || req.Kind == nemesis.Loss) && onNodeNetwork("/proc", sc.c.pid) {
+		return ApplyResponse{Success: false, Error: fmt.Sprintf("agent: container %.12s uses its node's network (hostNetwork); a %s fault there would hit the whole node", sc.c.id, req.Kind), KernelAtNs: time.Now().UnixNano()}
+	}
 
 	switch req.Action {
 	case ActionInject:
@@ -383,14 +396,17 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 			})
 
 		default:
-			if req.Script != "" {
+			switch {
+			case req.Script == "":
+				err = fmt.Errorf("agent: unsupported fault kind %q", req.Kind)
+			case sc.c != nil || s.cfg.RequireTarget:
+				err = s.noNodeScript(req.Kind)
+			default:
 				method = "fallback:shell"
 				cmd := exec.Command("sh", "-c", req.Script)
 				out, e := cmd.CombinedOutput()
 				err = e
 				applied = fmt.Sprintf("shell:%s", strings.TrimSpace(string(out)))
-			} else {
-				err = fmt.Errorf("agent: unsupported fault kind %q", req.Kind)
 			}
 		}
 
@@ -447,7 +463,11 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 			applied = fmt.Sprintf("heal-clock-skew:%v", req.Offset)
 
 		default:
-			if req.Script != "" {
+			switch {
+			case req.Script == "":
+			case sc.c != nil || s.cfg.RequireTarget:
+				err = s.noNodeScript(req.Kind)
+			default:
 				method = "fallback:shell"
 				cmd := exec.Command("sh", "-c", req.Script)
 				out, e := cmd.CombinedOutput()
@@ -479,6 +499,13 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 	return resp
 }
 
+// noNodeScript refuses the shell fallback for a fault kind the agent does
+// not implement: the script would run in the agent's namespaces, on the
+// node, not in the target container.
+func (s *Server) noNodeScript(kind nemesis.Kind) error {
+	return fmt.Errorf("agent: fault kind %q has no built-in implementation, and its script would run on the node, not in the target container", kind)
+}
+
 func firstPID(pids []int) int {
 	if len(pids) == 0 {
 		return 0
@@ -491,8 +518,12 @@ func (s *Server) Teardown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_ = s.filter.Flush()
-	_ = s.netlink.DelNetem(s.cfg.Interface)
+	if !s.cfg.RequireTarget {
+		// An agent that serves the node itself; with RequireTarget the
+		// agent never touched the node's own filter or interface.
+		_ = s.filter.Flush()
+		_ = s.netlink.DelNetem(s.cfg.Interface)
+	}
 	s.nsMu.Lock()
 	for _, f := range s.nsFilters {
 		_ = f.engine.Flush()
@@ -524,6 +555,13 @@ func (s *Server) Teardown() {
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.RequireTarget {
+		// Scripts would run on the node, with the agent's privileges.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(ExecResponse{Error: "agent: this agent acts only on target containers and runs no scripts on the node (-require-target)", ExitCode: 1})
 		return
 	}
 	var req ExecRequest

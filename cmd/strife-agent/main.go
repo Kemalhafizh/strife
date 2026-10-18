@@ -18,6 +18,7 @@ import (
 )
 
 func main() {
+	agent.RunHelper() // restarting a database inside its container
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "strife-agent error: %v\n", err)
 		os.Exit(1)
@@ -32,7 +33,7 @@ func run(args []string) error {
 	token := fs.String("token", os.Getenv("STRIFE_AGENT_TOKEN"), "bearer token clients must present (default $STRIFE_AGENT_TOKEN)")
 	insecure := fs.Bool("insecure-no-token", false, "allow serving a network address without a token (anyone who can reach it can run commands as this user)")
 	cgroupRoot := fs.String("cgroup-root", "", "the node's cgroup v2 filesystem, for faults on other containers (default /sys/fs/cgroup; a DaemonSet mounts the node's, e.g. /host/sys/fs/cgroup)")
-	requireTarget := fs.Bool("require-target", false, "act only on requests that name a target container (an agent sharing its node's network, like a DaemonSet, must not fault the node itself)")
+	requireTarget := fs.Bool("require-target", false, "act only on target containers, never on the node: refuse requests that name no container, network faults on containers using the node's network, and scripts (/exec) (for an agent sharing its node's namespaces, like a DaemonSet)")
 	ioRoot := fs.String("io-root", "", "a directory on the disk holding container data, for io-stall with io_device \"auto\" (e.g. /host/var/lib/containerd)")
 
 	if err := fs.Parse(args); err != nil {

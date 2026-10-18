@@ -18,12 +18,27 @@ only gain optional fields.
 - strife-agent requests can name a target container (`target.container_id`);
   `-cgroup-root`, `-io-root` and `-require-target` configure an agent that
   serves a whole node. A kill is healed by restarting the database inside
-  the container (nsenter, with the container's environment, cloned into its
-  cgroup).
+  the container (nsenter, with the container's environment, working
+  directory and credentials, cloned into its cgroup).
 
 ### Changed
 - Agent transports skip the shell setup (an iptables chain in every node)
   and, when the agents healed everything, the shell teardown.
+- `strife bench inject` labels rows by transport, so `agent` and
+  `kubernetes-agent` no longer both read `agent:direct`.
+
+### Security
+- strife-agent restarts a killed database with the container init's user,
+  groups, capability sets and `no_new_privs`, not as root with every
+  capability.
+- With `-require-target`, strife-agent stays off the node: no network
+  faults on containers that use the node's network, no cgroups outside the
+  target container's, no scripts (`/exec`, shell fallback), and teardown
+  leaves the node's interface and packet filter alone.
+- strife-agent removes a root qdisc only if it is netem: healing or teardown
+  no longer deletes a qdisc it did not install.
+- The live CI's agent tokens are random instead of derived from the public
+  run ID.
 
 ## [0.2.0] - Unreleased
 

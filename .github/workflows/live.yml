@@ -54,10 +54,15 @@ jobs:
   kubernetes:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    env:
-      STRIFE_AGENT_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-k8s-agent
     steps:
       - uses: actions/checkout@v4
+      - name: a random agent token
+        # Not derived from the run ID, which anyone can read: workloads in
+        # the cluster must not be able to work it out.
+        run: |
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          echo "STRIFE_AGENT_TOKEN=$token" >> "$GITHUB_ENV"
       - name: pick faults the runner kernel supports
         id: faults
         run: |
@@ -144,10 +149,15 @@ jobs:
   agent:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    env:
-      STRIFE_AGENT_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-agent
     steps:
       - uses: actions/checkout@v4
+      - name: a random agent token
+        # Not derived from the run ID, which anyone can read: workloads in
+        # the cluster must not be able to work it out.
+        run: |
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          echo "STRIFE_AGENT_TOKEN=$token" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
