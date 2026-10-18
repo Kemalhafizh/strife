@@ -4,7 +4,7 @@ Every number in Strife's documentation comes from this page, and every number
 on this page comes with the command that produced it, the machine it ran on
 and the date. Numbers without a reproduction do not belong in the README.
 
-Measured on 2026-10-17 at commits `e5527d8`, `bd0fb99` and `8f97abc` (CI,
+Measured on 2026-10-17 at commits `e5527d8`, `0249500` and `1dc5577` (CI,
 named per table) and on the working tree of the same branch (local). Shared
 CI runners are noisy: treat a single run as a sample, not a specification.
 Where two runs differ, both are shown.
@@ -33,7 +33,7 @@ bin/strife bench inject --config examples/etcd/strife-agent.json \
 **Host:** GitHub-hosted `ubuntu-24.04`, 4 vCPU AMD EPYC 7763, Linux
 6.17.0-1022-azure, Go 1.23.12. Run
 [39056797048](https://github.com/Kemalhafizh/strife/actions/runs/39056797048)
-at commit `8f97abc`: partitions through nf_tables, and pause and kill
+at commit `1dc5577`: partitions through nf_tables, and pause and kill
 confirmed in `/proc`.
 
 | Transport | Fault | Edge | P50 | P95 | Max | Agent-side P50 / P95 | Errors |
@@ -80,8 +80,8 @@ rows.
   | Run | Commit | Runner | Partition inject | Partition heal |
   |---|---|---|---|---|
   | [39039844498](https://github.com/Kemalhafizh/strife/actions/runs/39039844498) | `e5527d8`, `iptables` | EPYC 9V74 | 4.02 ms (2.61 ms) | 7.44 ms (5.99 ms) |
-  | [39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049) | `bd0fb99`, nf_tables | EPYC 9V45 | 1.12 ms (149 µs) | 0.99 ms (139 µs) |
-  | 39056797048 (above) | `8f97abc`, nf_tables | EPYC 7763 | 1.22 ms (147 µs) | 1.29 ms (144 µs) |
+  | [39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049) | `0249500`, nf_tables | EPYC 9V45 | 1.12 ms (149 µs) | 0.99 ms (139 µs) |
+  | 39056797048 (above) | `1dc5577`, nf_tables | EPYC 7763 | 1.22 ms (147 µs) | 1.29 ms (144 µs) |
 
   Inside the agent, nf_tables is ~18× (inject) and ~40× (heal) faster than
   forking `iptables`.
@@ -287,5 +287,5 @@ whether this one is among them is not established. The history is kept as
 and checked in `go test ./pkg/txn`.
 
 Runs [39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049)
-(commit `bd0fb99`) and [39056797048](https://github.com/Kemalhafizh/strife/actions/runs/39056797048)
-(commit `8f97abc`) passed all ten jobs.
+(commit `0249500`) and [39056797048](https://github.com/Kemalhafizh/strife/actions/runs/39056797048)
+(commit `1dc5577`) passed all ten jobs.
