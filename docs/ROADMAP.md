@@ -512,7 +512,8 @@ first something they run themselves, inside their network, that CI feeds.
   means one dossier used in a real audit.
 - **Registry depth:** signed campaigns ✅ (`strife sign --campaign`, the
   Action's `sign-key-env`, verified at push and in dossiers), SSO (OIDC) instead of shared tokens,
-  object storage for artifacts, trend charts per series, and scheduled
+  object storage for artifacts, trend charts per series ✅ (server-drawn
+  SVG, no script), and scheduled
   campaigns run by a customer-side runner (like a self-hosted GitHub
   runner) so data never leaves their network.
 - **Hosted option:** the same registry multi-tenant, with per-tenant signing

@@ -16,6 +16,12 @@ only gain optional fields.
   `campaign-bundle.json` with the campaign, the registry verifies it
   against the project's trusted keys, `require_signature` now covers
   campaigns, and the registry's dossiers for signed campaigns are attested.
+- Trend pages per series in the registry's dashboard
+  (`/ui/<project>/series?name=…`): the verdict of each of the latest 60
+  runs, violating seeds per campaign and operations per run, as SVG drawn
+  on the server (the dashboard still runs no script). Verdicts read from a
+  column's height as well as its color, here and in the project page's
+  recent-runs strip, which used color alone.
 - Signing keys can come from CI secrets (`--key env:NAME` or `file:PATH`),
   and the GitHub Action signs reports and campaigns before uploading and
   pushing them (`sign-key-env`).

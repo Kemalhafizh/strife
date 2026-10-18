@@ -409,9 +409,9 @@ STRIFE_TOKEN=... strife push --server https://strife.internal --project payments
 
 - **Verified on arrival.** The server recomputes the report's fingerprint, hashes `history.jsonl` against the digest in the report, and checks the attestation against the project's trusted Ed25519 keys. A run that does not verify is refused (`422`), never stored with a warning; a project can require a signature.
 - **Regressions per series.** Runs of the same kind, target and fault kinds form a series. Each run is compared with the previous one and recorded as a regression, a fix, still failing or still passing; campaigns are compared seed by seed. `strife push` fails the CI job on a regression (`--fail-on regression|violation|none`), and a Slack-compatible webhook hears about regressions and fixes.
-- **Everything an auditor asks for.** A dashboard (no JavaScript, strict CSP), a JSON API, the original artifacts, the interactive timeline, and compliance dossiers generated on demand with the signature re-verified.
+- **Everything an auditor asks for.** A dashboard (no JavaScript, strict CSP) with a trend page per series (verdicts, violating seeds and operations over the latest 60 runs, drawn as SVG on the server), a JSON API, the original artifacts, the interactive timeline, and compliance dossiers generated on demand with the signature re-verified. Campaigns can be signed whole (`strife sign --campaign`), so a project that requires signatures takes them too.
 
-The Action pushes with `push-server` and `push-project`; CI dogfoods this on every commit by pushing a campaign to a live server and checking the API and dashboard. Configuration, API and limits: [`docs/server.md`](docs/server.md).
+The Action pushes with `push-server` and `push-project`, and signs first with `sign-key-env`; CI dogfoods this on every commit by pushing a campaign to a live server and checking the API and dashboard. Configuration, API and limits: [`docs/server.md`](docs/server.md).
 
 ---
 

@@ -104,6 +104,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /{$}", s.uiIndex)
 	m.HandleFunc("GET /ui/{project}", s.read(s.uiProject))
 	m.HandleFunc("GET /ui/{project}/runs/{id}", s.read(s.uiRun))
+	m.HandleFunc("GET /ui/{project}/series", s.read(s.uiSeries))
 	s.mux = m
 }
 

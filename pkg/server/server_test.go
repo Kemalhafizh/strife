@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -419,5 +421,80 @@ func TestSignedCampaigns(t *testing.T) {
 	}
 	if code != 200 || json.Unmarshal(out, &d) != nil || !d.Summary.Attested || d.Summary.Signer != "ci" {
 		t.Fatalf("campaign dossier is not attested: %d %s", code, out)
+	}
+}
+
+// A series' trend page charts every run (oldest left) and encodes verdicts
+// by column height as well as color; pushed text stays text.
+func TestSeriesTrendPage(t *testing.T) {
+	h := newHarness(t, nil)
+	verdicts := [][]checker.Verdict{
+		{checker.Linearizable, checker.Linearizable},
+		{checker.Linearizable, checker.Violation},
+		{checker.Violation, checker.Violation},
+		{checker.Linearizable, checker.Linearizable, checker.Linearizable},
+	}
+	var series string
+	for i, v := range verdicts {
+		code, res, body := h.push(Upload{Campaign: campaignManifest(t, v...), Commit: fmt.Sprintf("<script>alert(%d)</script>", i)})
+		if code != http.StatusCreated {
+			t.Fatalf("push %d: %s", i, body)
+		}
+		series = res.Run.Series
+	}
+	code, body := h.do("GET", "/ui/payments/series?name="+url.QueryEscape(series), readTok, nil)
+	page := string(body)
+	if code != 200 {
+		t.Fatalf("series page: %d %s", code, page)
+	}
+	if bytes.Contains(body, []byte("<script>")) {
+		t.Fatal("a pushed commit reached the page unescaped")
+	}
+	for _, want := range []string{"Verdict of each run", "Violating seeds per campaign", "Operations per run", "4 runs in this series"} {
+		if !strings.Contains(page, want) && !strings.Contains(page, strings.Replace(want, "4 runs", "<b>4</b><span class=\"sub\">runs", 1)) {
+			t.Errorf("series page lacks %q", want)
+		}
+	}
+	chart := page[strings.Index(page, `aria-label="Verdict of each run`):]
+	chart = chart[:strings.Index(chart, "</svg>")]
+	if got := strings.Count(chart, `class="m-violation"`); got != 2 {
+		t.Errorf("verdict chart has %d violation columns, want 2", got)
+	}
+	if got := strings.Count(chart, `class="m-linearizable"`); got != 2 {
+		t.Errorf("verdict chart has %d passing columns, want 2", got)
+	}
+	if got := strings.Count(chart, "<title>"); got != 4 {
+		t.Errorf("verdict chart has %d hover titles, want one per run", got)
+	}
+	// The project page links each series to its trend.
+	if _, body := h.do("GET", "/ui/payments", readTok, nil); !bytes.Contains(body, []byte("/ui/payments/series?name=")) {
+		t.Error("the project page does not link to the series trend")
+	}
+	if code, _ := h.do("GET", "/ui/payments/series?name=nope", readTok, nil); code != http.StatusNotFound {
+		t.Errorf("unknown series: %d", code)
+	}
+	if code, _ := h.do("GET", "/ui/payments/series?name="+url.QueryEscape(series), "", nil); code != http.StatusUnauthorized {
+		t.Errorf("series page without a token: %d", code)
+	}
+}
+
+// Verdict columns differ in height, not only in color.
+func TestVerdictHeightsDiffer(t *testing.T) {
+	v, u, l := verdictHeight(checker.Violation), verdictHeight(checker.Unknown), verdictHeight(checker.Linearizable)
+	if !(v > u && u > l && l > 0) {
+		t.Fatalf("heights %v %v %v must order violation > inconclusive > passed > 0", v, u, l)
+	}
+	if verdictClass("<x>") != "m-unknown" {
+		t.Fatal("an unexpected verdict must not become a class name")
+	}
+	for in, want := range map[float64]string{0: "0", 999: "999", 1284: "1.3K", 4200000: "4.2M", 2000: "2K"} {
+		if got := compact(in); got != want {
+			t.Errorf("compact(%v) = %s, want %s", in, got, want)
+		}
+	}
+	for in, want := range map[float64]float64{0: 1, 3: 5, 7: 10, 120: 200, 1000: 1000} {
+		if got := niceCeil(in); got != want {
+			t.Errorf("niceCeil(%v) = %v, want %v", in, got, want)
+		}
 	}
 }

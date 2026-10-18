@@ -89,7 +89,12 @@ it uploads and pushes them, as `github-actions:<owner>/<repo>`.
 
 ## Read
 
-The dashboard is at `/` (projects you can read) and `/ui/<project>`. Browsers
+The dashboard is at `/` (projects you can read) and `/ui/<project>`; each
+series has a trend page (`/ui/<project>/series?name=<series>`) charting its
+latest 60 runs: the verdict of each run, violating seeds per campaign and
+operations per run, with every run in a table. The charts are SVG drawn on
+the server, so the dashboard still runs no script; a verdict reads from the
+column's height as well as its color. Browsers
 sign in with HTTP Basic auth: any user name, the read or write token as the
 password. The API takes `Authorization: Bearer <token>`:
 
