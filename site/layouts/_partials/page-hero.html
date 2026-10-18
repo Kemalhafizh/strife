@@ -1,0 +1,7 @@
+<header class="page-hero">
+  <div class="wrap {{ if .Params.wide }}{{ else }}narrow{{ end }}">
+    {{- with .Params.eyebrow }}<p class="eyebrow">{{ . }}</p>{{ end }}
+    <h1>{{ .Title | markdownify }}</h1>
+    {{- with .Params.lead }}<p class="lead">{{ . | markdownify }}</p>{{ end }}
+  </div>
+</header>

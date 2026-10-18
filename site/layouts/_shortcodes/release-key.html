@@ -1,0 +1,11 @@
+{{- $k := site.Data.key }}
+{{- $L := .Page.Language.Lang }}
+{{- if $k.available }}
+<p>{{ if eq $L "id" }}Sidik jari kunci rilis resmi{{ else }}Fingerprint of the official release key{{ end }}: <code>{{ $k.key_id }}</code></p>
+<div class="highlight"><pre><code>{{ $k.pem }}</code></pre></div>
+<p class="small muted">{{ if eq $L "id" }}Cocokkan sidik jari ini lewat jalur kedua (misalnya repositori kode sumber) sebelum memercayainya.{{ else }}Confirm this fingerprint through a second channel (for example the source repository) before trusting it.{{ end }}</p>
+{{- else }}
+<div class="callout callout-note">
+  <p>{{ if eq $L "id" }}Kunci rilis resmi belum dipublikasikan. Begitu rilis bertanda tangan pertama terbit, sidik jarinya akan tampil di sini dan dipakai otomatis oleh halaman verifikasi. Sampai saat itu, pastikan keaslian berkas dengan <code>SHA256SUMS</code> dari halaman rilis.{{ else }}The official release key has not been published yet. Once the first signed release ships, its fingerprint will appear here and the verification page will use it automatically. Until then, check files against the <code>SHA256SUMS</code> on the release page.{{ end }}</p>
+</div>
+{{- end }}

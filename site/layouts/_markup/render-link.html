@@ -1,0 +1,55 @@
+{{- /*
+Links in the repository's Markdown are written for GitHub: relative paths
+between files and README anchors. Resolve them to the matching page on this
+site, and anything else (source files, scripts) to GitHub.
+*/ -}}
+{{- $dest := .Destination }}
+{{- $url := $dest }}
+{{- $src := .Page.Params.source }}
+{{- $external := or (hasPrefix $dest "http://") (hasPrefix $dest "https://") (hasPrefix $dest "mailto:") }}
+{{- if and (not $src) (not $external) (hasPrefix $dest "/") }}
+  {{- /* The site's own content links by page path, e.g. /unduh or /docs/models#txn;
+         resolve in the current language and under the base URL. */}}
+  {{- $path := $dest }}
+  {{- $frag := "" }}
+  {{- with findRESubmatch `^([^#]*)#(.*)$` $dest 1 }}{{ $path = index (index . 0) 1 }}{{ $frag = index (index . 0) 2 }}{{ end }}
+  {{- with site.GetPage (strings.TrimSuffix "/" $path) }}
+    {{- $url = cond (ne $frag "") (printf "%s#%s" .RelPermalink $frag) .RelPermalink }}
+  {{- else }}
+    {{- $url = relURL (strings.TrimPrefix "/" $dest) }}
+  {{- end }}
+{{- else if and $src (not $external) }}
+  {{- $path := $dest }}
+  {{- $frag := "" }}
+  {{- with findRESubmatch `^([^#]*)#(.*)$` $dest 1 }}{{ $path = index (index . 0) 1 }}{{ $frag = index (index . 0) 2 }}{{ end }}
+  {{- $docs := where site.RegularPages "Section" "docs" }}
+  {{- $target := "" }}
+  {{- if and (eq $path "") (eq $src "README.md") }}
+    {{- range $docs }}{{ if and (not $target) (in .Params.anchors $frag) }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
+    {{- $url = cond (ne $target "") (printf "%s#%s" $target $frag) $dest }}
+  {{- else if ne $path "" }}
+    {{- $file := path.Clean (path.Join (path.Dir $src) $path) | strings.TrimSuffix "/" }}
+    {{- $pages := dict
+      "docs/BENCHMARKS.md" "/docs/benchmarks"
+      "docs/github-action.md" "/docs/github-action"
+      "CHANGELOG.md" (cond (eq site.Language.Lang "id") "/rilis" "/changelog") }}
+    {{- with index $pages $file }}{{ with site.GetPage . }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
+    {{- with findRESubmatch `^examples/([^/]+)(/README\.md)?$` $file 1 }}
+      {{- with site.GetPage (printf "/docs/examples/%s" (index (index . 0) 1)) }}{{ $target = .RelPermalink }}{{ end }}
+    {{- end }}
+    {{- if eq $file "README.md" }}
+      {{- range $docs }}{{ if and (not $target) (in .Params.anchors $frag) }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
+      {{- if not $target }}{{ with site.GetPage "/docs/overview" }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
+    {{- end }}
+    {{- if in (slice "site" "site/index.html") $file }}{{ $target = site.Home.RelPermalink }}{{ end }}
+    {{- if $target }}
+      {{- $url = cond (ne $frag "") (printf "%s#%s" $target $frag) $target }}
+    {{- else }}
+      {{- $url = printf "%s/blob/main/%s" site.Params.repo $file }}
+      {{- if ne $frag "" }}{{ $url = printf "%s#%s" $url $frag }}{{ end }}
+      {{- $external = true }}
+    {{- end }}
+  {{- end }}
+{{- end -}}
+<a href="{{ $url | safeURL }}"{{ with .Title }} title="{{ . }}"{{ end }}{{ if $external }} rel="noopener"{{ end }}>{{ .Text }}</a>
+{{- /* chomp */ -}}

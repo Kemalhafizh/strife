@@ -1,0 +1,50 @@
+{{- /*
+Compliance controls. IDs and citations come from the engine
+(data/compliance.json, written from pkg/compliance), so they cannot drift.
+The Indonesian controls also get a plain description of what is checked and
+how it is graded, mirroring pkg/compliance.
+
+  {{< controls framework="bi-ojk" >}}   the OJK controls, described
+  {{< controls framework="other" >}}    every other framework, cited
+*/ -}}
+{{- $fw := .Get "framework" }}
+{{- $L := .Page.Language.Lang }}
+{{- $about := dict
+  "bi-ojk.pemulihan-bencana" (dict
+    "id" (slice "Ketahanan sistem & uji pemulihan bencana" "Sistem pemrosesan transaksi bertahan terhadap gangguan jaringan dan kegagalan node tanpa split-brain." "LULUS bila tidak ada pelanggaran dan uji mencakup gangguan jaringan (partition) sekaligus kegagalan proses (kill/pause). PARSIAL bila salah satunya tidak dicakup. GAGAL bila ada pelanggaran atau verdict tidak pasti.")
+    "en" (slice "System resilience & disaster-recovery testing" "Transaction processing survives network faults and node failures without split-brain." "PASS when there is no violation and the test covered both a network fault (partition) and a process failure (kill/pause). PARTIAL when either is missing. FAIL on a violation or an inconclusive verdict."))
+  "bi-ojk.integritas-data" (dict
+    "id" (slice "Integritas & konsistensi data transaksi" "Tidak ada transaksi yang sudah diakui hilang, tidak ada pembacaan basi, dan tidak ada anomali siklus transaksi." "LULUS bila pemeriksaan formal atas seluruh operasi yang direkam tidak menemukan pelanggaran. GAGAL bila ada pelanggaran atau verdict tidak pasti.")
+    "en" (slice "Integrity & consistency of transaction data" "No acknowledged transaction is lost, no read is stale, and no transaction cycle anomaly occurs." "PASS when the formal check of every recorded operation finds no violation. FAIL on a violation or an inconclusive verdict."))
+  "bi-ojk.jejak-audit" (dict
+    "id" (slice "Integritas bukti audit kriptografis (nir-penyangkalan)" "Artefak hasil uji memiliki jejak SHA-256 dan tanda tangan Ed25519 (in-toto v0.1) yang dapat diverifikasi ulang secara independen." "LULUS bila laporan ditandatangani dengan strife sign dan tanda tangannya terverifikasi. PARSIAL bila belum ditandatangani.")
+    "en" (slice "Integrity of cryptographic audit evidence (non-repudiation)" "Test artifacts carry SHA-256 digests and an Ed25519 signature (in-toto v0.1) that anyone can re-verify independently." "PASS when the report was signed with strife sign and the signature verifies. PARTIAL when it is unsigned."))
+}}
+{{- $head := dict
+  "id" (slice "Kontrol" "Yang diperiksa" "Penilaian" "Ketentuan yang didukung" "Kerangka")
+  "en" (slice "Control" "What is checked" "Grading" "Provision it supports" "Framework") }}
+{{- $h := index $head $L | default (index $head "en") }}
+{{- $names := dict "dora" "EU DORA" "soc2" "AICPA SOC 2" "iso27001" "ISO/IEC 27001:2022" "bi-ojk" "OJK (Indonesia)" }}
+<div class="table-wrap"><table>
+{{- if eq $fw "bi-ojk" }}
+  <thead><tr><th>{{ index $h 0 }}</th><th>{{ index $h 1 }}</th><th>{{ index $h 2 }}</th><th>{{ index $h 3 }}</th></tr></thead>
+  <tbody>
+  {{- range where site.Data.compliance "framework" "bi-ojk" }}
+    {{- $a := index (index $about .id | default dict) $L }}
+    <tr>
+      <td><code>{{ .id }}</code>{{ with $a }}<br><strong>{{ index . 0 }}</strong>{{ end }}</td>
+      <td>{{ with $a }}{{ index . 1 }}{{ end }}</td>
+      <td>{{ with $a }}{{ index . 2 }}{{ end }}</td>
+      <td>{{ .citation }}</td>
+    </tr>
+  {{- end }}
+  </tbody>
+{{- else }}
+  <thead><tr><th>{{ index $h 4 }}</th><th>{{ index $h 0 }}</th><th>{{ index $h 3 }}</th></tr></thead>
+  <tbody>
+  {{- range where site.Data.compliance "framework" "!=" "bi-ojk" }}
+    <tr><td>{{ index $names .framework | default .framework }}</td><td><code>{{ .id }}</code></td><td>{{ .citation }}</td></tr>
+  {{- end }}
+  </tbody>
+{{- end }}
+</table></div>

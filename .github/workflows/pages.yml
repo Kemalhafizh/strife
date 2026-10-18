@@ -1,32 +1,91 @@
 name: pages
 
+# Builds the website in site/ and deploys it to GitHub Pages from main.
+#
+# Pull requests that touch the site, or anything it is built from (the docs,
+# the engine it compiles to WebAssembly), get the same build without the
+# deploy, so a change that breaks the site fails before it merges.
+#
+# The daily run picks up a new release: a release published by release.yml
+# with GITHUB_TOKEN does not trigger other workflows.
+
 on:
   push:
     branches:
       - main
+  pull_request:
+    paths:
+      - site/**
+      - docs/**
+      - examples/**
+      - README.md
+      - CHANGELOG.md
+      - cmd/**
+      - pkg/**
+      - internal/**
+      - go.mod
+      - .github/workflows/pages.yml
+  schedule:
+    - cron: "17 1 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.event_name == 'pull_request' && github.head_ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HUGO_VERSION: 0.148.2
+  HUGO_SHA256: b2fbef73c965ff439ccca0bdf15d7ca64f59363d62916326e24d5552e6968aa3
 
 jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: install Hugo
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/hugo.tgz" "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_${HUGO_VERSION}_linux-amd64.tar.gz"
+          echo "${HUGO_SHA256}  $RUNNER_TEMP/hugo.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/hugo.tgz" -C "$RUNNER_TEMP" hugo
+          echo "HUGO=$RUNNER_TEMP/hugo" >>"$GITHUB_ENV"
+      - name: test the WebAssembly bridge
+        working-directory: site/wasm
+        run: |
+          test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+          go vet ./...
+          GOOS=js GOARCH=wasm go vet .
+          go test ./...
+      - id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: build the site
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: site/build.sh
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/public
+
   deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

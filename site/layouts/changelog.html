@@ -1,0 +1,11 @@
+{{ define "main" }}
+<article class="page">
+  {{ partial "page-hero.html" . }}
+  <div class="wrap narrow prose" lang="en">
+    {{- with resources.Get "repo/CHANGELOG.md" }}
+    {{- $text := replaceRE `\A# .+\n` "" .Content 1 }}
+    {{ $.RenderString (dict "display" "block") $text }}
+    {{- end }}
+  </div>
+</article>
+{{ end }}

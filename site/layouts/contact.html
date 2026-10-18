@@ -1,0 +1,71 @@
+{{ define "main" }}
+{{- $c := site.Params.contact }}
+{{- $wa := replaceRE `[^0-9]` "" ($c.whatsapp | default "") }}
+{{- $channels := or $c.email $wa $c.formEndpoint }}
+<article class="page">
+  {{ partial "page-hero.html" (dict "Title" .Title "Params" (merge .Params (dict "wide" true))) }}
+  <div class="wrap">
+    <div class="tool">
+      <div class="panel">
+        {{- if $channels }}
+        <form id="contact" novalidate data-email="{{ $c.email }}" data-whatsapp="{{ $wa }}" data-endpoint="{{ $c.formEndpoint }}">
+          <div class="field-row">
+            <div class="field"><label for="c-name">{{ i18n "contact_name" }}</label><input id="c-name" name="name" autocomplete="name" required></div>
+            <div class="field"><label for="c-company">{{ i18n "contact_company" }}</label><input id="c-company" name="company" autocomplete="organization" required></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="c-role">{{ i18n "contact_role" }}</label><input id="c-role" name="role" autocomplete="organization-title"></div>
+            <div class="field"><label for="c-email">{{ i18n "contact_email" }}</label><input id="c-email" name="email" type="email" autocomplete="email" required></div>
+          </div>
+          <div class="field"><label for="c-phone">{{ i18n "contact_phone" }}</label><input id="c-phone" name="phone" type="tel" autocomplete="tel"></div>
+          <div class="field">
+            <label for="c-interest">{{ i18n "contact_interest" }}</label>
+            <select id="c-interest" name="interest">
+              {{- range slice "demo" "partner" "audit" "support" "other" }}
+              <option value="{{ i18n (printf "contact_interest_%s" .) }}">{{ i18n (printf "contact_interest_%s" .) }}</option>
+              {{- end }}
+            </select>
+          </div>
+          <div class="field"><label for="c-message">{{ i18n "contact_message" }}</label><textarea id="c-message" name="message" rows="5"></textarea></div>
+          <div class="actions">
+            {{- if $c.formEndpoint }}
+            <button class="btn btn-primary" type="submit" data-via="form">{{ i18n "contact_send_form" }}</button>
+            {{- else if $c.email }}
+            <button class="btn btn-primary" type="submit" data-via="email">{{ i18n "contact_send_email" }}</button>
+            {{- end }}
+            {{- if $wa }}
+            <button class="btn btn-secondary" type="submit" data-via="whatsapp">{{ i18n "contact_send_wa" }}</button>
+            {{- end }}
+          </div>
+          <p class="status" id="contact-status" role="status" aria-live="polite"></p>
+          <p class="privacy">{{ i18n "contact_privacy" }}</p>
+        </form>
+        {{- else }}
+        <div class="callout callout-note">
+          <p>{{ i18n "contact_missing" }}</p>
+          <p><a class="btn btn-secondary" href="{{ site.Params.repo }}/issues/new" rel="noopener">GitHub ↗</a></p>
+        </div>
+        {{- end }}
+      </div>
+      <div class="panel prose">
+        {{- if or $c.calendar $c.email $wa }}
+        <h2>{{ i18n "contact_direct" }}</h2>
+        <div class="actions">
+          {{- with $c.calendar }}<a class="btn btn-primary" href="{{ . }}" rel="noopener">{{ i18n "contact_book" }}</a>{{ end }}
+          {{- with $c.email }}<a class="btn btn-ghost" href="mailto:{{ . }}">{{ . }}</a>{{ end }}
+          {{- with $wa }}<a class="btn btn-ghost" href="https://wa.me/{{ . }}" rel="noopener">WhatsApp</a>{{ end }}
+        </div>
+        {{- end }}
+        {{ .Content }}
+      </div>
+    </div>
+  </div>
+</article>
+{{ partial "strings.html" (slice "contact_subject" "contact_sent" "contact_error" "contact_name" "contact_company" "contact_role" "contact_email" "contact_phone" "contact_interest" "contact_message") }}
+{{ end }}
+{{ define "scripts" }}
+{{- if or site.Params.contact.email site.Params.contact.whatsapp site.Params.contact.formEndpoint }}
+{{- $js := (resources.Get "js/contact.js" | minify | fingerprint) }}
+<script src="{{ $js.RelPermalink }}" integrity="{{ $js.Data.Integrity }}" defer></script>
+{{- end }}
+{{ end }}

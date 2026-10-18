@@ -1,0 +1,52 @@
+{{ define "main" }}
+{{- $a := partial "engine-assets.html" . }}
+{{- $key := site.Data.key }}
+<article class="page">
+  {{ partial "page-hero.html" (dict "Title" .Title "Params" (merge .Params (dict "wide" true))) }}
+  <div class="wrap">
+    <div class="tool" id="verify" data-worker="{{ $a.worker }}" data-wasm="{{ $a.wasm }}" data-wasm-gz="{{ $a.wasmGz }}" data-wasm-exec="{{ $a.wasmExec }}"{{ if $key.available }} data-release-key="{{ $key.pem }}" data-release-key-id="{{ $key.key_id }}"{{ end }}>
+      <div class="panel">
+        <div class="tabs" role="tablist">
+          <button class="tab" type="button" role="tab" id="tab-attest" aria-selected="true" aria-controls="pane-attest">{{ i18n "verify_tab_attest" }}</button>
+          <button class="tab" type="button" role="tab" id="tab-release" aria-selected="false" aria-controls="pane-release" tabindex="-1">{{ i18n "verify_tab_release" }}</button>
+        </div>
+        <form id="pane-attest" role="tabpanel" aria-labelledby="tab-attest" novalidate>
+          {{ partial "file-slot.html" (dict "id" "a-bundle" "label" (i18n "verify_bundle") "accept" ".json") }}
+          {{ partial "file-slot.html" (dict "id" "a-key" "label" (i18n "verify_key") "accept" ".pub,.pem,.key") }}
+          {{ partial "file-slot.html" (dict "id" "a-history" "label" (i18n "verify_history") "accept" ".jsonl,.json") }}
+          <div class="actions">
+            <button class="btn btn-primary" type="submit" disabled>{{ i18n "verify_run" }}</button>
+            <button class="btn btn-ghost" type="button" id="load-sample" data-base="{{ "demos/" | relURL }}">{{ i18n "verify_sample_btn" }}</button>
+          </div>
+          <p class="small muted">{{ i18n "verify_sample" }}</p>
+        </form>
+        <form id="pane-release" role="tabpanel" aria-labelledby="tab-release" hidden novalidate>
+          {{ partial "file-slot.html" (dict "id" "r-bundle" "label" (i18n "verify_release_bundle") "accept" ".json") }}
+          {{- if $key.available }}
+          <p class="small muted">{{ i18n "verify_official_key" }}: <code>{{ $key.key_id }}</code></p>
+          {{- end }}
+          {{ partial "file-slot.html" (dict "id" "r-key" "label" (i18n "verify_key") "accept" ".pub,.pem") }}
+          {{ partial "file-slot.html" (dict "id" "r-files" "label" (i18n "verify_files") "multiple" true) }}
+          <div class="actions"><button class="btn btn-primary" type="submit" disabled>{{ i18n "verify_run" }}</button></div>
+        </form>
+        <div class="status" id="status" aria-live="polite">
+          <span class="spinner" aria-hidden="true"></span><span data-status-text>{{ i18n "try_loading" }}…</span><span class="progress" aria-hidden="true"><span></span></span>
+        </div>
+        <p class="privacy">{{ i18n "privacy_local" }}</p>
+      </div>
+      <div class="panel" aria-live="polite">
+        <h2>{{ i18n "try_result" }}</h2>
+        <div id="result" class="result"><div class="empty">{{ .Params.empty }}</div></div>
+      </div>
+    </div>
+    <div class="prose narrow-prose">{{ .Content }}</div>
+  </div>
+</article>
+{{ partial "strings.html" (slice "try_loading" "try_ready" "try_load_failed" "verify_valid" "verify_invalid" "verify_key_id" "verify_bundle_keys" "verify_signer" "verify_signed_at" "verify_target" "verify_verdict" "verify_fingerprint" "verify_history_ok" "verify_history_bad" "verify_version" "verify_commit" "verify_builder" "verify_file_match" "verify_file_mismatch" "verify_file_unknown" "verify_need" "verdict_violation" "verdict_linearizable" "verdict_unknown") }}
+{{ end }}
+{{ define "scripts" }}
+{{- $engine := (resources.Get "js/engine.js" | minify | fingerprint) }}
+{{- $js := (resources.Get "js/verify.js" | minify | fingerprint) }}
+<script src="{{ $engine.RelPermalink }}" integrity="{{ $engine.Data.Integrity }}" defer></script>
+<script src="{{ $js.RelPermalink }}" integrity="{{ $js.Data.Integrity }}" defer></script>
+{{ end }}
