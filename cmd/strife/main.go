@@ -1447,7 +1447,7 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 	commit := fs.String("commit", "", "commit SHA or version label recorded in the campaign manifest")
 	branch := fs.String("branch", "", "branch name recorded in the campaign manifest")
 	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
-	keep := fs.Int("keep", 5, "write detailed report.html for up to this many violating seeds")
+	keep := fs.Int("keep", 5, "write detailed report.html for up to this many violating seeds (0 or less: every one)")
 	shrinkCount := fs.Int("shrink", 0, "minimise up to this many violating seeds")
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
 	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-regression\"")
