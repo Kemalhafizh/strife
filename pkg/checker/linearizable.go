@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -192,6 +193,9 @@ type frame struct {
 	// forced frames linearize a read-only operation eagerly; there is no
 	// alternative worth trying at that level (see search).
 	forced bool
+	// arena[lo:hi] are the level's candidates in the order tried, idx the
+	// next one.
+	lo, hi, idx int
 }
 
 type cacheEntry struct {
@@ -444,66 +448,128 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 		return nil
 	}
 
-	e := head.next
+	// Candidates are the calls before the first return in the event list:
+	// the operations that may be linearized next. They are tried earliest
+	// deadline first (by return time): an operation that must complete soon
+	// constrains the rest the most, and in a linearizable history placing it
+	// first is usually right, so the search rarely backtracks. The order
+	// changes only how fast a solution is found, never which configurations
+	// exist: the verdict is the same as trying candidates in call order.
+	//
+	// Interchangeable candidates: two candidates with the same input and the
+	// same output (two concurrent "write 3", say) make the same step from
+	// any state. Trying only the one with the earliest return loses no
+	// solution: a linearization that takes the other one first can take
+	// this one first instead and the other where this one was, because that
+	// point precedes this one's return, which precedes the other's; every
+	// state along the way is the same. So each level tries one operation
+	// per class.
+	//
+	// The levels' candidate lists live on one stack, arena: a level pushes
+	// its list when it starts and pops it when it fails, so a frame keeps
+	// only the bounds and nothing is allocated per level.
+	class := classes(ops)
+	seen := make([]int, len(ops)) // seen[class] == stamp: class tried at this level
+	stamp := 0
+	var arena []*entry
+	candidates := func() (int, int, *entry) {
+		lo := len(arena)
+		e := head.next
+		for ; e != nil && e.call; e = e.next {
+			// Insertion keeps the list sorted by return time, stable for
+			// ties (calls arrive in call order); levels are small.
+			arena = append(arena, e)
+			ret := ops[e.id].Return
+			for j := len(arena) - 1; j > lo && ops[arena[j-1].id].Return > ret; j-- {
+				arena[j], arena[j-1] = arena[j-1], arena[j]
+			}
+		}
+		stamp++
+		hi := lo
+		for _, c := range arena[lo:] {
+			if seen[class[c.id]] != stamp {
+				seen[class[c.id]] = stamp
+				arena[hi] = c
+				hi++
+			}
+		}
+		arena = arena[:hi]
+		return lo, hi, e
+	}
+
+	var stuck *entry
+	lo, hi, idx, fresh := 0, 0, 0, true
 	for head.next != nil {
-		res.Steps++
-		if res.Steps > maxSteps {
-			res.Verdict, res.Reason = Unknown, ReasonSteps
-			return res, nil
-		}
-		if timeout > 0 && res.Steps&0xfff == 0 && time.Now().After(deadline) {
-			res.Verdict, res.Reason = Unknown, ReasonTime
-			return res, nil
-		}
-		if e.call && e == head.next {
+		if fresh {
+			fresh = false
 			if c := eagerRead(); c != nil {
+				res.Steps++
 				lin.set(c.id)
 				if !cached(state) {
 					stack = append(stack, frame{e: c, state: state, forced: true})
 					lift(c)
-					e = head.next
+					fresh = true
 					continue
 				}
 				// Known dead end: the level fails without alternatives.
 				lin.clear(c.id)
-				e = &entry{id: c.id, call: false} // fall through to backtracking
+				lo, hi, stuck = candidates()
+				idx = hi
+			} else {
+				lo, hi, stuck = candidates()
+				idx = lo
 			}
 		}
-		if e.call {
-			if t := twin[e.id]; t >= 0 && !lin.has(t) {
-				e = e.next
+		advanced := false
+		for idx < hi {
+			c := arena[idx]
+			idx++
+			if t := twin[c.id]; t >= 0 && !lin.has(t) {
 				continue
 			}
-			ok, next := m.Step(state, ops[e.id].Input, ops[e.id].Output)
-			if ok {
-				lin.set(e.id)
-				if !cached(next) {
-					stack = append(stack, frame{e: e, state: state})
-					state = next
-					lift(e)
-					e = head.next
-					continue
-				}
-				lin.clear(e.id)
+			res.Steps++
+			if res.Steps > maxSteps {
+				res.Verdict, res.Reason = Unknown, ReasonSteps
+				return res, nil
 			}
-			e = e.next
+			if timeout > 0 && res.Steps&0xfff == 0 && time.Now().After(deadline) {
+				res.Verdict, res.Reason = Unknown, ReasonTime
+				return res, nil
+			}
+			ok, next := m.Step(state, ops[c.id].Input, ops[c.id].Output)
+			if !ok {
+				continue
+			}
+			lin.set(c.id)
+			if cached(next) {
+				lin.clear(c.id)
+				continue
+			}
+			stack = append(stack, frame{e: c, state: state, lo: lo, hi: hi, idx: idx})
+			state = next
+			lift(c)
+			fresh, advanced = true, true
+			break
+		}
+		if advanced {
 			continue
 		}
 
-		// A return event: its operation must already have been linearized,
-		// so the current prefix is a dead end.
-		if record && len(stack) > bestDepth && e.match != nil {
+		// No candidate leads anywhere new: the operation returning first
+		// cannot be linearized after this prefix.
+		if record && len(stack) > bestDepth && stuck != nil {
 			bestDepth = len(stack)
-			best = &deadEnd{state: state, stuck: e.id}
+			best = &deadEnd{state: state, stuck: stuck.id}
 			for _, f := range stack {
 				best.linearized = append(best.linearized, f.e.id)
 			}
-			for c := head.next; c != nil && c != e; c = c.next {
-				if c.call && c.id != e.id {
+			for _, c := range arena[lo:hi] {
+				if c.id != stuck.id {
 					best.candidates = append(best.candidates, c.id)
 				}
 			}
 		}
+		arena = arena[:lo]
 		for {
 			if len(stack) == 0 {
 				res.Verdict = Violation
@@ -514,13 +580,86 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 			state = top.state
 			lin.clear(top.e.id)
 			unlift(top.e)
-			e = top.e.next
-			if !top.forced {
-				break
+			if top.forced {
+				continue
 			}
+			lo, hi, idx = top.lo, top.hi, top.idx
+			_, stuck = firstReturn(head)
+			break
 		}
 	}
 	return res, nil
+}
+
+// classes numbers the operations by what a model step can depend on: the
+// input and output with the identity of the call (index, process, node,
+// time, error text) removed. Operations in the same class are
+// interchangeable for the model.
+func classes(ops []history.Operation) []int {
+	ids := map[string]int{}
+	out := make([]int, len(ops))
+	var buf []byte
+	val := func(v *int64) {
+		if v == nil {
+			buf = append(buf, '-')
+		} else {
+			buf = strconv.AppendInt(buf, *v, 10)
+		}
+		buf = append(buf, ',')
+	}
+	op := func(o *history.Op) {
+		buf = append(buf, o.Type...)
+		buf = append(buf, '|')
+		buf = append(buf, o.F...)
+		buf = append(buf, '|')
+		buf = strconv.AppendQuote(buf, o.Key)
+		val(o.Value)
+		val(o.Old)
+		buf = append(buf, '[')
+		for _, x := range o.Values {
+			buf = strconv.AppendInt(buf, x, 10)
+			buf = append(buf, ' ')
+		}
+		buf = append(buf, ']', '{')
+		for _, m := range o.Txn {
+			buf = append(buf, m.F...)
+			buf = append(buf, ':')
+			buf = strconv.AppendQuote(buf, m.Key)
+			val(m.Value)
+			buf = append(buf, '[')
+			for _, x := range m.Values {
+				buf = strconv.AppendInt(buf, x, 10)
+				buf = append(buf, ' ')
+			}
+			buf = append(buf, ']', ';')
+		}
+		buf = append(buf, '}')
+	}
+	for i := range ops {
+		buf = buf[:0]
+		op(&ops[i].Input)
+		buf = append(buf, '>')
+		op(&ops[i].Output)
+		buf = append(buf, ops[i].Status()...)
+		id, ok := ids[string(buf)]
+		if !ok {
+			id = len(ids)
+			ids[string(buf)] = id
+		}
+		out[i] = id
+	}
+	return out
+}
+
+// firstReturn returns the calls before the first return event, and that
+// return.
+func firstReturn(head *entry) (int, *entry) {
+	n := 0
+	e := head.next
+	for ; e != nil && e.call; e = e.next {
+		n++
+	}
+	return n, e
 }
 
 func step(o history.Operation) Step {

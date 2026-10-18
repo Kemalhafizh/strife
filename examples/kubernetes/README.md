@@ -32,7 +32,8 @@ scripts/live/kind-etcd.sh delete
   across the container restarts the kill nemesis causes, but not across
   rescheduling, which is why it is read at every run.
 - An endpoint containing `{ip}` expands into one endpoint per node.
-- `transport` also takes `kubectl` (binary), `context` and `kubeconfig`.
+- `transport` also takes `kubectl` (binary), `context`, `kubeconfig` and
+  `node_helper` (below).
 
 ## What the pods need
 
@@ -43,11 +44,39 @@ scripts/live/kind-etcd.sh delete
   etcd and the nemesis restarts it with `db.start`. If the database is PID 1,
   Kubernetes restarts the whole container and the kill nemesis loses track.
 
+## Host faults: `freeze` and `io-stall`
+
+These act on the node's cgroups, which a pod cannot reach. Deploy the node
+helper, a privileged DaemonSet that only sleeps until Strife execs into it,
+and point the transport at it:
+
+```sh
+kubectl apply -f examples/kubernetes/node-helper.yaml
+strife run --config examples/kubernetes/strife-host.json
+```
+
+```json
+"transport": {
+  "type": "kubernetes", "namespace": "strife",
+  "node_helper": { "namespace": "strife-system", "selector": "app=strife-node" }
+},
+"nodes": [{ "name": "n1", "ip": "auto", "pod": "etcd-0", "container": "etcd", "cgroup": "auto" }, ...],
+"nemesis": { "faults": ["freeze", "io-stall"], "io_device": "auto" }
+```
+
+- `"cgroup": "auto"` finds the container's cgroup on its node from the
+  container ID the kubelet reports; `"io_device": "auto"` finds the disk that
+  holds `/var/lib/containerd`.
+- Each cgroup write runs in the helper on the node that hosts the target
+  pod, and `freeze` is confirmed only once `cgroup.events` reports it.
+- `io-stall` needs the io controller delegated down to pod cgroups (`io.max`
+  present); `scripts/live/kind-host-faults.sh` checks that and CI skips the
+  fault where the node does not delegate it.
+- Anyone who can exec into the helper controls the node: keep its namespace
+  restricted to whoever runs Strife.
+
 ## Limits
 
-- `freeze` and `io-stall` act on the node's cgroups and are refused: the
-  kubernetes transport has no host access. Run `strife-agent` on the nodes
-  and use the `agent` transport for them.
 - `clock-skew` is refused: pods share their node's clock.
 - Strife must reach the pod IPs. Inside the cluster that is a given; from
   outside, route the pod CIDR (as `kind-etcd.sh` does) or run Strife in a pod

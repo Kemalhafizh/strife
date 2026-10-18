@@ -1,0 +1,250 @@
+{"index":0,"process":40,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":1000005236}],"time":59859370201}
+{"index":1,"process":47,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":8000005240}],"time":59859384111}
+{"index":2,"process":47,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":8000005240}],"time":59860439521,"node":"n1"}
+{"index":3,"process":40,"type":"fail","f":"txn","time":59860604113,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":4,"process":41,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59862859636}
+{"index":5,"process":41,"type":"fail","f":"txn","time":59864038738,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":6,"process":46,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":7000005373}],"time":59864055803}
+{"index":7,"process":46,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":7000005373}],"time":59864352845,"node":"n1"}
+{"index":8,"process":40,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":1000005239}],"time":59867510363}
+{"index":9,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59867738363}
+{"index":10,"process":42,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373]}],"time":59868015200,"node":"n1"}
+{"index":11,"process":44,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"},{"f":"r","key":"a4.277"}],"time":59868280104}
+{"index":12,"process":40,"type":"fail","f":"txn","time":59868352455,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":13,"process":44,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373]},{"f":"r","key":"a4.277","values":[8000005240,7000005373]}],"time":59868598131,"node":"n1"}
+{"index":14,"process":46,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59870028282}
+{"index":15,"process":46,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373]}],"time":59870228481,"node":"n1"}
+{"index":16,"process":44,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59870251449}
+{"index":17,"process":44,"type":"fail","f":"txn","time":59870853469,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":18,"process":48,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":9000005316}],"time":59870889091}
+{"index":19,"process":48,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":9000005316}],"time":59871294647,"node":"n1"}
+{"index":20,"process":42,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":3000005348}],"time":59872404267}
+{"index":21,"process":40,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":1000005241}],"time":59872422659}
+{"index":22,"process":48,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59872604060}
+{"index":23,"process":42,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":3000005348}],"time":59872864077,"node":"n1"}
+{"index":24,"process":48,"type":"fail","f":"txn","time":59872918542,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":25,"process":40,"type":"fail","f":"txn","time":59873186676,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":26,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59875717363}
+{"index":27,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":2000005482}],"time":59875771328}
+{"index":28,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":2000005482}],"time":59876375796,"node":"n1"}
+{"index":29,"process":42,"type":"fail","f":"txn","time":59876432619,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":30,"process":47,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59876631531}
+{"index":31,"process":47,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482]}],"time":59876883411,"node":"n1"}
+{"index":32,"process":49,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59877989356}
+{"index":33,"process":40,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"},{"f":"r","key":"a4.277"},{"f":"append","key":"a4.277","value":1000005242}],"time":59878017853}
+{"index":34,"process":49,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482]}],"time":59878178018,"node":"n1"}
+{"index":35,"process":43,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":4000005385}],"time":59878200691}
+{"index":36,"process":47,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":8000005247}],"time":59878233009}
+{"index":37,"process":40,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482]},{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482]},{"f":"append","key":"a4.277","value":1000005242}],"time":59878682098,"node":"n1"}
+{"index":38,"process":48,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":9000005323}],"time":59878688778}
+{"index":39,"process":47,"type":"fail","f":"txn","time":59878758756,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":40,"process":43,"type":"fail","f":"txn","time":59878900675,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":41,"process":48,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":9000005323}],"time":59879215192,"node":"n1"}
+{"index":42,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":2000005484}],"time":59879226578}
+{"index":43,"process":45,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":6000005243}],"time":59879817692}
+{"index":44,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":2000005484}],"time":59879868932,"node":"n1"}
+{"index":45,"process":45,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":6000005243}],"time":59880326199,"node":"n1"}
+{"index":46,"process":45,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":6000005244}],"time":59880526112}
+{"index":47,"process":45,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":6000005244}],"time":59880839543,"node":"n1"}
+{"index":48,"process":44,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59881275894}
+{"index":49,"process":44,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244]}],"time":59881761892,"node":"n1"}
+{"index":50,"process":47,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":8000005248}],"time":59881774090}
+{"index":51,"process":47,"type":"fail","f":"txn","time":59882151049,"node":"n1","error":"postgres: [40001] could not serialize access due to read/write dependencies among transactions"}
+{"index":52,"process":45,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":6000005247}],"time":59883239403}
+{"index":53,"process":46,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":7000005379}],"time":59883266959}
+{"index":54,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":2000005485}],"time":59883272266}
+{"index":55,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":2000005485}],"time":59883636526,"node":"n1"}
+{"index":56,"process":46,"type":"fail","f":"txn","time":59883928615,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":57,"process":45,"type":"fail","f":"txn","time":59883984708,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":58,"process":44,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"},{"f":"r","key":"a4.277"}],"time":59884167206}
+{"index":59,"process":44,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485]},{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244]}],"time":59884582606,"node":"n1"}
+{"index":60,"process":45,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59884594924}
+{"index":61,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"}],"time":59884616385}
+{"index":62,"process":42,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485]}],"time":59884794162,"node":"n1"}
+{"index":63,"process":45,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244]}],"time":59884984386,"node":"n1"}
+{"index":64,"process":47,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":8000005250}],"time":59886059435}
+{"index":65,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":10000005388}],"time":59886080056}
+{"index":66,"process":47,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":8000005250}],"time":59886371514,"node":"n1"}
+{"index":67,"process":49,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":10000005388}],"time":59886444020,"node":"n1"}
+{"index":68,"process":43,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":4000005388},{"f":"append","key":"a2.280","value":4000005389},{"f":"r","key":"a3.280"}],"time":59886471541}
+{"index":69,"process":43,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":4000005388},{"f":"append","key":"a2.280","value":4000005389},{"f":"r","key":"a3.280"}],"time":59886880607,"node":"n1"}
+{"index":70,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":10000005389},{"f":"append","key":"a4.277","value":10000005390},{"f":"r","key":"a4.277"}],"time":59887925947}
+{"index":71,"process":45,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":6000005250}],"time":59887939717}
+{"index":72,"process":48,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"},{"f":"r","key":"a3.280"}],"time":59887948045}
+{"index":73,"process":47,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":8000005252},{"f":"r","key":"a4.277"}],"time":59887958395}
+{"index":74,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":2000005486}],"time":59887961124}
+{"index":75,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":2000005486}],"time":59888271274,"node":"n1"}
+{"index":76,"process":40,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"},{"f":"r","key":"a3.280"}],"time":59888284033}
+{"index":77,"process":48,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389]},{"f":"r","key":"a3.280"}],"time":59888376098,"node":"n1"}
+{"index":78,"process":43,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":4000005392}],"time":59888452080}
+{"index":79,"process":40,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486]},{"f":"r","key":"a3.280"}],"time":59888768941,"node":"n1"}
+{"index":80,"process":45,"type":"fail","f":"txn","time":59888775144,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":81,"process":47,"type":"fail","f":"txn","time":59888872247,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":82,"process":49,"type":"fail","f":"txn","time":59888881571,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":83,"process":43,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":4000005392}],"time":59888994352,"node":"n1"}
+{"index":84,"process":44,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"},{"f":"r","key":"a2.280"},{"f":"r","key":"a4.277"}],"time":59889006610}
+{"index":85,"process":45,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"}],"time":59889050609}
+{"index":86,"process":44,"type":"ok","f":"txn","txn":[{"f":"r","key":"a3.280"},{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389]},{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392]}],"time":59889495462,"node":"n1"}
+{"index":87,"process":45,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389]}],"time":59889535561,"node":"n1"}
+{"index":88,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"},{"f":"r","key":"a3.280"}],"time":59889564389}
+{"index":89,"process":42,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392]},{"f":"r","key":"a3.280"}],"time":59889925845,"node":"n1"}
+{"index":90,"process":43,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":4000005393}],"time":59889944913}
+{"index":91,"process":48,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":9000005327},{"f":"r","key":"a4.277"}],"time":59889957156}
+{"index":92,"process":41,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"},{"f":"r","key":"a0.279"}],"time":59890394954}
+{"index":93,"process":43,"type":"fail","f":"txn","time":59890488907,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":94,"process":48,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":9000005327},{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327]}],"time":59890543893,"node":"n1"}
+{"index":95,"process":42,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":3000005353}],"time":59890684204}
+{"index":96,"process":41,"type":"fail","f":"txn","time":59890819507,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":97,"process":42,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":3000005353}],"time":59891041318,"node":"n1"}
+{"index":98,"process":48,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":9000005328}],"time":59892136367}
+{"index":99,"process":40,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":1000005245},{"f":"r","key":"a4.277"}],"time":59892147554}
+{"index":100,"process":42,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":3000005354},{"f":"append","key":"a2.280","value":3000005355}],"time":59892161519}
+{"index":101,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":10000005391},{"f":"r","key":"a0.279"}],"time":59892170011}
+{"index":102,"process":42,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":3000005354},{"f":"append","key":"a2.280","value":3000005355}],"time":59892603238,"node":"n1"}
+{"index":103,"process":48,"type":"ok","f":"txn","txn":[{"f":"append","key":"a0.279","value":9000005328}],"time":59892636526,"node":"n1"}
+{"index":104,"process":49,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":10000005391},{"f":"r","key":"a0.279"}],"time":59892643026,"node":"n1"}
+{"index":105,"process":40,"type":"fail","f":"txn","time":59892883499,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":106,"process":44,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":5000005371}],"time":59894376458}
+{"index":107,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"}],"time":59894399857}
+{"index":108,"process":47,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"},{"f":"r","key":"a2.280"},{"f":"r","key":"a3.280"}],"time":59894411118}
+{"index":109,"process":42,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328]}],"time":59894549587,"node":"n1"}
+{"index":110,"process":47,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328]},{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355]},{"f":"r","key":"a3.280","values":[3000005353,3000005354]}],"time":59894637526,"node":"n1"}
+{"index":111,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":2000005489}],"time":59894644576}
+{"index":112,"process":44,"type":"ok","f":"txn","txn":[{"f":"append","key":"a0.279","value":5000005371}],"time":59894770161,"node":"n1"}
+{"index":113,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":2000005489}],"time":59894925369,"node":"n1"}
+{"index":114,"process":43,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"},{"f":"append","key":"a0.279","value":4000005396}],"time":59894954797}
+{"index":115,"process":43,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391]},{"f":"append","key":"a0.279","value":4000005396}],"time":59895370803,"node":"n1"}
+{"index":116,"process":44,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":5000005372},{"f":"append","key":"a4.277","value":5000005373}],"time":59895383592}
+{"index":117,"process":45,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":6000005254},{"f":"append","key":"a2.280","value":6000005256}],"time":59895397908}
+{"index":118,"process":45,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":6000005254},{"f":"append","key":"a2.280","value":6000005256}],"time":59895731548,"node":"n1"}
+{"index":119,"process":46,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":7000005381},{"f":"r","key":"a0.279"}],"time":59895740882}
+{"index":120,"process":44,"type":"fail","f":"txn","time":59895948642,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":121,"process":46,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":7000005381},{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396]}],"time":59896114846,"node":"n1"}
+{"index":122,"process":48,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59896133093}
+{"index":123,"process":49,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"},{"f":"r","key":"a2.280"}],"time":59896164809}
+{"index":124,"process":49,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256]},{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256]}],"time":59896415843,"node":"n1"}
+{"index":125,"process":48,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381]}],"time":59896513061,"node":"n1"}
+{"index":126,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":2000005491},{"f":"append","key":"a4.277","value":2000005492},{"f":"append","key":"a4.277","value":2000005493}],"time":59896535859}
+{"index":127,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":2000005491},{"f":"append","key":"a4.277","value":2000005492},{"f":"append","key":"a4.277","value":2000005493}],"time":59896880120,"node":"n1"}
+{"index":128,"process":48,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"}],"time":59897436948}
+{"index":129,"process":42,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":3000005356},{"f":"r","key":"a0.279"},{"f":"append","key":"a2.280","value":3000005358}],"time":59897456321}
+{"index":130,"process":48,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396]}],"time":59897590684,"node":"n1"}
+{"index":131,"process":42,"type":"fail","f":"txn","time":59897883925,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":132,"process":43,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"},{"f":"r","key":"a4.277"}],"time":59898955449}
+{"index":133,"process":47,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"},{"f":"append","key":"a2.280","value":8000005255},{"f":"r","key":"a4.277"},{"f":"r","key":"a2.280"}],"time":59898969900}
+{"index":134,"process":45,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"}],"time":59898979879}
+{"index":135,"process":43,"type":"ok","f":"txn","txn":[{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491]},{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381,2000005492,2000005493]}],"time":59899140350,"node":"n1"}
+{"index":136,"process":45,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396]}],"time":59899274642,"node":"n1"}
+{"index":137,"process":47,"type":"ok","f":"txn","txn":[{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491]},{"f":"append","key":"a2.280","value":8000005255},{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381,2000005492,2000005493]},{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255]}],"time":59899319448,"node":"n1"}
+{"index":138,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":2000005494},{"f":"r","key":"a3.280"},{"f":"append","key":"a0.279","value":2000005495}],"time":59901627789}
+{"index":139,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":10000005393},{"f":"append","key":"a3.280","value":10000005394},{"f":"r","key":"a4.277"},{"f":"r","key":"a2.280"}],"time":59901647493}
+{"index":140,"process":45,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"},{"f":"r","key":"a2.280"}],"time":59901658695}
+{"index":141,"process":46,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":7000005382},{"f":"r","key":"a0.279"},{"f":"r","key":"a0.279"}],"time":59901662820}
+{"index":142,"process":40,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":1000005248}],"time":59901842745}
+{"index":143,"process":45,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396]},{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255]}],"time":59901890045,"node":"n1"}
+{"index":144,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":2000005494},{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494]},{"f":"append","key":"a0.279","value":2000005495}],"time":59902041407,"node":"n1"}
+{"index":145,"process":49,"type":"fail","f":"txn","time":59902278115,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":146,"process":40,"type":"fail","f":"txn","time":59902401370,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":147,"process":48,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"},{"f":"append","key":"a2.280","value":9000005330},{"f":"r","key":"a0.279"},{"f":"append","key":"a0.279","value":9000005331}],"time":59902409703}
+{"index":148,"process":46,"type":"fail","f":"txn","time":59902442861,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":149,"process":48,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381,2000005492,2000005493]},{"f":"append","key":"a2.280","value":9000005330},{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495]},{"f":"append","key":"a0.279","value":9000005331}],"time":59902762090,"node":"n1"}
+{"index":150,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"}],"time":59902773407}
+{"index":151,"process":42,"type":"ok","f":"txn","txn":[{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494]}],"time":59902960231,"node":"n1"}
+{"index":152,"process":44,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":5000005376}],"time":59902989274}
+{"index":153,"process":44,"type":"ok","f":"txn","txn":[{"f":"append","key":"a0.279","value":5000005376}],"time":59903300236,"node":"n1"}
+{"index":154,"process":43,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59903312434}
+{"index":155,"process":43,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381,2000005492,2000005493]}],"time":59903465178,"node":"n1"}
+{"index":156,"process":44,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":5000005377},{"f":"r","key":"a2.280"},{"f":"append","key":"a4.277","value":5000005378}],"time":59904550563}
+{"index":157,"process":46,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":7000005383}],"time":59904566020}
+{"index":158,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":2000005496},{"f":"r","key":"a0.279"}],"time":59904575334}
+{"index":159,"process":47,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":8000005257}],"time":59904585324}
+{"index":160,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"},{"f":"r","key":"a2.280"}],"time":59904589229}
+{"index":161,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a0.279","value":2000005496},{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496]}],"time":59904915564,"node":"n1"}
+{"index":162,"process":42,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381,2000005492,2000005493]},{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255,9000005330]}],"time":59905001880,"node":"n1"}
+{"index":163,"process":46,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":7000005383}],"time":59905061788,"node":"n1"}
+{"index":164,"process":44,"type":"fail","f":"txn","time":59905312762,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":165,"process":47,"type":"fail","f":"txn","time":59905386696,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":166,"process":47,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":8000005259}],"time":59906460803}
+{"index":167,"process":40,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"},{"f":"r","key":"a3.280"}],"time":59906474659}
+{"index":168,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":10000005395}],"time":59906486877}
+{"index":169,"process":40,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496]},{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494,7000005383]}],"time":59906728552,"node":"n1"}
+{"index":170,"process":49,"type":"ok","f":"txn","txn":[{"f":"append","key":"a0.279","value":10000005395}],"time":59906777579,"node":"n1"}
+{"index":171,"process":47,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":8000005259}],"time":59906917785,"node":"n1"}
+{"index":172,"process":43,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"},{"f":"r","key":"a0.279"},{"f":"r","key":"a3.280"},{"f":"append","key":"a2.280","value":4000005398}],"time":59908122930}
+{"index":173,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":10000005396},{"f":"r","key":"a0.279"},{"f":"append","key":"a4.277","value":10000005397},{"f":"r","key":"a0.279"}],"time":59908132860}
+{"index":174,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"}],"time":59908145108}
+{"index":175,"process":48,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"},{"f":"append","key":"a0.279","value":9000005333},{"f":"r","key":"a4.277"}],"time":59908155518}
+{"index":176,"process":42,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496,10000005395]}],"time":59908317471,"node":"n1"}
+{"index":177,"process":40,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":1000005249},{"f":"r","key":"a4.277"},{"f":"r","key":"a2.280"}],"time":59908483935}
+{"index":178,"process":48,"type":"fail","f":"txn","time":59908524204,"node":"n1","error":"postgres: [40001] could not serialize access due to read/write dependencies among transactions"}
+{"index":179,"process":43,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496,10000005395]},{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496,10000005395]},{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494,7000005383]},{"f":"append","key":"a2.280","value":4000005398}],"time":59908649088,"node":"n1"}
+{"index":180,"process":49,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":10000005396},{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496,10000005395]},{"f":"append","key":"a4.277","value":10000005397},{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496,10000005395]}],"time":59908699292,"node":"n1"}
+{"index":181,"process":40,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":1000005249},{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381,2000005492,2000005493,10000005397]},{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255,9000005330,8000005259]}],"time":59908849332,"node":"n1"}
+{"index":182,"process":42,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":3000005360},{"f":"append","key":"a0.279","value":3000005361},{"f":"append","key":"a3.280","value":3000005362}],"time":59908858586}
+{"index":183,"process":42,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":3000005360},{"f":"append","key":"a0.279","value":3000005361},{"f":"append","key":"a3.280","value":3000005362}],"time":59909166873,"node":"n1"}
+{"index":184,"process":46,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":59909179392}
+{"index":185,"process":48,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":9000005334},{"f":"append","key":"a0.279","value":9000005336},{"f":"r","key":"a2.280"}],"time":59909236581}
+{"index":186,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":10000005398}],"time":59909285573}
+{"index":187,"process":46,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381,2000005492,2000005493,10000005397]}],"time":59909358325,"node":"n1"}
+{"index":188,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"},{"f":"append","key":"a2.280","value":3000005364}],"time":59909399310}
+{"index":189,"process":49,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":10000005398}],"time":59909663608,"node":"n1"}
+{"index":190,"process":42,"type":"fail","f":"txn","time":59909816983,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":191,"process":44,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a4.277","value":5000005381}],"time":59909844569}
+{"index":192,"process":42,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"}],"time":59909858344}
+{"index":193,"process":48,"type":"fail","f":"txn","time":59909943669,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":194,"process":42,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255,9000005330,8000005259,4000005398,3000005360,10000005398]}],"time":59910065143,"node":"n1"}
+{"index":195,"process":44,"type":"ok","f":"txn","txn":[{"f":"append","key":"a4.277","value":5000005381}],"time":59910289217,"node":"n1"}
+{"index":196,"process":45,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":6000005257}],"time":59910301255}
+{"index":197,"process":45,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":6000005257}],"time":59910764675,"node":"n1"}
+{"index":198,"process":40,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"}],"time":59911832980}
+{"index":199,"process":47,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":8000005260},{"f":"append","key":"a0.279","value":8000005261}],"time":59911849679}
+{"index":200,"process":43,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":4000005399},{"f":"r","key":"a3.280"}],"time":59911859549}
+{"index":201,"process":40,"type":"ok","f":"txn","txn":[{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494,7000005383,10000005396,1000005249,3000005362]}],"time":59912059748,"node":"n1"}
+{"index":202,"process":41,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"}],"time":59912078295}
+{"index":203,"process":49,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"},{"f":"r","key":"a3.280"}],"time":59912139064}
+{"index":204,"process":47,"type":"ok","f":"txn","txn":[{"f":"append","key":"a2.280","value":8000005260},{"f":"append","key":"a0.279","value":8000005261}],"time":59912169048,"node":"n1"}
+{"index":205,"process":43,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":4000005399},{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494,7000005383,10000005396,1000005249,3000005362,4000005399]}],"time":59912305639,"node":"n1"}
+{"index":206,"process":41,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255,9000005330,8000005259,4000005398,3000005360,10000005398,6000005257,8000005260]}],"time":59912402141,"node":"n1"}
+{"index":207,"process":49,"type":"ok","f":"txn","txn":[{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494,7000005383,10000005396,1000005249,3000005362,4000005399]},{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494,7000005383,10000005396,1000005249,3000005362,4000005399]}],"time":59912621253,"node":"n1"}
+{"index":208,"process":45,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":6000005258}],"time":59914034098}
+{"index":209,"process":48,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":9000005338}],"time":59914046797}
+{"index":210,"process":42,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":3000005365},{"f":"append","key":"a0.279","value":3000005366},{"f":"append","key":"a3.280","value":3000005367}],"time":59914065339}
+{"index":211,"process":44,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":5000005384},{"f":"append","key":"a3.280","value":5000005385}],"time":59915143593}
+{"index":212,"process":41,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"},{"f":"r","key":"a2.280"}],"time":59915194382}
+{"index":213,"process":47,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"},{"f":"append","key":"a0.279","value":8000005262}],"time":59915391332}
+{"index":214,"process":40,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":1000005250}],"time":59915458791}
+{"index":215,"process":41,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255,9000005330,8000005259,4000005398,3000005360,10000005398,6000005257,8000005260]},{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255,9000005330,8000005259,4000005398,3000005360,10000005398,6000005257,8000005260]}],"time":59915613013,"node":"n1"}
+{"index":216,"process":46,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"},{"f":"append","key":"a2.280","value":7000005385}],"time":59915624720}
+{"index":217,"process":43,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a2.280","value":4000005401},{"f":"append","key":"a2.280","value":4000005402},{"f":"r","key":"a3.280"}],"time":59915644709}
+{"index":218,"process":44,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":5000005384},{"f":"append","key":"a3.280","value":5000005385}],"time":59915844492,"node":"n1"}
+{"index":219,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":10000005402}],"time":59918016338}
+{"index":220,"process":49,"type":"fail","f":"txn","time":59918640605,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":221,"process":44,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"},{"f":"append","key":"a3.280","value":5000005388}],"time":59921769270}
+{"index":222,"process":44,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496,10000005395,3000005361,8000005261]},{"f":"append","key":"a3.280","value":5000005388}],"time":59922105695,"node":"n1"}
+{"index":223,"process":49,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"}],"time":59922115018}
+{"index":224,"process":41,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a3.280","value":2000005500}],"time":59922137361}
+{"index":225,"process":41,"type":"ok","f":"txn","txn":[{"f":"append","key":"a3.280","value":2000005500}],"time":59922489123,"node":"n1"}
+{"index":226,"process":49,"type":"ok","f":"txn","txn":[{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494,7000005383,10000005396,1000005249,3000005362,4000005399,5000005384,5000005385,5000005388]}],"time":59922588339,"node":"n1"}
+{"index":227,"process":44,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"}],"time":59924725428}
+{"index":228,"process":41,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"},{"f":"r","key":"a3.280"}],"time":59924744005}
+{"index":229,"process":44,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255,9000005330,8000005259,4000005398,3000005360,10000005398,6000005257,8000005260]}],"time":59924923143,"node":"n1"}
+{"index":230,"process":49,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":10000005406}],"time":59926019243}
+{"index":231,"process":44,"type":"invoke","f":"txn","txn":[{"f":"append","key":"a0.279","value":5000005390},{"f":"append","key":"a0.279","value":5000005391},{"f":"r","key":"a0.279"}],"time":59930171558}
+{"index":232,"process":48,"type":"fail","f":"txn","time":60914683031,"node":"n1","error":"postgres: [40P01] deadlock detected"}
+{"index":233,"process":45,"type":"fail","f":"txn","time":60915018273,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":234,"process":40,"type":"ok","f":"txn","txn":[{"f":"append","key":"a0.279","value":1000005250}],"time":60915180321,"node":"n1"}
+{"index":235,"process":44,"type":"fail","f":"txn","time":60915643196,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":236,"process":46,"type":"fail","f":"txn","time":60915707636,"node":"n1","error":"postgres: [40001] could not serialize access due to read/write dependencies among transactions"}
+{"index":237,"process":43,"type":"fail","f":"txn","time":60915722658,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":238,"process":47,"type":"fail","f":"txn","time":60915870104,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":239,"process":42,"type":"fail","f":"txn","time":60915881356,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":240,"process":49,"type":"fail","f":"txn","time":60915899773,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":241,"process":41,"type":"fail","f":"txn","time":60915954168,"node":"n1","error":"postgres: [40001] could not serialize access due to concurrent update"}
+{"index":242,"process":1073742024,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a0.279"}],"time":66009650359}
+{"index":243,"process":1073742024,"type":"ok","f":"txn","txn":[{"f":"r","key":"a0.279","values":[9000005328,5000005371,4000005396,2000005495,9000005331,5000005376,2000005496,10000005395,3000005361,8000005261,1000005250]}],"time":66009752609,"node":"n1"}
+{"index":244,"process":1073742582,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a2.280"}],"time":66067275863}
+{"index":245,"process":1073742582,"type":"ok","f":"txn","txn":[{"f":"r","key":"a2.280","values":[2000005485,8000005250,4000005389,3000005355,2000005489,6000005254,6000005256,8000005255,9000005330,8000005259,4000005398,3000005360,10000005398,6000005257,8000005260]}],"time":66067414146,"node":"n1"}
+{"index":246,"process":1073742863,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a3.280"}],"time":66097340336}
+{"index":247,"process":1073742863,"type":"ok","f":"txn","txn":[{"f":"r","key":"a3.280","values":[3000005353,3000005354,2000005491,2000005494,7000005383,10000005396,1000005249,3000005362,4000005399,5000005384,5000005385,5000005388,2000005500]}],"time":66097463286,"node":"n1"}
+{"index":248,"process":1073743140,"type":"invoke","f":"txn","txn":[{"f":"r","key":"a4.277"}],"time":66129806147}
+{"index":249,"process":1073743140,"type":"ok","f":"txn","txn":[{"f":"r","key":"a4.277","values":[8000005240,7000005373,9000005316,3000005348,2000005482,1000005242,9000005323,2000005484,6000005243,6000005244,10000005388,4000005388,2000005486,4000005392,9000005327,10000005391,7000005381,2000005492,2000005493,10000005397,5000005381]}],"time":66129907826,"node":"n1"}

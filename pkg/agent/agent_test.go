@@ -24,6 +24,7 @@ func startTestServer(t *testing.T, token string) (*Server, *Client, func()) {
 		NodeName:  "test-node-1",
 		Interface: "lo",
 		Token:     token,
+		filters:   []filterBackend{&fakeFilter{}},
 	}
 	srv := NewServer(cfg)
 
@@ -107,8 +108,8 @@ func TestServerApplyPartition(t *testing.T) {
 	if !resp.Success {
 		t.Errorf("expected success, got error %s", resp.Error)
 	}
-	if resp.Method != "filter:iptables" {
-		t.Errorf("expected filter:iptables method, got %s", resp.Method)
+	if resp.Method != "filter:fake" {
+		t.Errorf("expected filter:fake method, got %s", resp.Method)
 	}
 
 	// Verify active fault count

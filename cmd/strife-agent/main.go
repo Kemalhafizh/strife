@@ -76,9 +76,18 @@ func run(args []string) error {
 	}
 	defer l.Close()
 
+	// Capabilities also sets up the packet filter, so the first partition
+	// does not pay for creating the agent's tables.
 	caps := srv.Capabilities()
-	fmt.Printf("strife-agent starting on %s [%s] (netlink=%v cgroup_v2=%v os=%s/%s)\n",
-		*listenAddr, name, caps.Netlink, caps.CgroupV2, caps.OS, caps.Arch)
+	filter := "none"
+	switch {
+	case caps.NFTables:
+		filter = "nftables"
+	case caps.IPTables:
+		filter = "iptables"
+	}
+	fmt.Printf("strife-agent starting on %s [%s] (netlink=%v filter=%s cgroup_v2=%v os=%s/%s)\n",
+		*listenAddr, name, caps.Netlink, filter, caps.CgroupV2, caps.OS, caps.Arch)
 
 	// Graceful shutdown on SIGINT / SIGTERM
 	sigCh := make(chan os.Signal, 1)
