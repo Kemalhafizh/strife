@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -273,5 +274,26 @@ func TestServerProbesEndpoint(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Errorf("expected 0 events after reset, got %d", len(after))
+	}
+}
+
+// An agent that serves a whole node refuses requests that name no
+// container: they would act on the node itself.
+func TestRequireTarget(t *testing.T) {
+	srv := NewServer(ServerConfig{NodeName: "n", RequireTarget: true, filters: []filterBackend{&fakeFilter{}}})
+	for _, req := range []ApplyRequest{
+		{Action: ActionInject, FaultID: 1, Kind: nemesis.Partition, TargetIPs: []string{"10.0.0.2"}},
+		{Action: ActionInject, FaultID: 2, Kind: nemesis.Pause, Process: "etcd"},
+		{Action: ActionHeal, FaultID: 3, Kind: nemesis.Latency},
+	} {
+		if resp := srv.executeApply(req); resp.Success || !strings.Contains(resp.Error, "target container") {
+			t.Fatalf("%s %s without a target: %+v", req.Action, req.Kind, resp)
+		}
+	}
+	if resp := srv.executeApply(ApplyRequest{Action: ActionTeardown}); !resp.Success {
+		t.Fatalf("teardown: %+v", resp)
+	}
+	if caps := srv.Capabilities(); caps.NFTables || caps.IPTables {
+		t.Fatalf("a targets-only agent probed its own packet filter: %+v", caps)
 	}
 }

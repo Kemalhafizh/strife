@@ -53,7 +53,9 @@ jobs:
   # exec: pod IPs are discovered at run time ("ip": "auto").
   kubernetes:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
+    env:
+      STRIFE_AGENT_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-k8s-agent
     steps:
       - uses: actions/checkout@v4
       - name: pick faults the runner kernel supports
@@ -99,11 +101,40 @@ jobs:
           out: live-out/kubernetes-host
           junit: live-out/kubernetes-host.xml
           artifact-name: live-kubernetes-host
+      - name: deploy strife-agent as a DaemonSet
+        run: scripts/live/kind-agent.sh
+      - name: a partition through the DaemonSet agent cuts off only the target pod
+        run: scripts/live/check-k8s-agent-partition.sh
+      - name: faults land on pods through the DaemonSet agent (vs kubectl exec)
+        run: |
+          bin/strife bench inject --config examples/kubernetes/strife-agent.json --transports kubernetes,kubernetes-agent \
+            --faults ${{ steps.faults.outputs.faults }} --cycles 20 --period 500ms \
+            --markdown live-out/bench-k8s-agent.md --json live-out/bench-k8s-agent.json
+          bin/strife bench inject --config examples/kubernetes/strife-agent.json --transports kubernetes-agent \
+            --faults ${{ steps.host.outputs.faults }} --cycles 20 --period 500ms \
+            --markdown live-out/bench-k8s-agent-host.md --json live-out/bench-k8s-agent-host.json
+          { echo "### Kubernetes: kubectl exec vs the strife-agent DaemonSet"; echo; cat live-out/bench-k8s-agent.md
+            echo; echo "#### Host faults through the DaemonSet agent"; echo; cat live-out/bench-k8s-agent-host.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: upload the Kubernetes benchmarks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-k8s
+          path: live-out/bench-k8s*
+          if-no-files-found: ignore
+      - name: etcd on Kubernetes stays linearizable with every fault through the DaemonSet agent
+        uses: ./
+        with:
+          command: run --config examples/kubernetes/strife-agent.json --duration 60s --faults ${{ steps.faults.outputs.faults }},${{ steps.host.outputs.faults }} --expect linearizable --quiet
+          out: live-out/kubernetes-agent
+          junit: live-out/kubernetes-agent.xml
+          artifact-name: live-kubernetes-agent
       - name: logs
         if: always()
         run: |
           kubectl -n strife get pods -o wide || true
           for p in etcd-0 etcd-1 etcd-2; do echo "== $p"; kubectl -n strife exec "$p" -c etcd -- tail -20 /var/log/etcd.log || true; done
+          kubectl -n strife-system logs daemonset/strife-agent --tail=50 || true
       - name: delete the cluster
         if: always()
         run: scripts/live/kind-etcd.sh delete

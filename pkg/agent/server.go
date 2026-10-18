@@ -34,6 +34,11 @@ type ServerConfig struct {
 	// IORoot is a directory on the disk that holds container data; an
 	// io-stall with "io_device": "auto" stalls that disk.
 	IORoot string
+	// RequireTarget makes the agent act only on target containers: an
+	// agent that shares its node's network and PID namespaces (a
+	// DaemonSet) would otherwise partition, slow down or signal the node
+	// itself when a request names no container.
+	RequireTarget bool
 
 	// filters overrides the packet filter backends (tests).
 	filters []filterBackend
@@ -122,8 +127,8 @@ func (s *Server) Capabilities() Capabilities {
 		Netlink:       s.netlink.Available(),
 		CgroupV2:      s.cgroup.Available(),
 		DirectSignals: runtime.GOOS == "linux" || runtime.GOOS == "darwin",
-		NFTables:      s.filter.Method() == "filter:nftables",
-		IPTables:      s.filter.Method() == "filter:iptables",
+		NFTables:      !s.cfg.RequireTarget && s.filter.Method() == "filter:nftables",
+		IPTables:      !s.cfg.RequireTarget && s.filter.Method() == "filter:iptables",
 		TC:            s.netlink.Available(),
 		Containers:    runtime.GOOS == "linux",
 	}
@@ -303,6 +308,9 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 	var applied string
 	var err error
 
+	if s.cfg.RequireTarget && req.Target == nil && req.Action != ActionTeardown {
+		return ApplyResponse{Success: false, Error: "agent: this agent serves a whole node and acts only on a target container; the request names none", KernelAtNs: time.Now().UnixNano()}
+	}
 	sc, err := s.scopeFor(req)
 	if err != nil {
 		return ApplyResponse{Success: false, Error: err.Error(), KernelAtNs: time.Now().UnixNano()}

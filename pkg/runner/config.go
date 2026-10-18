@@ -206,7 +206,8 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
-	k8s := c.Transport.Type == "kubernetes" || c.Transport.Type == "k8s"
+	k8sAgent := c.Transport.Type == "kubernetes-agent" || c.Transport.Type == "k8s-agent"
+	k8s := c.Transport.Type == "kubernetes" || c.Transport.Type == "k8s" || k8sAgent
 	for _, k := range c.Nemesis.Faults {
 		if k == nemesis.ClockSkew && c.Transport.Type == "docker" {
 			return fmt.Errorf("clock-skew is refused with the docker transport: containers share the host clock, so it would skew the docker host itself")
@@ -216,8 +217,8 @@ func (c *Config) Validate() error {
 			case nemesis.ClockSkew:
 				return fmt.Errorf("clock-skew is refused with the kubernetes transport: pods share their node's clock")
 			case nemesis.Freeze, nemesis.IOStall:
-				if c.Transport.NodeHelper == nil {
-					return fmt.Errorf("%s acts on the node's cgroups: set transport.node_helper to a privileged per-node DaemonSet (see examples/kubernetes/node-helper.yaml)", k)
+				if c.Transport.NodeHelper == nil && !k8sAgent {
+					return fmt.Errorf("%s acts on the node's cgroups: use the kubernetes-agent transport (examples/kubernetes/strife-agent.yaml), or set transport.node_helper to a privileged per-node DaemonSet (examples/kubernetes/node-helper.yaml)", k)
 				}
 			}
 		}

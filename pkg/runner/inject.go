@@ -119,9 +119,27 @@ func (in *Injector) Apply(ctx context.Context, f nemesis.Fault, start bool) []st
 // is safe to call more than once.
 func (in *Injector) Teardown(ctx context.Context, kinds []nemesis.Kind) []string {
 	if fa, ok := in.Transport.(transport.FaultApplier); ok {
+		var errs []string
 		for _, n := range in.Nodes {
-			_ = fa.TeardownNode(ctx, n)
+			if err := fa.TeardownNode(ctx, n); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", n.Name, err))
+			}
 		}
+		if len(errs) == 0 {
+			return nil // the agents healed everything they applied
+		}
+		return append(errs, in.Exec(ctx, in.Env.Teardown(kinds))...)
 	}
 	return in.Exec(ctx, in.Env.Teardown(kinds))
+}
+
+// Setup prepares the nodes for the given fault kinds. Transports that apply
+// faults themselves (strife-agent) need no preparation: running the shell
+// setup would only require tools the agent does not use (iptables in every
+// pod, say).
+func (in *Injector) Setup(ctx context.Context, kinds []nemesis.Kind) []string {
+	if _, ok := in.Transport.(transport.FaultApplier); ok {
+		return nil
+	}
+	return in.Exec(ctx, in.Env.Setup(kinds))
 }

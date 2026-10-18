@@ -92,7 +92,7 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	inj := &Injector{Transport: tr, Nodes: cfg.Nodes, Env: env}
 
 	logf("setup: preparing %d nodes via %s", len(cfg.Nodes), tr.Name())
-	if errs := inj.Exec(ctx, env.Setup(cfg.Nemesis.Faults)); len(errs) > 0 && len(cfg.Nemesis.Faults) > 0 {
+	if errs := inj.Setup(ctx, cfg.Nemesis.Faults); len(errs) > 0 && len(cfg.Nemesis.Faults) > 0 {
 		return nil, fmt.Errorf("setup failed: %v", errs)
 	}
 	// Whatever happens, leave the cluster healed.
@@ -280,7 +280,7 @@ func ResolveHost(ctx context.Context, cfg *Config, tr transport.Transport) (*Con
 	}
 	hr, ok := tr.(transport.HostResolver)
 	if !ok {
-		return nil, fmt.Errorf("\"auto\" cgroups and io_device need the docker transport, or kubernetes with a node helper, not %s", tr.Name())
+		return nil, fmt.Errorf("\"auto\" cgroups and io_device need the docker or kubernetes-agent transport, or kubernetes with a node helper, not %s", tr.Name())
 	}
 	c := *cfg
 	c.Nodes = append([]transport.Node(nil), cfg.Nodes...)

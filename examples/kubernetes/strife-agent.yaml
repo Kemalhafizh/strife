@@ -1,0 +1,70 @@
+# strife-agent on every node, for the kubernetes-agent transport.
+#
+# One agent per node serves every pod on it: each fault names the pod's
+# container, and the agent applies it in the pod's network namespace
+# (nf_tables partitions, netem), to the pod's processes only (pause, kill
+# and the restart after a kill), and to the pod's cgroup (freeze, io-stall),
+# in about a millisecond instead of a kubectl exec round trip.
+#
+# It shares the node's network (Strife reaches it at the node's address) and
+# PID namespace (it sees the pods' processes), and runs privileged to enter
+# their namespaces and write their cgroups. -require-target makes it refuse
+# any fault that names no container, so it never acts on the node itself.
+# It answers only requests carrying the token from the strife-agent secret:
+#
+#   kubectl -n strife-system create secret generic strife-agent \
+#     --from-literal=token="$(openssl rand -hex 24)"
+#
+# Grant this namespace to the people who run Strife only.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: strife-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: strife-agent
+  namespace: strife-system
+spec:
+  selector:
+    matchLabels: { app: strife-agent }
+  template:
+    metadata:
+      labels: { app: strife-agent }
+    spec:
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 10 # the agent heals what it applied on SIGTERM
+      tolerations: [{ operator: Exists }]
+      containers:
+        - name: agent
+          image: ghcr.io/kemalhafizh/strife-agent:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - -listen=0.0.0.0:9292
+            - -node=$(NODE_NAME)
+            - -require-target
+            - -cgroup-root=/host/sys/fs/cgroup
+            - -io-root=/host/var/lib/containerd
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: STRIFE_AGENT_TOKEN
+              valueFrom: { secretKeyRef: { name: strife-agent, key: token } }
+          securityContext:
+            privileged: true
+          ports:
+            - { name: agent, containerPort: 9292, hostPort: 9292 }
+          readinessProbe:
+            tcpSocket: { port: 9292 }
+            periodSeconds: 2
+          volumeMounts:
+            - { name: cgroup, mountPath: /host/sys/fs/cgroup }
+            - { name: containerd, mountPath: /host/var/lib/containerd, readOnly: true }
+      volumes:
+        - name: cgroup
+          hostPath: { path: /sys/fs/cgroup }
+        - name: containerd
+          hostPath: { path: /var/lib/containerd }

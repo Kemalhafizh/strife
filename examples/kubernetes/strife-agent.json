@@ -1,0 +1,38 @@
+{
+  "name": "etcd-k8s-agent",
+  "seed": 42,
+  "duration": "60s",
+  "nodes": [
+    { "name": "n1", "ip": "auto", "pod": "etcd-0", "container": "etcd", "cgroup": "auto" },
+    { "name": "n2", "ip": "auto", "pod": "etcd-1", "container": "etcd", "cgroup": "auto" },
+    { "name": "n3", "ip": "auto", "pod": "etcd-2", "container": "etcd", "cgroup": "auto" }
+  ],
+  "transport": {
+    "type": "kubernetes-agent",
+    "namespace": "strife",
+    "agent": { "namespace": "strife-system", "selector": "app=strife-agent" },
+    "token": "env:STRIFE_AGENT_TOKEN",
+    "node_helper": { "namespace": "strife-system", "selector": "app=strife-node" }
+  },
+  "db": {
+    "kind": "etcd",
+    "endpoints": ["http://{ip}:2379"],
+    "process": "etcd --name",
+    "start": "/usr/local/bin/start-etcd.sh"
+  },
+  "workload": {
+    "keys": 4,
+    "values": 5,
+    "concurrency": 10,
+    "read_ratio": 0.5,
+    "cas_ratio": 0.2,
+    "timeout": "2s"
+  },
+  "nemesis": {
+    "faults": ["partition", "kill", "pause", "latency", "loss", "freeze", "io-stall"],
+    "io_device": "auto",
+    "interval": "8s",
+    "length": "4s",
+    "interface": "eth0"
+  }
+}

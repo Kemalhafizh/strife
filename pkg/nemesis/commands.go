@@ -80,7 +80,7 @@ func (e Env) Validate(kinds []Kind) error {
 				}
 			}
 			if k == IOStall && !ioDevice.MatchString(e.IODevice) && e.IODevice != "auto" {
-				return fmt.Errorf("nemesis: io-stall needs nemesis.io_device as major:minor (or \"auto\" with the docker transport), got %q", e.IODevice)
+				return fmt.Errorf("nemesis: io-stall needs nemesis.io_device as major:minor (or \"auto\" for the transport or agent to find), got %q", e.IODevice)
 			}
 		}
 	}

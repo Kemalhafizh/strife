@@ -124,9 +124,20 @@ func (c *Client) Apply(ctx context.Context, applyReq ApplyRequest) (*ApplyRespon
 		return nil, fmt.Errorf("agent apply %s decode: %w", c.addr, err)
 	}
 	if !applyResp.Success && applyResp.Error != "" {
-		return &applyResp, fmt.Errorf("agent apply error: %s", applyResp.Error)
+		return &applyResp, &applyError{msg: applyResp.Error}
 	}
 	return &applyResp, nil
+}
+
+// applyError is an error the agent reported for a request. It matches
+// ErrUnknownContainer when the agent did not find the target container, so
+// clients can look its ID up again.
+type applyError struct{ msg string }
+
+func (e *applyError) Error() string { return "agent apply error: " + e.msg }
+
+func (e *applyError) Is(target error) bool {
+	return target == ErrUnknownContainer && strings.Contains(e.msg, ErrUnknownContainer.Error())
 }
 
 // Exec executes an arbitrary shell script on the node via strife-agent.

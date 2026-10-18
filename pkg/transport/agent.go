@@ -104,61 +104,17 @@ func (a *Agent) HostExec(ctx context.Context, n Node, script string) (string, er
 
 // InjectFault dispatches a structured fault directly to the node's strife-agent.
 func (a *Agent) InjectFault(ctx context.Context, n Node, f nemesis.Fault, env nemesis.Env) (string, error) {
-	c := a.clientFor(n)
-	req := agent.ApplyRequest{
-		Action:   agent.ActionInject,
-		FaultID:  f.ID,
-		Kind:     f.Kind,
-		Iface:    env.Interface,
-		Delay:    f.Delay,
-		Jitter:   f.Jitter,
-		Loss:     f.Loss,
-		Process:  env.Process,
-		StartCmd: env.Start,
-		Cgroup:   n.Cgroup,
-		IODevice: env.IODevice,
-		Offset:   f.Offset,
-	}
-
-	if f.Kind == nemesis.Partition {
-		// Determine which partition side n belongs to:
-		nodeIdx := -1
-		for idx, target := range env.Nodes {
-			if target.Name == n.Name || target.IP == n.IP {
-				nodeIdx = idx
-				break
-			}
-		}
-		inSideA := false
-		for _, idx := range f.Nodes {
-			if idx == nodeIdx {
-				inSideA = true
-				break
-			}
-		}
-		var targetsToDrop []int
-		if inSideA {
-			targetsToDrop = f.Other(len(env.Nodes))
-		} else {
-			targetsToDrop = f.Nodes
-		}
-		for _, o := range targetsToDrop {
-			if o >= 0 && o < len(env.Nodes) {
-				req.TargetIPs = append(req.TargetIPs, env.Nodes[o].IP)
-			}
-		}
-	}
-
-	resp, err := a.timedApply(ctx, c, n, f, true, req)
-	if err != nil {
-		return "", fmt.Errorf("agent inject on %s: %w", n.Name, err)
-	}
-	return resp.Applied, nil
+	return a.apply(ctx, n, f, env, true, nil)
 }
 
 // HealFault restores state for a structured fault directly via strife-agent.
 func (a *Agent) HealFault(ctx context.Context, n Node, f nemesis.Fault, env nemesis.Env) (string, error) {
-	c := a.clientFor(n)
+	return a.apply(ctx, n, f, env, false, nil)
+}
+
+// apply sends the start (inject) or end of f on n to n's agent; target, when
+// set, is the container the agent acts on (an agent serving a whole node).
+func (a *Agent) apply(ctx context.Context, n Node, f nemesis.Fault, env nemesis.Env, inject bool, target *agent.Target) (string, error) {
 	req := agent.ApplyRequest{
 		Action:   agent.ActionHeal,
 		FaultID:  f.ID,
@@ -169,13 +125,51 @@ func (a *Agent) HealFault(ctx context.Context, n Node, f nemesis.Fault, env neme
 		Cgroup:   n.Cgroup,
 		IODevice: env.IODevice,
 		Offset:   f.Offset,
+		Target:   target,
 	}
-
-	resp, err := a.timedApply(ctx, c, n, f, false, req)
+	verb := "heal"
+	if inject {
+		req.Action, verb = agent.ActionInject, "inject"
+		req.Delay, req.Jitter, req.Loss = f.Delay, f.Jitter, f.Loss
+		if f.Kind == nemesis.Partition {
+			req.TargetIPs = partitionPeers(n, f, env)
+		}
+	}
+	resp, err := a.timedApply(ctx, a.clientFor(n), n, f, inject, req)
 	if err != nil {
-		return "", fmt.Errorf("agent heal on %s: %w", n.Name, err)
+		return "", fmt.Errorf("agent %s on %s: %w", verb, n.Name, err)
 	}
 	return resp.Applied, nil
+}
+
+// partitionPeers returns the addresses n must drop during partition f: the
+// nodes on the other side.
+func partitionPeers(n Node, f nemesis.Fault, env nemesis.Env) []string {
+	nodeIdx := -1
+	for idx, target := range env.Nodes {
+		if target.Name == n.Name || target.IP == n.IP {
+			nodeIdx = idx
+			break
+		}
+	}
+	inSideA := false
+	for _, idx := range f.Nodes {
+		if idx == nodeIdx {
+			inSideA = true
+			break
+		}
+	}
+	others := f.Nodes
+	if inSideA {
+		others = f.Other(len(env.Nodes))
+	}
+	var ips []string
+	for _, o := range others {
+		if o >= 0 && o < len(env.Nodes) {
+			ips = append(ips, env.Nodes[o].IP)
+		}
+	}
+	return ips
 }
 
 // timedApply sends one transition and records how long it took.

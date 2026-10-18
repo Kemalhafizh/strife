@@ -38,7 +38,7 @@ type Transport interface {
 
 // Config selects and configures a transport.
 type Config struct {
-	Type   string `json:"type"` // docker | ssh | agent | kubernetes | dry-run
+	Type   string `json:"type"` // docker | ssh | agent | kubernetes | kubernetes-agent | dry-run
 	Docker string `json:"docker,omitempty"`
 	// Kubernetes: the kubectl binary, namespace, context and kubeconfig.
 	Kubectl    string      `json:"kubectl,omitempty"`
@@ -46,6 +46,7 @@ type Config struct {
 	Context    string      `json:"context,omitempty"`
 	Kubeconfig string      `json:"kubeconfig,omitempty"`
 	NodeHelper *NodeHelper `json:"node_helper,omitempty"` // privileged per-node pods for host faults
+	Agent      *KubeAgent  `json:"agent,omitempty"`       // kubernetes-agent: the strife-agent DaemonSet
 	User       string      `json:"user,omitempty"`
 	Port       int         `json:"port,omitempty"`
 	Key        string      `json:"key,omitempty"`
@@ -69,6 +70,13 @@ func New(c Config) (Transport, error) {
 			bin = "kubectl"
 		}
 		return &Kubernetes{Binary: bin, Namespace: c.Namespace, Context: c.Context, Kubeconfig: c.Kubeconfig, Helper: c.NodeHelper}, nil
+	case "kubernetes-agent", "k8s-agent":
+		token, err := secret.Resolve(c.Token)
+		if err != nil {
+			return nil, fmt.Errorf("transport.token: %w", err)
+		}
+		c.Token = token
+		return NewKubernetesAgent(c), nil
 	case "ssh":
 		return &SSH{User: c.User, Port: c.Port, Key: c.Key, Sudo: c.Sudo}, nil
 	case "agent":
