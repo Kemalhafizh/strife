@@ -308,7 +308,7 @@ echo "$*" >> ` + log + `
 case "$*" in
 *'{.spec.nodeName}'*) echo node-a ;;
 *'get pods'*) echo strife-node-x ;;
-*containerStatuses*) echo "containerd://c0ffee00000$(echo "$*" | sed 's/.*etcd-\([0-9]\).*/\1/')" ;;
+*containerStatuses*) echo "|etcd|etcd=containerd://c0ffee00000$(echo "$*" | sed 's/.*etcd-\([0-9]\).*/\1/')" ;;
 *'{.status.podIP}'*) echo "10.244.0.$(echo "$*" | sed 's/.*etcd-\([0-9]\).*/\1/')" ;;
 *'exec strife-node-x'*'find '*) id=$(echo "$*" | sed "s/.*-name '\*\([0-9a-f]*\)\*'.*/\1/"); echo "/host/sys/fs/cgroup/kubepods.slice/cri-containerd-$id.scope" ;;
 *'exec strife-node-x'*'stat -c'*) echo 8:0 ;;

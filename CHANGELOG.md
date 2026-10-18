@@ -55,6 +55,27 @@ only gain optional fields.
   is preferred.
 - strife-agent compares targets with its own network namespace as read at
   start, not with its main thread's at the time of the request.
+- strife-agent's teardown restarts a database that was killed and not
+  restarted since (an interrupted run, a failed heal). Agent transports
+  skip the shell teardown, so the database used to stay down. A fault
+  whose heal fails stays on record for the teardown to retry, and a
+  teardown that cannot restart a database reports it.
+- A heal arriving while its container restarts in the pod used to fail:
+  the agent heals partitions and netem in the pod's network namespace from
+  its record, and a heal through the replacement clears the old record. A
+  kill's heal starts nothing when the database already runs (the kubelet
+  restarted the container).
+- strife-agent's teardown removes netem from the interface a request named,
+  not only from its `-iface`.
+- Without `"container"`, the `kubernetes` and `kubernetes-agent` transports
+  fault the container `kubectl exec` reaches (the default-container
+  annotation, else the first in the spec). They took the first container
+  status, which the kubelet sorts by name: often a sidecar.
+- `strife bench inject` resolves `"auto"` cgroups and disks for each
+  transport compared: kubectl rows got the `"auto"` the DaemonSet agent
+  takes and failed every freeze and io-stall.
+- The live check that the DaemonSet refuses untargeted faults requires an
+  HTTP error with the agent's reason; a success body could contain "500".
 
 ### Documentation
 - The order of `--faults` is part of a run's identity: the generator picks

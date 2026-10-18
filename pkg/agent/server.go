@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -169,9 +170,9 @@ func (s *Server) Serve(l net.Listener) error {
 
 // Shutdown gracefully shuts down the agent and heals active faults.
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.Teardown()
+	err := s.Teardown()
 	_ = s.filter.Close() // remove the agent's nftables tables / iptables rules
-	return s.httpSrv.Shutdown(ctx)
+	return errors.Join(err, s.httpSrv.Shutdown(ctx))
 }
 
 // scope is where a request acts: the agent's own namespaces, or those of
@@ -347,6 +348,11 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 		return ApplyResponse{Success: false, Error: "agent: this agent serves a whole node and acts only on a target container; the request names none", KernelAtNs: time.Now().UnixNano()}
 	}
 	sc, err := s.scopeFor(req)
+	if err != nil && req.Action == ActionHeal && errors.Is(err, ErrUnknownContainer) {
+		if resp, ok := s.healGone(req); ok {
+			return resp
+		}
+	}
 	if err != nil {
 		return ApplyResponse{Success: false, Error: err.Error(), KernelAtNs: time.Now().UnixNano()}
 	}
@@ -457,12 +463,12 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 
 		case nemesis.Kill:
 			method = "process:restart"
-			if sc.c != nil {
-				err = s.process.RestartIn(req.StartCmd, sc.c)
-			} else {
-				err = s.process.Restart(req.StartCmd)
-			}
+			var started bool
+			started, err = s.restart(req, sc)
 			applied = fmt.Sprintf("restart:%s", req.StartCmd)
+			if err == nil && !started {
+				applied = "restart:already-running"
+			}
 
 		case nemesis.Pause:
 			method = "process:sigcont"
@@ -501,13 +507,14 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 			}
 		}
 
-		s.mu.Lock()
-		delete(s.activeFaults, faultKey(req))
-		s.mu.Unlock()
+		// A fault whose heal failed stays on record for teardown to retry.
+		if err == nil {
+			s.forget(req, sc.netns)
+		}
 
 	case ActionTeardown:
 		method = "teardown:all"
-		s.Teardown()
+		err = s.Teardown()
 		applied = "teardown:complete"
 	}
 
@@ -524,6 +531,93 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 	return resp
 }
 
+// restart brings req's database back in sc, unless it already runs there:
+// the kubelet restarts a container whose init was killed, and a second copy
+// would fight the first for its port and data. It reports whether it ran
+// the start command.
+func (s *Server) restart(req ApplyRequest, sc scope) (bool, error) {
+	if req.Process != "" {
+		if pids, err := s.process.findIn(req.Process, sc.owns()); err == nil && len(pids) > 0 {
+			return false, nil
+		}
+	}
+	if sc.c != nil {
+		return true, s.process.RestartIn(req.StartCmd, sc.c)
+	}
+	return true, s.process.Restart(req.StartCmd)
+}
+
+// healGone heals a fault on a container that is gone, from the record of
+// where it was applied: a container restarting in its pod leaves the pod's
+// network namespace, and the rules and netem in it, behind. A paused,
+// frozen or throttled container that is gone took its processes with it.
+// A kill is left to the client, which finds the container that replaced
+// it and restarts the database there. ok is false when the agent has no
+// record of the fault, or it is a kill.
+func (s *Server) healGone(req ApplyRequest) (ApplyResponse, bool) {
+	s.mu.Lock()
+	a, ok := s.activeFaults[faultKey(req)]
+	s.mu.Unlock()
+	if !ok || a.req.Kind != req.Kind || req.Kind == nemesis.Kill {
+		return ApplyResponse{}, false
+	}
+	s.nsMu.Lock()
+	f := s.nsFilters[a.netns]
+	s.nsMu.Unlock()
+	var err error
+	method, applied := "none", fmt.Sprintf("%s:container-gone", req.Kind)
+	switch req.Kind {
+	case nemesis.Partition:
+		if f != nil {
+			method, applied = f.engine.Method(), "partition:healed"
+			err = f.engine.Flush()
+		}
+	case nemesis.Latency, nemesis.Loss:
+		if f != nil {
+			method, applied = "netlink:netem", fmt.Sprintf("netem:%s:healed", a.req.Iface)
+			err = inNetns(f.ns, func() error { return s.netlink.DelNetem(a.req.Iface) })
+		}
+	case nemesis.Freeze:
+		if isDir(a.req.Cgroup) {
+			method, applied = "cgroup:freeze", fmt.Sprintf("unfreeze:%s", a.req.Cgroup)
+			err = s.cgroup.Unfreeze(a.req.Cgroup)
+		}
+	case nemesis.IOStall:
+		if isDir(a.req.Cgroup) {
+			method, applied = "cgroup:io-stall", fmt.Sprintf("heal-io-stall:%s", a.req.Cgroup)
+			err = s.cgroup.HealIOStall(a.req.Cgroup, a.req.IODevice)
+		}
+	}
+	resp := ApplyResponse{Success: err == nil, Method: method, Applied: applied, KernelAtNs: time.Now().UnixNano()}
+	if err != nil {
+		resp.Error = err.Error()
+	} else {
+		s.forget(req, a.netns)
+	}
+	return resp, true
+}
+
+// forget drops the record of a healed fault. A heal that reached a
+// container's replacement (the client looked it up again) also clears the
+// record made through the container it replaced: the same fault, in the
+// same pod's network namespace, on a container that is gone.
+func (s *Server) forget(req ApplyRequest, netns string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.activeFaults, faultKey(req))
+	if req.Target == nil || netns == "" {
+		return
+	}
+	for key, a := range s.activeFaults {
+		if a.req.FaultID != req.FaultID || a.req.Target == nil || a.netns != netns {
+			continue
+		}
+		if _, err := s.containers.resolve(a.req.Target.ContainerID); errors.Is(err, ErrUnknownContainer) {
+			delete(s.activeFaults, key)
+		}
+	}
+}
+
 // noNodeScript refuses the shell fallback for a fault kind the agent does
 // not implement: the script would run in the agent's namespaces, on the
 // node, not in the target container.
@@ -538,8 +632,11 @@ func firstPID(pids []int) int {
 	return pids[0]
 }
 
-// Teardown idempotently restores all modified network and process state.
-func (s *Server) Teardown() {
+// Teardown idempotently restores all modified network and process state,
+// and restarts each database killed and not restarted since (a run that
+// was interrupted, a heal that failed). It reports the databases it could
+// not restart; the rest is healed best effort.
+func (s *Server) Teardown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -555,10 +652,13 @@ func (s *Server) Teardown() {
 	// pod; then the agent removes its tables there and lets go of it.
 	s.nsMu.Lock()
 	for _, a := range s.activeFaults {
-		if a.req.Kind == nemesis.Latency || a.req.Kind == nemesis.Loss {
-			if f := s.nsFilters[a.netns]; f != nil {
-				_ = inNetns(f.ns, func() error { return s.netlink.DelNetem(a.req.Iface) })
-			}
+		if a.req.Kind != nemesis.Latency && a.req.Kind != nemesis.Loss {
+			continue
+		}
+		if f := s.nsFilters[a.netns]; f != nil {
+			_ = inNetns(f.ns, func() error { return s.netlink.DelNetem(a.req.Iface) })
+		} else if a.netns == "" && !s.cfg.RequireTarget && a.req.Iface != s.cfg.Interface {
+			_ = s.netlink.DelNetem(a.req.Iface) // a request that named its interface
 		}
 	}
 	for key, f := range s.nsFilters {
@@ -567,6 +667,7 @@ func (s *Server) Teardown() {
 		delete(s.nsFilters, key)
 	}
 	s.nsMu.Unlock()
+	var errs []error
 	for _, a := range s.activeFaults {
 		req := a.req
 		if req.Kind == nemesis.Freeze && req.Cgroup != "" {
@@ -587,8 +688,24 @@ func (s *Server) Teardown() {
 			}
 			_, _ = s.process.ResumeIn(req.Process, owns)
 		}
+		if req.Kind == nemesis.Kill && req.StartCmd != "" {
+			// A container that is gone is the kubelet's to restart, with
+			// the database as its init.
+			sc := scope{}
+			if req.Target != nil {
+				c, err := s.containers.resolve(req.Target.ContainerID)
+				if err != nil {
+					continue
+				}
+				sc.c = c
+			}
+			if _, err := s.restart(req, sc); err != nil {
+				errs = append(errs, fmt.Errorf("restarting %s after kill %d: %w", req.Process, req.FaultID, err))
+			}
+		}
 	}
 	s.activeFaults = make(map[string]activeFault)
+	return errors.Join(errs...)
 }
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -654,7 +771,11 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTeardown(w http.ResponseWriter, r *http.Request) {
-	s.Teardown()
 	w.Header().Set("Content-Type", "application/json")
+	if err := s.Teardown(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
+		return
+	}
 	_, _ = w.Write([]byte(`{"success":true,"status":"teardown complete"}`))
 }

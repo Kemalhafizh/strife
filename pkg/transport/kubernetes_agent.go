@@ -99,31 +99,27 @@ func (k *KubernetesAgent) target(ctx context.Context, n Node) (kubeTarget, error
 	if p == "" {
 		return kubeTarget{}, fmt.Errorf("kubernetes-agent transport: node %s has no pod", n.Name)
 	}
-	status := "{.status.containerStatuses[0].containerID}"
-	if n.Container != "" {
-		status = fmt.Sprintf(`{.status.containerStatuses[?(@.name=="%s")].containerID}`, n.Container)
-	}
-	out, err := run(ctx, k.Binary, append(k.base(n), "get", "pod", p, "-o", `jsonpath={.spec.nodeName}{" "}`+status)...)
+	out, err := run(ctx, k.Binary, append(k.base(n), "get", "pod", p, "-o", `jsonpath={.spec.nodeName}{"|"}`+containersPath)...)
 	if err != nil {
 		return kubeTarget{}, err
 	}
-	fields := strings.Fields(out)
-	if len(fields) != 2 {
-		return kubeTarget{}, fmt.Errorf("kubernetes-agent transport: pod %s is not running yet (%q)", p, strings.TrimSpace(out))
+	node, rest, _ := strings.Cut(strings.TrimSpace(out), "|")
+	if node == "" {
+		return kubeTarget{}, fmt.Errorf("kubernetes-agent transport: pod %s is not scheduled yet (%q)", p, strings.TrimSpace(out))
 	}
-	m := containerID.FindStringSubmatch(fields[1])
-	if m == nil {
-		return kubeTarget{}, fmt.Errorf("kubernetes-agent transport: pod %s has no running container ID (%q)", p, fields[1])
+	id, err := podContainer(n, p, rest)
+	if err != nil {
+		return kubeTarget{}, fmt.Errorf("kubernetes-agent transport: %w", err)
 	}
 	args := append(k.global(), "--namespace", k.Agent.namespace(), "get", "pods",
-		"--selector", k.Agent.selector(), "--field-selector", "spec.nodeName="+fields[0]+",status.phase=Running",
+		"--selector", k.Agent.selector(), "--field-selector", "spec.nodeName="+node+",status.phase=Running",
 		"-o", "jsonpath={.items[0].status.podIP}")
 	out, err = run(ctx, k.Binary, args...)
 	ip := strings.TrimSpace(out)
 	if err != nil || net.ParseIP(ip) == nil {
-		return kubeTarget{}, fmt.Errorf("kubernetes-agent transport: no running strife-agent (%s in %s) on node %s: %v", k.Agent.selector(), k.Agent.namespace(), fields[0], err)
+		return kubeTarget{}, fmt.Errorf("kubernetes-agent transport: no running strife-agent (%s in %s) on node %s: %v", k.Agent.selector(), k.Agent.namespace(), node, err)
 	}
-	t = kubeTarget{addr: net.JoinHostPort(ip, strconv.Itoa(k.port)), container: m[1]}
+	t = kubeTarget{addr: net.JoinHostPort(ip, strconv.Itoa(k.port)), container: id}
 	k.mu.Lock()
 	k.targets[n.Name] = t
 	k.mu.Unlock()

@@ -58,18 +58,11 @@ func cmdBench(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// "auto" IPs, cgroups and disks are discovered once, through the
-	// config's transport when it can (kubernetes, docker), else docker.
+	// "auto" IPs are discovered once, through the config's transport;
+	// "auto" cgroups and disks by each transport compared (bench.Inject),
+	// since kubectl needs paths where kubernetes-agent passes "auto" on.
 	if tr, err := transport.New(cfg.Transport); err == nil {
 		if cfg, err = runner.ResolveNodes(ctx, cfg, tr); err != nil {
-			return exitError, err
-		}
-		if _, ok := tr.(transport.HostResolver); !ok {
-			if tr, err = transport.New(transport.Config{Type: "docker", Sudo: cfg.Transport.Sudo}); err != nil {
-				return exitError, err
-			}
-		}
-		if cfg, err = runner.ResolveHost(ctx, cfg, tr); err != nil {
 			return exitError, err
 		}
 	}

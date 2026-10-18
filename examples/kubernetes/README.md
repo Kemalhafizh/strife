@@ -128,7 +128,16 @@ strife run --config examples/kubernetes/strife-agent.json
   does the switch inside the container, so it must be static (release
   builds and the image are).
 - If Kubernetes replaces a container (new ID), Strife looks the ID up again.
-- The agent heals everything it applied when it stops (`SIGTERM`).
+  A heal still reaches the pod while its container restarts: the agent
+  heals partitions and netem in the pod's network namespace, where it
+  applied them, and restarts a killed database in the replacement only if
+  it is not running there already.
+- Without `"container"`, every Kubernetes transport faults the container
+  `kubectl exec` would reach: the `kubectl.kubernetes.io/default-container`
+  annotation, else the first in the pod spec.
+- The agent heals everything it applied when it stops (`SIGTERM`) or a run
+  tears down, and restarts any database killed and not restarted since
+  (an interrupted run, a failed heal).
 - The token lets its holder apply any fault to any container on the nodes
   and restart processes in them: keep it, and the `strife-system`
   namespace, to whoever runs Strife.

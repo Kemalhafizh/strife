@@ -20,7 +20,7 @@ type Node struct {
 	Name      string `json:"name"`
 	Host      string `json:"host,omitempty"`       // SSH address; defaults to IP
 	IP        string `json:"ip"`                   // address peers use to reach this node; "auto" with kubernetes
-	Container string `json:"container,omitempty"`  // docker container name, or the container within the pod
+	Container string `json:"container,omitempty"`  // docker container name, or the container within the pod (default: the one kubectl exec picks)
 	Pod       string `json:"pod,omitempty"`        // kubernetes pod, "name" or "namespace/name"
 	Cgroup    string `json:"cgroup,omitempty"`     // cgroup v2 dir of the db process (on the host)
 	AgentAddr string `json:"agent_addr,omitempty"` // strife-agent address (host:port or socket path)

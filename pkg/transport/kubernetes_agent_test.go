@@ -57,7 +57,7 @@ echo "$*" >> %[1]s
 case "$*" in
 *"--selector app=strife-agent"*"spec.nodeName=node-a"*) echo 127.0.0.1 ;;
 *"get pod etcd-0"*)
-  if [ -e %[1]s.seen ]; then echo "node-a containerd://%[3]s"; else touch %[1]s.seen; echo "node-a containerd://%[2]s"; fi ;;
+  if [ -e %[1]s.seen ]; then echo "node-a||etcd|etcd=containerd://%[3]s"; else touch %[1]s.seen; echo "node-a||etcd|etcd=containerd://%[2]s"; fi ;;
 *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
 `, calls, oldID, newID)
@@ -118,7 +118,7 @@ func TestKubernetesAgentPrepare(t *testing.T) {
 echo "$*" >> %[1]s
 case "$*" in
 *"--selector app=strife-agent"*) echo 127.0.0.1 ;;
-*"get pod etcd-"[01]*) echo "node-a containerd://%[2]s" ;;
+*"get pod etcd-"[01]*) echo "node-a||etcd|etcd=containerd://%[2]s" ;;
 *) echo "not found: $*" >&2; exit 1 ;;
 esac
 `, calls, strings.Repeat("c", 64))
