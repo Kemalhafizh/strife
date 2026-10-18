@@ -16,6 +16,11 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
         run: go vet ./...
+      - name: every release platform builds
+        run: |
+          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            GOOS=${p%/*} GOARCH=${p#*/} go build ./... || { echo "build failed for $p"; exit 1; }
+          done
       - name: lint the GitHub Action and workflows
         run: |
           shellcheck scripts/*.sh

@@ -18,4 +18,5 @@ func (noNFTables) Available() bool { return false }
 func (noNFTables) Sync(_ []net.IP) error {
 	return errors.New("nftables: not supported on this platform")
 }
+func (noNFTables) Compact() error  { return nil }
 func (noNFTables) Teardown() error { return nil }
