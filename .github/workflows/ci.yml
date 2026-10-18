@@ -207,11 +207,13 @@ jobs:
         if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           STRIFE_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-registry
-          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           runs=$(curl -fsS -H "Authorization: Bearer $STRIFE_TOKEN" http://127.0.0.1:8088/api/v1/projects/ci-oidc/runs)
           echo "$runs"
-          python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert len(r)==1 and r[0]["pusher"].startswith("repo:"+sys.argv[2]+":") and r[0]["pusher"].endswith("(token.actions.githubusercontent.com)"), r' "$runs" "$REPO"
+          # The subject is "repo:OWNER/REPO:…", or "repo:OWNER@ID/REPO@ID:…" where the
+          # owner opted into immutable identifiers.
+          python3 -c 'import json,sys; r=json.loads(sys.argv[1]); p=r[0]["pusher"]; assert len(r)==1 and p.startswith("repo:"+sys.argv[2]) and p.endswith("(token.actions.githubusercontent.com)"), r' "$runs" "$OWNER"
           # The read token cannot push, and neither can a token for another audience.
           code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $STRIFE_TOKEN" -d '{}' http://127.0.0.1:8088/api/v1/projects/ci-oidc/runs)
           test "$code" = 401

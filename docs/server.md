@@ -117,8 +117,10 @@ identify the jobs it admits:
 
 Patterns match whole values, and `*` stops at `/`: `refs/heads/*` admits
 `refs/heads/main` but not `refs/heads/feature/x`. Prefer GitHub's
-`repository_id` and `repository_owner_id` to `repository`: the IDs survive
-a rename and cannot be taken over by whoever registers a deleted name.
+`repository_id` and `repository_owner_id` to `repository` or `sub`: the IDs
+survive a rename and cannot be taken over by whoever registers a deleted
+name, and `sub` changes shape when an owner opts into immutable identifiers
+(`repo:acme@1234/payments@5678:ref:…`).
 Tokens must be signed with RS256 or ES256 by a key the issuer publishes,
 be unexpired (a minute of clock skew is allowed) and be minted for the
 audience. The key set is cached and fetched again for a key it does not
