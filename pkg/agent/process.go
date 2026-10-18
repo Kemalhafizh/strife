@@ -26,6 +26,12 @@ func NewProcessEngine() *ProcessEngine {
 
 // FindPIDs finds all process IDs matching pattern, excluding strife-agent itself.
 func (p *ProcessEngine) FindPIDs(pattern string) ([]int, error) {
+	return p.findIn(pattern, nil)
+}
+
+// findIn finds the processes matching pattern for which in reports true
+// (all of them when in is nil).
+func (p *ProcessEngine) findIn(pattern string, in func(pid int) bool) ([]int, error) {
 	if pattern == "" {
 		return nil, fmt.Errorf("process: pattern cannot be empty")
 	}
@@ -33,8 +39,20 @@ func (p *ProcessEngine) FindPIDs(pattern string) ([]int, error) {
 	myPID := os.Getpid()
 
 	// Try reading /proc directly on Linux
-	if pids, err := p.scanProc(pattern, myPID); err == nil && len(pids) > 0 {
-		return pids, nil
+	if pids, err := p.scanProc(pattern, myPID); err == nil && (len(pids) > 0 || in != nil) {
+		if in == nil {
+			return pids, nil
+		}
+		var mine []int
+		for _, pid := range pids {
+			if in(pid) {
+				mine = append(mine, pid)
+			}
+		}
+		return mine, nil
+	}
+	if in != nil {
+		return nil, fmt.Errorf("process: matching processes of one container needs /proc")
 	}
 
 	// Fallback to pgrep command
@@ -92,7 +110,12 @@ func (p *ProcessEngine) scanProc(pattern string, myPID int) ([]int, error) {
 // stopped (or gone): a signal is delivered when its target is next
 // scheduled, not when kill returns.
 func (p *ProcessEngine) Pause(pattern string) ([]int, error) {
-	return p.signal(pattern, sendStop, "stopped", func(st byte) bool {
+	return p.PauseIn(pattern, nil)
+}
+
+// PauseIn pauses the processes matching pattern for which in reports true.
+func (p *ProcessEngine) PauseIn(pattern string, in func(pid int) bool) ([]int, error) {
+	return p.signal(pattern, in, sendStop, "stopped", func(st byte) bool {
 		return st == 'T' || st == 't' || st == 'Z' || st == 'X'
 	})
 }
@@ -100,17 +123,27 @@ func (p *ProcessEngine) Pause(pattern string) ([]int, error) {
 // Resume sends SIGCONT to all matching processes and returns once none is
 // stopped.
 func (p *ProcessEngine) Resume(pattern string) ([]int, error) {
-	return p.signal(pattern, sendCont, "running", func(st byte) bool { return st != 'T' })
+	return p.ResumeIn(pattern, nil)
+}
+
+// ResumeIn resumes the processes matching pattern for which in reports true.
+func (p *ProcessEngine) ResumeIn(pattern string, in func(pid int) bool) ([]int, error) {
+	return p.signal(pattern, in, sendCont, "running", func(st byte) bool { return st != 'T' })
 }
 
 // Kill sends SIGKILL to all matching processes and returns once each has
 // exited.
 func (p *ProcessEngine) Kill(pattern string) ([]int, error) {
-	return p.signal(pattern, sendKill, "dead", func(st byte) bool { return st == 'Z' || st == 'X' })
+	return p.KillIn(pattern, nil)
 }
 
-func (p *ProcessEngine) signal(pattern string, send func(int) error, want string, done func(byte) bool) ([]int, error) {
-	pids, err := p.FindPIDs(pattern)
+// KillIn kills the processes matching pattern for which in reports true.
+func (p *ProcessEngine) KillIn(pattern string, in func(pid int) bool) ([]int, error) {
+	return p.signal(pattern, in, sendKill, "dead", func(st byte) bool { return st == 'Z' || st == 'X' })
+}
+
+func (p *ProcessEngine) signal(pattern string, in func(int) bool, send func(int) error, want string, done func(byte) bool) ([]int, error) {
+	pids, err := p.findIn(pattern, in)
 	if err != nil {
 		return nil, err
 	}

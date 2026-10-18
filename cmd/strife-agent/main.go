@@ -31,6 +31,8 @@ func run(args []string) error {
 	iface := fs.String("iface", "eth0", "network interface for traffic control / netem")
 	token := fs.String("token", os.Getenv("STRIFE_AGENT_TOKEN"), "bearer token clients must present (default $STRIFE_AGENT_TOKEN)")
 	insecure := fs.Bool("insecure-no-token", false, "allow serving a network address without a token (anyone who can reach it can run commands as this user)")
+	cgroupRoot := fs.String("cgroup-root", "", "the node's cgroup v2 filesystem, for faults on other containers (default /sys/fs/cgroup; a DaemonSet mounts the node's, e.g. /host/sys/fs/cgroup)")
+	ioRoot := fs.String("io-root", "", "a directory on the disk holding container data, for io-stall with io_device \"auto\" (e.g. /host/var/lib/containerd)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -52,9 +54,11 @@ func run(args []string) error {
 	}
 
 	cfg := agent.ServerConfig{
-		NodeName:  name,
-		Interface: *iface,
-		Token:     *token,
+		NodeName:   name,
+		Interface:  *iface,
+		Token:      *token,
+		CgroupRoot: *cgroupRoot,
+		IORoot:     *ioRoot,
 	}
 	srv := agent.NewServer(cfg)
 

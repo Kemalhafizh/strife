@@ -14,12 +14,12 @@ import (
 	"unsafe"
 )
 
-// inNetns runs fn on a thread moved into a fresh network namespace, so the
+// inFreshNetns runs fn on a thread moved into a fresh network namespace, so the
 // test can program nf_tables without touching the machine's own rules. It
 // needs CAP_SYS_ADMIN and CAP_NET_ADMIN, and skips without them.
 // fn may only call t.Error (it runs on another goroutine); it returns a
 // reason to skip, or "".
-func inNetns(t *testing.T, fn func() string) {
+func inFreshNetns(t *testing.T, fn func() string) {
 	t.Helper()
 	skip := make(chan string, 1)
 	go func() {
@@ -67,7 +67,7 @@ func reachable(addr string) bool {
 }
 
 func TestNFTablesReallyDrops(t *testing.T) {
-	inNetns(t, func() string {
+	inFreshNetns(t, func() string {
 		f := &nftablesFilter{}
 		if !f.Available() {
 			return "nf_tables not available"

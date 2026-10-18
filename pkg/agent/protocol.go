@@ -37,6 +37,9 @@ type Capabilities struct {
 	NFTables      bool   `json:"nftables"`
 	IPTables      bool   `json:"iptables"`
 	TC            bool   `json:"tc"`
+	// Containers reports that the agent can act on other containers on
+	// its node (requests with a Target): it sees their processes.
+	Containers bool `json:"containers"`
 }
 
 // StatusResponse is returned by GET /status and GET /health.
@@ -63,6 +66,20 @@ type ApplyRequest struct {
 	IODevice  string        `json:"io_device,omitempty"`
 	Offset    time.Duration `json:"offset,omitempty"`
 	Script    string        `json:"script,omitempty"` // fallback shell script
+	// Target, when set, is the container the fault acts on; otherwise the
+	// agent acts on its own namespaces (an agent inside each container).
+	Target *Target `json:"target,omitempty"`
+}
+
+// Target names the container a request acts on, for an agent that serves a
+// whole node (a Kubernetes DaemonSet) instead of running inside the
+// container it injects faults into. The agent then applies network faults
+// in the container's network namespace, signals only the container's
+// processes, and finds the container's cgroup itself ("cgroup": "auto").
+type Target struct {
+	// ContainerID is the runtime's ID of the container; a runtime prefix
+	// ("containerd://", "docker://", "cri-o://") is accepted.
+	ContainerID string `json:"container_id"`
 }
 
 // ApplyResponse records the outcome and microsecond timings of an operation.

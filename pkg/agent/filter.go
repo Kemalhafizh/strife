@@ -44,6 +44,17 @@ type FilterEngine struct {
 	backends []filterBackend
 	probed   bool // Setup ran: backend is the choice, nil if none works
 	compact  *time.Timer
+	// run, when set, runs each backend call: in another container's
+	// network namespace, for an agent serving a whole node.
+	run func(func() error) error
+}
+
+// do runs a backend call where this engine's rules live.
+func (f *FilterEngine) do(fn func() error) error {
+	if f.run == nil {
+		return fn()
+	}
+	return f.run(fn)
 }
 
 // NewFilterEngine creates a packet filter manager; Setup picks the backend.
@@ -67,7 +78,12 @@ func (f *FilterEngine) Setup() error {
 func (f *FilterEngine) setup() error {
 	f.probed, f.backend = true, nil
 	for _, b := range f.backends {
-		if b.Available() {
+		ok := false
+		if err := f.do(func() error { ok = b.Available(); return nil }); err != nil {
+			f.probed = false // the namespace could not be entered: try again next time
+			return err
+		}
+		if ok {
 			f.backend = b
 			return nil
 		}
@@ -102,7 +118,8 @@ func (f *FilterEngine) sync() error {
 		ips = append(ips, ip)
 	}
 	sort.Slice(ips, func(i, j int) bool { return ips[i].String() < ips[j].String() })
-	if err := f.backend.Sync(ips); err != nil {
+	b := f.backend
+	if err := f.do(func() error { return b.Sync(ips) }); err != nil {
 		return err
 	}
 	if f.compact != nil {
@@ -111,8 +128,8 @@ func (f *FilterEngine) sync() error {
 	f.compact = time.AfterFunc(compactAfter, func() {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if f.backend != nil {
-			_ = f.backend.Compact()
+		if b := f.backend; b != nil {
+			_ = f.do(b.Compact)
 		}
 	})
 	return nil
@@ -187,7 +204,7 @@ func (f *FilterEngine) Close() error {
 	if f.backend == nil {
 		return nil
 	}
-	err := f.backend.Teardown()
+	err := f.do(f.backend.Teardown)
 	f.backend, f.probed = nil, false
 	return err
 }

@@ -87,7 +87,10 @@ func (n *LinuxNetlink) SetNetem(iface string, delay, jitter time.Duration, loss 
 		return nil
 	}
 	// Fall back to local tc execution if netlink failed.
-	return n.setNetemTC(iface, delay, jitter, loss)
+	if tcErr := n.setNetemTC(iface, delay, jitter, loss); tcErr != nil {
+		return fmt.Errorf("%w (tc fallback: %v)", err, tcErr)
+	}
+	return nil
 }
 
 // DelNetem removes root qdisc on the given interface.

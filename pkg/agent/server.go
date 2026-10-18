@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +25,15 @@ type ServerConfig struct {
 	NodeName  string
 	Interface string
 	Token     string // optional shared secret
+
+	// CgroupRoot is where the agent sees the node's cgroup v2 filesystem,
+	// for requests that target another container (default /sys/fs/cgroup,
+	// or its unified half on a hybrid host). A DaemonSet mounts the node's
+	// at e.g. /host/sys/fs/cgroup.
+	CgroupRoot string
+	// IORoot is a directory on the disk that holds container data; an
+	// io-stall with "io_device": "auto" stalls that disk.
+	IORoot string
 
 	// filters overrides the packet filter backends (tests).
 	filters []filterBackend
@@ -39,8 +51,19 @@ type Server struct {
 	cgroup  *CgroupEngine
 	probes  *probe.Collector
 
+	containers *containerIndex
+	nsMu       sync.Mutex
+	nsFilters  map[string]*nsFilter // per target container
+
 	mu           sync.Mutex
-	activeFaults map[int]ApplyRequest
+	activeFaults map[string]ApplyRequest // by faultKey
+}
+
+// nsFilter is the packet filter inside one target container's network
+// namespace, bound to the init process it was entered through.
+type nsFilter struct {
+	pid    int
+	engine *FilterEngine
 }
 
 // NewServer initializes a new strife-agent server.
@@ -60,7 +83,13 @@ func NewServer(cfg ServerConfig) *Server {
 			Node:  cfg.NodeName,
 			Epoch: now,
 		}),
-		activeFaults: make(map[int]ApplyRequest),
+		containers: newContainerIndex("/proc", cfg.CgroupRoot),
+		nsFilters:  map[string]*nsFilter{},
+
+		activeFaults: make(map[string]ApplyRequest),
+	}
+	if cfg.CgroupRoot == "" {
+		s.containers.cgroupRoot = defaultCgroupRoot()
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
@@ -96,6 +125,7 @@ func (s *Server) Capabilities() Capabilities {
 		NFTables:      s.filter.Method() == "filter:nftables",
 		IPTables:      s.filter.Method() == "filter:iptables",
 		TC:            s.netlink.Available(),
+		Containers:    runtime.GOOS == "linux",
 	}
 }
 
@@ -121,7 +151,98 @@ func (s *Server) Serve(l net.Listener) error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.Teardown()
 	_ = s.filter.Close() // remove the agent's nftables tables / iptables rules
+	s.nsMu.Lock()
+	for id, f := range s.nsFilters {
+		_ = f.engine.Close() // fails harmlessly once the container is gone
+		delete(s.nsFilters, id)
+	}
+	s.nsMu.Unlock()
 	return s.httpSrv.Shutdown(ctx)
+}
+
+// scope is where a request acts: the agent's own namespaces, or those of
+// the container it targets.
+type scope struct {
+	c      *container // nil: the agent's own
+	filter *FilterEngine
+}
+
+// run runs fn in the scope's network namespace.
+func (sc scope) run(fn func() error) error {
+	if sc.c == nil {
+		return fn()
+	}
+	return inNetns(sc.c.pid, fn)
+}
+
+// owns reports whether pid belongs to the scope (nil: every process).
+func (sc scope) owns() func(pid int) bool {
+	if sc.c == nil {
+		return nil
+	}
+	return func(pid int) bool { return sc.c != nil && containerHas(pid, sc.c.id) }
+}
+
+func containerHas(pid int, id string) bool {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cgroup"))
+	return err == nil && strings.Contains(string(data), id)
+}
+
+// scopeFor resolves where req acts.
+func (s *Server) scopeFor(req ApplyRequest) (scope, error) {
+	if req.Target == nil {
+		return scope{filter: s.filter}, nil
+	}
+	c, err := s.containers.resolve(req.Target.ContainerID)
+	if err != nil {
+		return scope{}, err
+	}
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
+	f, ok := s.nsFilters[c.id]
+	if !ok || f.pid != c.pid {
+		e := NewFilterEngine()
+		if s.cfg.filters != nil {
+			e.backends = s.cfg.filters
+		}
+		pid := c.pid
+		e.run = func(fn func() error) error { return inNetns(pid, fn) }
+		f = &nsFilter{pid: pid, engine: e}
+		s.nsFilters[c.id] = f
+	}
+	return scope{c: c, filter: f.engine}, nil
+}
+
+// faultKey identifies an active fault: one fault spans several containers
+// when an agent serves a whole node.
+func faultKey(req ApplyRequest) string {
+	if req.Target == nil {
+		return strconv.Itoa(req.FaultID)
+	}
+	return strconv.Itoa(req.FaultID) + "/" + req.Target.ContainerID
+}
+
+// cgroupOf is the cgroup a request's cgroup fault acts on: the one it
+// names, or the target container's for "auto".
+func (sc scope) cgroupOf(req ApplyRequest) (string, error) {
+	if sc.c == nil || (req.Cgroup != "" && req.Cgroup != "auto") {
+		return req.Cgroup, nil
+	}
+	if sc.c.cgroup == "" {
+		return "", fmt.Errorf("agent: no cgroup v2 directory found for container %.12s (set -cgroup-root to the node's cgroup filesystem)", sc.c.id)
+	}
+	return sc.c.cgroup, nil
+}
+
+// ioDevice resolves "auto" to the disk under the configured IORoot.
+func (s *Server) ioDevice(dev string) (string, error) {
+	if dev != "auto" {
+		return dev, nil
+	}
+	if s.cfg.IORoot == "" {
+		return "", fmt.Errorf("agent: io_device \"auto\" needs -io-root, a directory on the disk that holds container data")
+	}
+	return diskOf("/sys", s.cfg.IORoot)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -173,53 +294,73 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 	iface := req.Iface
 	if iface == "" {
 		iface = s.cfg.Interface
+		if req.Target != nil {
+			iface = "eth0" // the container's, not the node's
+		}
 	}
 
 	var method string
 	var applied string
 	var err error
 
+	sc, err := s.scopeFor(req)
+	if err != nil {
+		return ApplyResponse{Success: false, Error: err.Error(), KernelAtNs: time.Now().UnixNano()}
+	}
+	cgroup, ioDev := req.Cgroup, req.IODevice
+	if req.Kind == nemesis.Freeze || req.Kind == nemesis.IOStall {
+		if cgroup, err = sc.cgroupOf(req); err == nil && req.Kind == nemesis.IOStall {
+			ioDev, err = s.ioDevice(req.IODevice)
+		}
+		if err != nil {
+			return ApplyResponse{Success: false, Error: err.Error(), KernelAtNs: time.Now().UnixNano()}
+		}
+	}
+	if sc.c != nil && req.Kind == nemesis.ClockSkew {
+		return ApplyResponse{Success: false, Error: "agent: containers share their node's clock; clock-skew would skew the whole node", KernelAtNs: time.Now().UnixNano()}
+	}
+
 	switch req.Action {
 	case ActionInject:
 		switch req.Kind {
 		case nemesis.Partition:
-			method = s.filter.Method()
-			err = s.filter.Drop(req.TargetIPs...)
-			applied = fmt.Sprintf("partition:dropped:%s", strings.Join(s.filter.Dropped(), ","))
+			method = sc.filter.Method()
+			err = sc.filter.Drop(req.TargetIPs...)
+			applied = fmt.Sprintf("partition:dropped:%s", strings.Join(sc.filter.Dropped(), ","))
 
 		case nemesis.Latency, nemesis.Loss:
 			method = "netlink:netem"
-			err = s.netlink.SetNetem(iface, req.Delay, req.Jitter, req.Loss)
+			err = sc.run(func() error { return s.netlink.SetNetem(iface, req.Delay, req.Jitter, req.Loss) })
 			applied = fmt.Sprintf("netem:%s:delay=%v:jitter=%v:loss=%.2f%%", iface, req.Delay, req.Jitter, req.Loss*100)
 
 		case nemesis.Kill:
 			method = "process:sigkill"
-			pids, e := s.process.Kill(req.Process)
+			pids, e := s.process.KillIn(req.Process, sc.owns())
 			err = e
 			applied = fmt.Sprintf("kill:signaled_pids=%v", pids)
 			s.probes.RecordSignal(req.Process, firstPID(pids), "SIGKILL", fmt.Sprintf("agent fault %d kill %s", req.FaultID, req.Process))
 
 		case nemesis.Pause:
 			method = "process:sigstop"
-			pids, e := s.process.Pause(req.Process)
+			pids, e := s.process.PauseIn(req.Process, sc.owns())
 			err = e
 			applied = fmt.Sprintf("pause:signaled_pids=%v", pids)
 			s.probes.RecordSignal(req.Process, firstPID(pids), "SIGSTOP", fmt.Sprintf("agent fault %d pause %s", req.FaultID, req.Process))
 
 		case nemesis.Freeze:
 			method = "cgroup:freeze"
-			err = s.cgroup.Freeze(req.Cgroup)
-			applied = fmt.Sprintf("freeze:%s", req.Cgroup)
-			s.probes.RecordSignal(req.Cgroup, 0, "CGROUP_FREEZE", fmt.Sprintf("agent fault %d freeze %s", req.FaultID, req.Cgroup))
+			err = s.cgroup.Freeze(cgroup)
+			applied = fmt.Sprintf("freeze:%s", cgroup)
+			s.probes.RecordSignal(cgroup, 0, "CGROUP_FREEZE", fmt.Sprintf("agent fault %d freeze %s", req.FaultID, cgroup))
 
 		case nemesis.IOStall:
 			method = "cgroup:io-stall"
-			err = s.cgroup.IOStall(req.Cgroup, req.IODevice)
-			applied = fmt.Sprintf("io-stall:%s:%s", req.Cgroup, req.IODevice)
+			err = s.cgroup.IOStall(cgroup, ioDev)
+			applied = fmt.Sprintf("io-stall:%s:%s", cgroup, ioDev)
 			s.probes.Record(probe.Event{
 				Kind:    probe.KindFsyncStall,
-				Process: req.Cgroup,
-				Detail:  fmt.Sprintf("agent fault %d io-stall on %s", req.FaultID, req.IODevice),
+				Process: cgroup,
+				Detail:  fmt.Sprintf("agent fault %d io-stall on %s", req.FaultID, ioDev),
 			})
 
 		case nemesis.ClockSkew:
@@ -246,44 +387,50 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 		}
 
 		if err == nil {
+			stored := req
+			stored.Iface, stored.Cgroup, stored.IODevice = iface, cgroup, ioDev
 			s.mu.Lock()
-			s.activeFaults[req.FaultID] = req
+			s.activeFaults[faultKey(req)] = stored
 			s.mu.Unlock()
 		}
 
 	case ActionHeal:
 		switch req.Kind {
 		case nemesis.Partition:
-			method = s.filter.Method()
-			err = s.filter.Flush()
+			method = sc.filter.Method()
+			err = sc.filter.Flush()
 			applied = "partition:healed"
 
 		case nemesis.Latency, nemesis.Loss:
 			method = "netlink:netem"
-			err = s.netlink.DelNetem(iface)
+			err = sc.run(func() error { return s.netlink.DelNetem(iface) })
 			applied = fmt.Sprintf("netem:%s:healed", iface)
 
 		case nemesis.Kill:
 			method = "process:restart"
-			err = s.process.Restart(req.StartCmd)
+			if sc.c != nil {
+				err = s.process.RestartIn(req.StartCmd, sc.c)
+			} else {
+				err = s.process.Restart(req.StartCmd)
+			}
 			applied = fmt.Sprintf("restart:%s", req.StartCmd)
 
 		case nemesis.Pause:
 			method = "process:sigcont"
-			pids, e := s.process.Resume(req.Process)
+			pids, e := s.process.ResumeIn(req.Process, sc.owns())
 			err = e
 			applied = fmt.Sprintf("resume:signaled_pids=%v", pids)
 			s.probes.RecordSignal(req.Process, firstPID(pids), "SIGCONT", fmt.Sprintf("agent fault %d resume %s", req.FaultID, req.Process))
 
 		case nemesis.Freeze:
 			method = "cgroup:freeze"
-			err = s.cgroup.Unfreeze(req.Cgroup)
-			applied = fmt.Sprintf("unfreeze:%s", req.Cgroup)
+			err = s.cgroup.Unfreeze(cgroup)
+			applied = fmt.Sprintf("unfreeze:%s", cgroup)
 
 		case nemesis.IOStall:
 			method = "cgroup:io-stall"
-			err = s.cgroup.HealIOStall(req.Cgroup, req.IODevice)
-			applied = fmt.Sprintf("heal-io-stall:%s", req.Cgroup)
+			err = s.cgroup.HealIOStall(cgroup, ioDev)
+			applied = fmt.Sprintf("heal-io-stall:%s", cgroup)
 
 		case nemesis.ClockSkew:
 			method = "clock:date"
@@ -302,7 +449,7 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 		}
 
 		s.mu.Lock()
-		delete(s.activeFaults, req.FaultID)
+		delete(s.activeFaults, faultKey(req))
 		s.mu.Unlock()
 
 	case ActionTeardown:
@@ -338,7 +485,21 @@ func (s *Server) Teardown() {
 
 	_ = s.filter.Flush()
 	_ = s.netlink.DelNetem(s.cfg.Interface)
+	s.nsMu.Lock()
+	for _, f := range s.nsFilters {
+		_ = f.engine.Flush()
+	}
+	s.nsMu.Unlock()
 	for _, req := range s.activeFaults {
+		// Faults stored resolved: cgroup paths and the device, the
+		// interface. A container that is gone has nothing left to heal.
+		sc, err := s.scopeFor(req)
+		if err != nil {
+			continue
+		}
+		if (req.Kind == nemesis.Latency || req.Kind == nemesis.Loss) && sc.c != nil {
+			_ = sc.run(func() error { return s.netlink.DelNetem(req.Iface) })
+		}
 		if req.Kind == nemesis.Freeze && req.Cgroup != "" {
 			_ = s.cgroup.Unfreeze(req.Cgroup)
 		}
@@ -346,10 +507,10 @@ func (s *Server) Teardown() {
 			_ = s.cgroup.HealIOStall(req.Cgroup, req.IODevice)
 		}
 		if req.Kind == nemesis.Pause && req.Process != "" {
-			_, _ = s.process.Resume(req.Process)
+			_, _ = s.process.ResumeIn(req.Process, sc.owns())
 		}
 	}
-	s.activeFaults = make(map[int]ApplyRequest)
+	s.activeFaults = make(map[string]ApplyRequest)
 }
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
