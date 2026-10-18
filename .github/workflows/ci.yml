@@ -29,6 +29,8 @@ jobs:
         run: go test -race -short ./...
       - name: full tests (bug-finding regression)
         run: go test ./...
+      - name: agent tests that need root (namespaces, cgroups, nf_tables)
+        run: sudo -E env "PATH=$PATH" go test -count=1 -run 'TestTargetedContainer|TestNFTablesReallyDrops|TestSignalsTakeEffect' -v ./pkg/agent
 
   chaos:
     runs-on: ubuntu-latest

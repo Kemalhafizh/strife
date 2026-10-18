@@ -1,10 +1,17 @@
 # Example: etcd on Kubernetes under Strife
 
 The same three-member etcd cluster as [`examples/etcd`](../etcd), deployed
-as a StatefulSet and driven through `kubectl exec`. Strife needs only a
-kubeconfig: no SSH, no agent, no access to the nodes. CI runs this example in
-a [kind](https://kind.sigs.k8s.io) cluster on every push (the `kubernetes`
-job in `.github/workflows/live.yml`).
+as a StatefulSet and driven two ways:
+
+- **`kubernetes`**: through `kubectl exec`. Strife needs only a kubeconfig:
+  no SSH, no agent, no access to the nodes. Each fault costs an exec round
+  trip (~90 ms).
+- **`kubernetes-agent`**: through [strife-agent as a DaemonSet](#the-strife-agent-daemonset),
+  which applies each fault inside the target pod in about a millisecond and
+  handles every fault kind, host faults included.
+
+CI runs both in a [kind](https://kind.sigs.k8s.io) cluster on every push (the
+`kubernetes` job in `.github/workflows/live.yml`).
 
 ```sh
 # kind cluster, the etcd image, the StatefulSet, and a route from this
@@ -74,6 +81,46 @@ strife run --config examples/kubernetes/strife-host.json
   fault where the node does not delegate it.
 - Anyone who can exec into the helper controls the node: keep its namespace
   restricted to whoever runs Strife.
+
+## The strife-agent DaemonSet
+
+One agent per node serves every pod on it. Strife sends each fault to the
+agent on the target pod's node with the pod's container ID; the agent
+applies it in the pod's network namespace (nf_tables partitions, netem), to
+the pod's processes only (pause, kill, and the restart after a kill, run
+inside the container with its environment), and to the pod's cgroup
+(freeze, io-stall).
+
+```sh
+kubectl create namespace strife-system
+kubectl -n strife-system create secret generic strife-agent --from-literal=token="$STRIFE_AGENT_TOKEN"
+kubectl apply -f examples/kubernetes/strife-agent.yaml
+strife run --config examples/kubernetes/strife-agent.json
+```
+
+```json
+"transport": {
+  "type": "kubernetes-agent", "namespace": "strife",
+  "agent": { "namespace": "strife-system", "selector": "app=strife-agent" },
+  "token": "env:STRIFE_AGENT_TOKEN"
+},
+"nodes": [{ "name": "n1", "ip": "auto", "pod": "etcd-0", "container": "etcd", "cgroup": "auto" }, ...],
+"nemesis": { "faults": ["partition", "kill", "pause", "latency", "loss", "freeze", "io-stall"], "io_device": "auto" }
+```
+
+- The agent shares the node's network, so Strife reaches it at the node's
+  address (port 9292, token required), and the node's PID namespace, so it
+  sees the pods' processes. It runs privileged to enter their namespaces
+  and write their cgroups.
+- `-require-target` makes it refuse any fault that names no container: it
+  never partitions, slows or signals the node itself.
+- The pods need nothing: no `NET_ADMIN`, no iptables or tc in the image.
+  Restarting after a kill runs `db.start` inside the container through
+  `nsenter`, cloned into the container's cgroup.
+- If Kubernetes replaces a container (new ID), Strife looks the ID up again.
+- The agent heals everything it applied when it stops (`SIGTERM`).
+- Anyone holding the token controls the nodes: keep it, and the
+  `strife-system` namespace, to whoever runs Strife.
 
 ## Limits
 

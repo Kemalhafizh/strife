@@ -218,6 +218,7 @@ strife run  --config strife.json --faults none --expect linearizable   # fault-f
 | `docker` | `docker exec` per command; host commands on the Docker host (optionally `sudo -n`). `"cgroup": "auto"` and `"io_device": "auto"` are discovered at run time. | yes |
 | `ssh` | system `ssh` (keys, agents, jump hosts and `known_hosts` as configured), optional `sudo -n` | yes |
 | `kubernetes` | `kubectl exec` into pods; `"ip": "auto"` reads pod IPs at run time and `{ip}` endpoints expand per node ([example](examples/kubernetes)) | yes, with the node helper DaemonSet ([`node-helper.yaml`](examples/kubernetes/node-helper.yaml), `transport.node_helper`) |
+| `kubernetes-agent` | strife-agent as a DaemonSet ([`strife-agent.yaml`](examples/kubernetes/strife-agent.yaml)): each fault goes to the agent on the pod's node, which applies it inside the pod (its network namespace, its processes, its cgroup); pods need no privileges or tools | yes |
 | `agent` | `strife-agent` on each node: persistent HTTP, nf_tables over netlink for partitions, netlink for netem, direct signals and cgroup v2, token authentication | yes |
 | `dry-run` | logs the commands | – |
 
@@ -500,7 +501,7 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife check [flags]` | Verify a recorded `history.jsonl` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`) and optional `--probes` |
 | `strife plan [flags]` | Print the seeded fault schedule and exact host/container commands without executing them |
 | `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`) |
-| `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent,kubernetes`, `--json`, `--markdown`) |
+| `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent,kubernetes,kubernetes-agent`, `--json`, `--markdown`) |
 | `strife workload [flags]` | List presets (`--list`), compile specs to `.wasm` (`--compile --out`), or inspect `.wasm` plugins (`--inspect`) |
 | `strife keygen [flags]` | Generate an Ed25519 signing keypair (`<prefix>.key` and `<prefix>.pub`) |
 | `strife sign [flags]` | Sign a `report.json` into an `in-toto` v0.1 attestation bundle, or release artifacts (`--release`) |

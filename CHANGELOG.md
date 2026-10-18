@@ -6,6 +6,25 @@ All notable changes to Strife. The format follows
 [`schemas/`](schemas/) are versioned contracts: within a major version they
 only gain optional fields.
 
+## [Unreleased]
+
+### Added
+- The `kubernetes-agent` transport and `examples/kubernetes/strife-agent.yaml`:
+  strife-agent runs as a DaemonSet, and each fault goes to the agent on the
+  target pod's node, which applies it inside the pod: partitions and netem
+  in its network namespace, pause and kill on its processes only, freeze
+  and io-stall on its cgroup. The pods need no privileges or tools, every
+  fault kind works, and no node helper is needed.
+- strife-agent requests can name a target container (`target.container_id`);
+  `-cgroup-root`, `-io-root` and `-require-target` configure an agent that
+  serves a whole node. A kill is healed by restarting the database inside
+  the container (nsenter, with the container's environment, cloned into its
+  cgroup).
+
+### Changed
+- Agent transports skip the shell setup (an iptables chain in every node)
+  and, when the agents healed everything, the shell teardown.
+
 ## [0.2.0] - Unreleased
 
 Phases 5 and 5.5 of the [roadmap](docs/ROADMAP.md): every published claim
