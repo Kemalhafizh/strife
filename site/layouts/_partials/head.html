@@ -1,0 +1,38 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{{- $title := .Title }}
+{{- if .IsHome }}{{ $title = i18n "home_title" }}{{ else }}{{ $title = printf "%s · Strife" .Title }}{{ end }}
+<title>{{ $title }}</title>
+{{- $desc := .Description | default .Summary | default site.Params.description }}
+{{- if .IsHome }}{{ $desc = i18n "home_description" }}{{ end }}
+{{- $desc = $desc | plainify | truncate 180 }}
+<meta name="description" content="{{ $desc }}">
+<meta name="theme-color" content="#06080b">
+<meta name="color-scheme" content="dark">
+{{- /* Docs are the same English text in both languages; point search engines at one copy. */}}
+{{- $canonical := .Permalink }}
+{{- if and (eq .Section "docs") (ne site.Language.Lang "en") }}
+  {{- range .Translations }}{{ if eq .Language.Lang "en" }}{{ $canonical = .Permalink }}{{ end }}{{ end }}
+{{- end }}
+<link rel="canonical" href="{{ $canonical }}">
+{{- range .AllTranslations }}
+<link rel="alternate" hreflang="{{ .Language.LanguageCode | default .Language.Lang }}" href="{{ .Permalink }}">
+{{- end }}
+{{- range .AllTranslations }}{{ if eq .Language.Lang (index site.Languages 0).Lang }}
+<link rel="alternate" hreflang="x-default" href="{{ .Permalink }}">
+{{- end }}{{ end }}
+<meta property="og:type" content="{{ if .IsHome }}website{{ else }}article{{ end }}">
+<meta property="og:site_name" content="Strife">
+<meta property="og:title" content="{{ $title }}">
+<meta property="og:description" content="{{ $desc }}">
+<meta property="og:url" content="{{ .Permalink }}">
+<meta property="og:locale" content="{{ replace (site.Language.LanguageCode | default site.Language.Lang) "-" "_" }}">
+{{- with resources.Get (printf "img/og-%s.png" site.Language.Lang) | default (resources.Get "img/og-en.png") }}
+<meta property="og:image" content="{{ .Permalink }}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+{{- end }}
+<link rel="icon" href="{{ "favicon.svg" | relURL }}" type="image/svg+xml">
+{{- $css := slice (resources.Get "css/site.css") (resources.Get "css/chroma.css") | resources.Concat "css/strife.css" | minify | fingerprint }}
+<link rel="stylesheet" href="{{ $css.RelPermalink }}" integrity="{{ $css.Data.Integrity }}">

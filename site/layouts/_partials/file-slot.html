@@ -1,0 +1,8 @@
+<div class="field">
+  <span class="field-label" id="{{ .id }}-label">{{ .label }}</span>
+  <label class="drop drop-sm" tabindex="0" aria-labelledby="{{ .id }}-label" data-slot="{{ .id }}">
+    <input type="file" tabindex="-1" id="{{ .id }}"{{ with .accept }} accept="{{ . }}"{{ end }}{{ if .multiple }} multiple{{ end }}>
+    <span aria-hidden="true">＋ {{ i18n "verify_choose" }}</span>
+    <strong data-name></strong>
+  </label>
+</div>

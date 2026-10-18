@@ -1,0 +1,82 @@
+{{ define "main" }}
+{{- $d := site.Data.presets }}
+{{- $a := partial "engine-assets.html" . }}
+<article class="page">
+  {{ partial "page-hero.html" (dict "Title" .Title "Params" (merge .Params (dict "wide" true))) }}
+  <div class="wrap">
+    <div class="tool" id="try" data-worker="{{ $a.worker }}" data-wasm="{{ $a.wasm }}" data-wasm-gz="{{ $a.wasmGz }}" data-wasm-exec="{{ $a.wasmExec }}" data-platform="{{ $d.platform }}">
+      <div class="panel">
+        <h2>{{ i18n "try_presets" }}</h2>
+        <div class="presets" role="group" aria-label="{{ i18n "try_presets" }}">
+          {{- range $d.presets }}
+          {{- $k := replace .id "-" "_" }}
+          <button type="button" class="preset" data-preset="{{ .id }}" aria-pressed="false">
+            <strong>{{ i18n (printf "preset_%s" $k) }}</strong>
+            <span>{{ i18n (printf "preset_%s_body" $k) }}</span>
+          </button>
+          {{- end }}
+        </div>
+        <h2>{{ i18n "try_custom" }}</h2>
+        <form id="try-form" novalidate>
+          <div class="field">
+            <label for="f-system">{{ i18n "try_system" }}</label>
+            <select id="f-system" name="system">
+              {{- range $d.systems }}<option value="{{ .name }}" data-desc="{{ .description }}">{{ .name }}</option>{{ end }}
+            </select>
+            <small class="muted" id="f-system-desc"></small>
+          </div>
+          <fieldset class="field">
+            <legend>{{ i18n "try_faults" }}</legend>
+            <div class="chips" id="f-faults">
+              {{- range $d.faults }}<label class="chip"><input type="checkbox" value="{{ . }}" checked><span>{{ . }}</span></label>{{ end }}
+            </div>
+          </fieldset>
+          <div class="field-row">
+            <div class="field">
+              <label for="f-seed">{{ i18n "try_seed" }}</label>
+              <input id="f-seed" name="seed" type="text" inputmode="numeric" pattern="[0-9]+" value="13" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="f-duration">{{ i18n "try_duration" }}</label>
+              <input id="f-duration" name="duration" type="number" min="1" max="{{ $d.limits.duration_s }}" value="10">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="f-nodes">{{ i18n "try_nodes" }}</label>
+              <input id="f-nodes" name="nodes" type="number" min="1" max="{{ $d.limits.nodes }}" value="5">
+            </div>
+            <div class="field">
+              <label for="f-clients">{{ i18n "try_clients" }}</label>
+              <input id="f-clients" name="clients" type="number" min="1" max="{{ $d.limits.clients }}" value="10">
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" type="submit" id="run" disabled>{{ i18n "try_run" }}</button>
+            <button class="btn btn-ghost" type="button" id="cancel" hidden>{{ i18n "try_cancel" }}</button>
+          </div>
+          <div class="status" id="status" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span><span data-status-text>{{ i18n "try_loading" }}…</span><span class="progress" aria-hidden="true"><span></span></span>
+          </div>
+          <p class="muted small">{{ printf (i18n "try_limits") (string $d.limits.duration_s) (string $d.limits.nodes) (string $d.limits.clients) }}</p>
+        </form>
+      </div>
+      <div class="panel" aria-live="polite">
+        <h2>{{ i18n "try_result" }}</h2>
+        <div id="result" class="result">
+          <div class="empty">{{ .Params.empty }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="prose narrow-prose">{{ .Content }}</div>
+  </div>
+</article>
+<script type="application/json" id="presets">{{ $d.presets | jsonify | safeJS }}</script>
+{{ partial "strings.html" (slice "try_loading" "try_ready" "try_load_failed" "try_running" "try_run" "try_events" "try_ops" "try_ok" "try_fail" "try_info" "try_schedule" "try_explain" "try_hashes" "try_match" "try_nomatch" "try_same_again" "try_diff_again" "try_command" "try_report" "try_report_hint" "try_download_report" "try_elapsed" "try_again" "verdict_violation" "verdict_linearizable" "verdict_unknown" "copy" "copied") }}
+{{ end }}
+{{ define "scripts" }}
+{{- $engine := (resources.Get "js/engine.js" | minify | fingerprint) }}
+{{- $js := (resources.Get "js/try.js" | minify | fingerprint) }}
+<script src="{{ $engine.RelPermalink }}" integrity="{{ $engine.Data.Integrity }}" defer></script>
+<script src="{{ $js.RelPermalink }}" integrity="{{ $js.Data.Integrity }}" defer></script>
+{{ end }}

@@ -1,0 +1,10 @@
+{{- /* URLs of the engine worker and the WebAssembly build, fingerprinted so a
+       new engine is never served from a stale cache. build.sh puts the
+       WebAssembly files in assets/wasm. */ -}}
+{{- $missing := "assets/wasm is empty: build the site with site/build.sh, which compiles the engine first" }}
+{{- $out := dict }}
+{{- with resources.Get "js/worker.js" }}{{ $out = merge $out (dict "worker" (. | minify | fingerprint).RelPermalink) }}{{ end }}
+{{- with resources.Get "wasm/wasm_exec.js" }}{{ $out = merge $out (dict "wasmExec" (. | fingerprint).RelPermalink) }}{{ else }}{{ errorf $missing }}{{ end }}
+{{- with resources.Get "wasm/strife.wasm" }}{{ $out = merge $out (dict "wasm" (. | fingerprint).RelPermalink) }}{{ else }}{{ errorf $missing }}{{ end }}
+{{- with resources.Get "wasm/strife.wasm.gz" }}{{ $out = merge $out (dict "wasmGz" (. | fingerprint).RelPermalink) }}{{ else }}{{ errorf $missing }}{{ end }}
+{{- return $out }}

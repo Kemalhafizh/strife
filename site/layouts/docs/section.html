@@ -1,0 +1,31 @@
+{{ define "main" }}
+<div class="wrap docs-layout">
+  {{ partial "docs-sidebar.html" . }}
+  <article class="docs-main">
+    <header class="docs-head">
+      <p class="eyebrow">Strife</p>
+      <h1>{{ .Title }}</h1>
+      {{- with .Params.lead }}<p class="lead">{{ . }}</p>{{ end }}
+      {{- if eq site.Language.Lang "id" }}<p class="docs-note">{{ i18n "docs_lang_note" }}</p>{{ end }}
+    </header>
+    {{- $pages := sort .RegularPages "Params.order" }}
+    {{- range slice (slice "guides" "docs_guides") (slice "reference" "docs_reference") (slice "examples" "docs_examples") }}
+    {{- $group := where $pages "Params.group" (index . 0) }}
+    {{- if eq (index . 0) "examples" }}{{ $group = sort $group "Title" }}{{ end }}
+    {{- if $group }}
+    <section class="docs-group">
+      <h2>{{ i18n (index . 1) }}</h2>
+      <div class="grid grid-2">
+        {{- range $group }}
+        <a class="card card-link" href="{{ .RelPermalink }}">
+          <h3>{{ .Title | markdownify }}</h3>
+          <p>{{ with .Params.blurb }}{{ . }}{{ else }}{{ .Summary | plainify | truncate 140 }}{{ end }}</p>
+        </a>
+        {{- end }}
+      </div>
+    </section>
+    {{- end }}
+    {{- end }}
+  </article>
+</div>
+{{ end }}

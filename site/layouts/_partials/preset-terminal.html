@@ -1,0 +1,18 @@
+{{- /* Renders a preset from data/presets.json as the CLI prints it.
+       Context: dict "p" preset. */ -}}
+{{- $p := .p -}}
+<div class="terminal" role="img" aria-label="strife sim output">
+  <div class="terminal-bar" aria-hidden="true"><span></span><span></span><span></span><em>strife</em></div>
+<pre class="terminal-body"><span class="t-dim">$</span> <span class="t-teal">{{ $p.command }}</span>
+system:  {{ $p.system }}   seed: {{ $p.seed }}   simulated: {{ $p.simulated }}   events: {{ $p.events }}
+faults:  {{ len $p.schedule }} scheduled
+{{- range $p.schedule }}
+  {{ printf "%9s" .start }} → {{ printf "%-9s" .end }} <span class="{{ if in (slice "kill" "pause" "freeze") .kind }}t-red{{ else }}t-amber{{ end }}">{{ .kind }} {{ delimit .nodes " " | printf "[%s]" }}</span>
+{{- end }}
+ops:     {{ $p.ops.invocations }} ({{ $p.ops.ok }} ok, {{ $p.ops.fail }} fail, {{ $p.ops.info }} info)
+history: {{ substr $p.history_hash 0 16 }}   trace: {{ substr $p.trace_hash 0 16 }}
+verdict: {{ if eq $p.verdict "violation" }}<span class="t-red">VIOLATION</span>{{ else if eq $p.verdict "linearizable" }}<span class="t-teal">LINEARIZABLE</span>{{ else }}<span class="t-amber">UNKNOWN</span>{{ end }}
+{{- with $p.failure }}
+  <span class="t-wrap">{{ . }}</span>
+{{- end }}</pre>
+</div>

@@ -1,0 +1,4 @@
+{{- /* Hands the given i18n keys to the page's script as JSON. */ -}}
+{{- $s := dict }}
+{{- range . }}{{ $s = merge $s (dict . (i18n .)) }}{{ end }}
+<script type="application/json" id="strings">{{ $s | jsonify | safeJS }}</script>

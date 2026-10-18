@@ -1,0 +1,5 @@
+{{- /* Flattens one heading and its children into a list of dicts. */ -}}
+{{- $out := slice }}
+{{- if .ID }}{{ $out = $out | append (dict "id" .ID "title" .Title "level" .Level) }}{{ end }}
+{{- range .Headings }}{{ $out = $out | append (partial "toc-walk.html" .) }}{{ end }}
+{{- return $out }}

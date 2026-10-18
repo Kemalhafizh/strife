@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="{{ site.Language.LanguageCode | default site.Language.Lang }}" data-copy="{{ i18n "copy" }}" data-copied="{{ i18n "copied" }}">
+<head>
+{{ partial "head.html" . }}
+</head>
+<body class="{{ block "bodyclass" . }}{{ end }}">
+<a class="skip" href="#content">{{ i18n "skip" }}</a>
+{{ partial "header.html" . }}
+<main id="content" {{ block "mainattrs" . }}{{ end }}>
+{{ block "main" . }}{{ end }}
+</main>
+{{ partial "footer.html" . }}
+{{ $js := resources.Get "js/site.js" | minify | fingerprint }}
+<script src="{{ $js.RelPermalink }}" integrity="{{ $js.Data.Integrity }}" defer></script>
+{{ block "scripts" . }}{{ end }}
+</body>
+</html>
