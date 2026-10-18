@@ -1,0 +1,55 @@
+{{ define "main" }}
+{{- $d := site.Data.presets }}
+{{- $a := partial "engine-assets.html" . }}
+<article class="page">
+  {{ partial "page-hero.html" (dict "Title" .Title "Params" (merge .Params (dict "wide" true))) }}
+  <div class="wrap">
+    <div class="tool" id="studio" data-worker="{{ $a.worker }}" data-wasm="{{ $a.wasm }}" data-wasm-gz="{{ $a.wasmGz }}" data-wasm-exec="{{ $a.wasmExec }}">
+      <div class="panel">
+        <form id="studio-form" novalidate>
+          <label class="drop" id="drop" tabindex="0">
+            <input type="file" tabindex="-1" id="history" accept=".jsonl,.json,.ndjson,.txt,application/json">
+            <span>{{ i18n "studio_drop" }}</span>
+            <strong id="file-name"></strong>
+          </label>
+          <p class="small muted">{{ i18n "studio_samples" }}
+            <a href="{{ "samples/stale-read.jsonl" | relURL }}" data-sample>{{ i18n "studio_sample_stale" }}</a> ·
+            <a href="{{ "samples/fresh-read.jsonl" | relURL }}" data-sample>{{ i18n "studio_sample_fresh" }}</a></p>
+          <div class="field">
+            <label for="model">{{ i18n "studio_model" }}</label>
+            <select id="model">{{ range $d.models }}<option value="{{ . }}">{{ . }}</option>{{ end }}</select>
+          </div>
+          <div class="field">
+            <label for="isolation">{{ i18n "studio_isolation" }}</label>
+            <select id="isolation">
+              {{- range slice "read-uncommitted" "read-committed" "snapshot-isolation" "serializable" "strict-serializable" }}
+              <option value="{{ . }}"{{ if eq . "serializable" }} selected{{ end }}>{{ . }}</option>
+              {{- end }}
+            </select>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" type="submit" id="check" disabled>{{ i18n "studio_check" }}</button>
+            <button class="btn btn-ghost" type="button" id="cancel" hidden>{{ i18n "try_cancel" }}</button>
+          </div>
+          <div class="status" id="status" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span><span data-status-text>{{ i18n "try_loading" }}…</span><span class="progress" aria-hidden="true"><span></span></span>
+          </div>
+          <p class="privacy">{{ i18n "privacy_local" }}</p>
+        </form>
+      </div>
+      <div class="panel" aria-live="polite">
+        <h2>{{ i18n "try_result" }}</h2>
+        <div id="result" class="result"><div class="empty">{{ .Params.empty }}</div></div>
+      </div>
+    </div>
+    <div class="prose narrow-prose">{{ .Content }}</div>
+  </div>
+</article>
+{{ partial "strings.html" (slice "try_loading" "try_ready" "try_load_failed" "studio_check" "studio_checking" "studio_keys" "studio_findings" "try_ops" "try_ok" "try_fail" "try_info" "try_explain" "try_report" "try_download_report" "try_elapsed" "verify_fingerprint" "verdict_violation" "verdict_linearizable" "verdict_unknown") }}
+{{ end }}
+{{ define "scripts" }}
+{{- $engine := (resources.Get "js/engine.js" | minify | fingerprint) }}
+{{- $js := (resources.Get "js/studio.js" | minify | fingerprint) }}
+<script src="{{ $engine.RelPermalink }}" integrity="{{ $engine.Data.Integrity }}" defer></script>
+<script src="{{ $js.RelPermalink }}" integrity="{{ $js.Data.Integrity }}" defer></script>
+{{ end }}

@@ -1,0 +1,16 @@
+{{- /* A flat table of contents of the two highest heading levels in use.
+       Headings of README chapters start at level 3 in the source. */ -}}
+{{- $all := slice }}
+{{- range .Fragments.Headings }}{{ $all = $all | append (partial "toc-walk.html" .) }}{{ end }}
+{{- $all = where $all "id" "!=" "" }}
+{{- if gt (len $all) 1 }}
+{{- $min := 9 }}{{ range $all }}{{ if lt .level $min }}{{ $min = .level }}{{ end }}{{ end }}
+<aside class="docs-toc" aria-label="{{ i18n "on_this_page" }}">
+  <p class="docs-toc-title">{{ i18n "on_this_page" }}</p>
+  <ul>
+    {{- range $all }}{{ if le .level (add $min 1) }}
+    <li class="toc-l{{ sub .level $min }}"><a href="#{{ .id }}">{{ .title | plainify }}</a></li>
+    {{- end }}{{ end }}
+  </ul>
+</aside>
+{{- end }}

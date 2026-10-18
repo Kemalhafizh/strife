@@ -1,0 +1,6 @@
+{"process":1,"type":"invoke","f":"write","key":"k0","value":2,"time":1000000}
+{"process":1,"type":"ok","f":"write","key":"k0","value":2,"time":5000000}
+{"process":2,"type":"invoke","f":"write","key":"k0","value":3,"time":6000000}
+{"process":2,"type":"ok","f":"write","key":"k0","value":3,"time":8000000}
+{"process":3,"type":"invoke","f":"read","key":"k0","time":9000000}
+{"process":3,"type":"ok","f":"read","key":"k0","value":2,"time":12000000}

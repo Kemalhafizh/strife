@@ -1,0 +1,20 @@
+{{- $section := site.GetPage "/docs" }}
+{{- $pages := sort $section.RegularPages "Params.order" }}
+<nav class="docs-side" aria-label="{{ $section.Title }}">
+  <details class="docs-side-menu" open>
+    <summary>{{ $section.Title }}</summary>
+    <a class="docs-side-home{{ if eq $.RelPermalink $section.RelPermalink }} is-current{{ end }}" href="{{ $section.RelPermalink }}">{{ $section.Title }}</a>
+    {{- range slice (slice "guides" "docs_guides") (slice "reference" "docs_reference") (slice "examples" "docs_examples") }}
+    {{- $group := where $pages "Params.group" (index . 0) }}
+    {{- if eq (index . 0) "examples" }}{{ $group = sort $group "Title" }}{{ end }}
+    {{- if $group }}
+    <p class="docs-side-title">{{ i18n (index . 1) }}</p>
+    <ul>
+      {{- range $group }}
+      <li><a href="{{ .RelPermalink }}"{{ if eq $.RelPermalink .RelPermalink }} aria-current="page"{{ end }}>{{ .Title | markdownify }}</a></li>
+      {{- end }}
+    </ul>
+    {{- end }}
+    {{- end }}
+  </details>
+</nav>

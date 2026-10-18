@@ -1,0 +1,163 @@
+{{ define "bodyclass" }}home{{ end }}
+{{ define "main" }}
+{{- $L := site.Language.Lang }}
+{{- $paths := dict
+  "try" (cond (eq $L "id") "/coba" "/try")
+  "download" (cond (eq $L "id") "/unduh" "/download")
+  "compliance" (cond (eq $L "id") "/kepatuhan" "/compliance")
+  "verify" (cond (eq $L "id") "/verifikasi" "/verify")
+  "contact" (cond (eq $L "id") "/kontak" "/contact")
+  "docs" "/docs"
+  "bench" "/docs/benchmarks" }}
+{{- $u := dict }}
+{{- range $k, $v := $paths }}{{ with site.GetPage $v }}{{ $u = merge $u (dict $k .RelPermalink) }}{{ end }}{{ end }}
+{{- $preset := index (where site.Data.presets.presets "id" "unsafe-fsync") 0 }}
+{{- $dur := float (strings.TrimSuffix "s" $preset.simulated) }}
+
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">{{ i18n "home_eyebrow" }}</p>
+      <h1>{{ i18n "home_h1" }}</h1>
+      <p class="lead">{{ i18n "home_lead" }}</p>
+      <div class="actions">
+        <a class="btn btn-primary btn-lg" href="{{ $u.try }}">{{ i18n "home_cta_try" }} <small>· {{ i18n "home_cta_try_note" }}</small></a>
+        <a class="btn btn-secondary btn-lg" href="{{ $u.download }}">{{ i18n "home_cta_download" }}</a>
+      </div>
+      <p class="trustline">{{ i18n "home_trust" }}</p>
+    </div>
+    <div class="hero-visual" aria-hidden="true">
+      <div class="timeline-art">
+        {{- range $i, $f := $preset.schedule }}
+        {{- $start := float (strings.TrimSuffix "s" $f.start) }}{{ $end := float (strings.TrimSuffix "s" $f.end) }}
+        <div class="ta-row"><span class="ta-label">{{ $f.kind }}</span><span class="ta-track"><span class="ta-bar {{ if in (slice "kill" "pause" "freeze") $f.kind }}ta-red{{ end }}" style="left:{{ printf "%.2f" (mul (div $start $dur) 100) }}%;width:{{ printf "%.2f" (mul (div (sub $end $start) $dur) 100) }}%"></span></span></div>
+        {{- end }}
+        <div class="ta-axis"><span>0s</span><span>5s</span><span>10s</span></div>
+        <div class="ta-verdict"><span class="badge badge-violation">{{ i18n "verdict_violation" }}</span> <code>{{ substr $preset.trace_hash 0 16 }}</code></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">{{ i18n "home_proof_eyebrow" }}</p>
+      <h2>{{ i18n "home_proof_h2" }}</h2>
+      <p>{{ i18n "home_proof_body" }}</p>
+      <p class="muted small">{{ i18n "home_proof_note" }}</p>
+      <a class="btn btn-secondary" href="{{ $u.try }}?preset=unsafe-fsync">{{ i18n "home_proof_cta" }} →</a>
+    </div>
+    <div>{{ partial "preset-terminal.html" (dict "p" $preset) }}</div>
+  </div>
+</section>
+
+<section class="section section-alt">
+  <div class="wrap">
+    <p class="eyebrow">{{ i18n "home_steps_eyebrow" }}</p>
+    <h2>{{ i18n "home_steps_h2" }}</h2>
+    <ol class="steps">
+      {{- range slice 1 2 3 4 }}
+      <li><h3>{{ i18n (printf "step%d_title" .) }}</h3><p>{{ i18n (printf "step%d_body" .) }}</p></li>
+      {{- end }}
+    </ol>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="eyebrow">{{ i18n "home_paths_eyebrow" }}</p>
+    <h2>{{ i18n "home_paths_h2" }}</h2>
+    <div class="grid grid-3">
+      <a class="card card-link" href="{{ $u.docs }}">
+        <h3>{{ i18n "path_eng_title" }}</h3><p>{{ i18n "path_eng_body" }}</p><span class="card-cta">{{ i18n "path_eng_cta" }} →</span>
+      </a>
+      <a class="card card-link" href="{{ $u.compliance }}">
+        <h3>{{ i18n "path_risk_title" }}</h3><p>{{ i18n "path_risk_body" }}</p><span class="card-cta">{{ i18n "path_risk_cta" }} →</span>
+      </a>
+      <a class="card card-link" href="{{ $u.verify }}">
+        <h3>{{ i18n "path_audit_title" }}</h3><p>{{ i18n "path_audit_body" }}</p><span class="card-cta">{{ i18n "path_audit_cta" }} →</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="section section-alt">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">{{ i18n "home_real_eyebrow" }}</p>
+      <h2>{{ i18n "home_real_h2" }}</h2>
+      <p>{{ i18n "home_real_body" }}</p>
+    </div>
+    <div>
+      <ul class="findings">
+        <li>{{ i18n "real_pg_rr" }}</li>
+        <li>{{ i18n "real_pg_standby" }}</li>
+        <li>{{ i18n "real_mysql" }}</li>
+        <li>{{ i18n "real_tidb" }}</li>
+        <li>{{ i18n "real_valkey" }}</li>
+      </ul>
+      <p class="small"><a href="{{ $u.bench }}#5-live-clusters">{{ i18n "real_source" }} →</a></p>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="eyebrow">{{ i18n "home_numbers_eyebrow" }}</p>
+    <h2>{{ i18n "home_numbers_h2" }}</h2>
+    <div class="grid grid-4 stats">
+      {{- range slice (slice "raft" "4-bug-detection-in-the-simulator") (slice "sound" "3-checker-correctness") (slice "agent" "1-fault-injection-latency") (slice "wgl" "2-checker-throughput") }}
+      <div class="stat">
+        <p class="stat-value">{{ i18n (printf "stat_%s_value" (index . 0)) }}</p>
+        <p class="stat-label">{{ i18n (printf "stat_%s_label" (index . 0)) }}</p>
+        <a class="stat-source" href="{{ $u.bench }}#{{ index . 1 }}">{{ i18n "stat_source" }} →</a>
+      </div>
+      {{- end }}
+    </div>
+  </div>
+</section>
+
+<section class="section section-alt">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">{{ i18n "home_comp_eyebrow" }}</p>
+      <h2>{{ i18n "home_comp_h2" }}</h2>
+      <p>{{ i18n "home_comp_body" | markdownify }}</p>
+      <a class="btn btn-secondary" href="{{ $u.compliance }}">{{ i18n "home_comp_cta" }} →</a>
+    </div>
+    <div>
+      <ul class="controls-mini">
+        {{- range where site.Data.compliance "framework" "bi-ojk" }}
+        <li><code>{{ .id }}</code><span>{{ .citation }}</span></li>
+        {{- end }}
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="eyebrow">{{ i18n "home_data_eyebrow" }}</p>
+    <h2>{{ i18n "home_data_h2" }}</h2>
+    <div class="grid grid-3">
+      <div class="card"><p>{{ i18n "data_local" }}</p></div>
+      <div class="card"><p>{{ i18n "data_browser" }}</p></div>
+      <div class="card"><p>{{ i18n "data_open" }}</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section cta-band">
+  <div class="wrap cta-inner">
+    <div>
+      <h2>{{ i18n "home_final_h2" }}</h2>
+      <p>{{ i18n "home_final_body" }}</p>
+    </div>
+    <div class="actions">
+      <a class="btn btn-primary btn-lg" href="{{ $u.try }}">{{ i18n "home_cta_try" }}</a>
+      <a class="btn btn-secondary btn-lg" href="{{ $u.contact }}">{{ i18n "nav_demo" }}</a>
+    </div>
+  </div>
+</section>
+{{ end }}

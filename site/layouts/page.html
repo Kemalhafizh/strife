@@ -1,0 +1,8 @@
+{{ define "main" }}
+<article class="page">
+  {{ partial "page-hero.html" . }}
+  <div class="wrap {{ if .Params.wide }}{{ else }}narrow{{ end }} prose">
+    {{ .Content }}
+  </div>
+</article>
+{{ end }}
