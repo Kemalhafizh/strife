@@ -148,11 +148,14 @@ jobs:
         run: |
           go build -o bin/strife ./cmd/strife
           mkdir -p registry
-          echo '{"listen":"127.0.0.1:8088","data":"registry/data","projects":[{"name":"ci","token":"env:STRIFE_TOKEN"}]}' > registry/server.json
+          # The project accepts only runs signed by this job's own key.
+          bin/strife keygen --out registry/ci
+          { echo "STRIFE_SIGNING_KEY<<PEM"; cat registry/ci.key; echo PEM; } >> "$GITHUB_ENV"
+          echo '{"listen":"127.0.0.1:8088","data":"registry/data","projects":[{"name":"ci","token":"env:STRIFE_TOKEN","trusted_keys":["ci.pub"],"require_signature":true}]}' > registry/server.json
           nohup bin/strife server --config registry/server.json > registry/server.log 2>&1 &
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8088/healthz && exit 0; sleep 0.5; done
           cat registry/server.log; exit 1
-      - name: the action pushes a campaign to the registry
+      - name: the action signs a campaign and pushes it to the registry
         uses: ./
         env:
           STRIFE_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-registry
@@ -163,11 +166,15 @@ jobs:
           fail: "false"
           push-server: http://127.0.0.1:8088
           push-project: ci
-      - name: the registry holds the campaign
+          sign-key-env: STRIFE_SIGNING_KEY
+      - name: the registry holds the campaign, signed
         env:
           STRIFE_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-registry
         run: |
           runs=$(curl -fsS -H "Authorization: Bearer $STRIFE_TOKEN" http://127.0.0.1:8088/api/v1/projects/ci/runs)
           echo "$runs"
-          python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert len(r)==1 and r[0]["kind"]=="campaign" and r[0]["source"].endswith(sys.argv[2]), r' "$runs" "$GITHUB_RUN_ID"
+          python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert len(r)==1 and r[0]["kind"]=="campaign" and r[0]["source"].endswith(sys.argv[2]) and r[0]["attested"] and r[0]["signer"].startswith("github-actions:"), r' "$runs" "$GITHUB_RUN_ID"
+          id=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])[0]["id"])' "$runs")
+          curl -fsS -H "Authorization: Bearer $STRIFE_TOKEN" "http://127.0.0.1:8088/api/v1/projects/ci/runs/$id/dossier" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["summary"]["attested"], d["summary"]; print("dossier attested by", d["summary"]["signer"])'
+          bin/strife verify --bundle registry-out/campaign-bundle.json --key registry/ci.pub --campaign registry-out/campaign.json
           curl -fsS -u "x:$STRIFE_TOKEN" http://127.0.0.1:8088/ui/ci | grep -q raft-stale-reads

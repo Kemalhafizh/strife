@@ -65,11 +65,21 @@ func verify(p *project, u *Upload, now time.Time) (*ingested, error) {
 		if m.Fingerprint == "" || m.ComputeFingerprint() != m.Fingerprint {
 			return nil, reject("campaign: fingerprint does not match its content")
 		}
-		if len(u.Bundle) > 0 || u.History != "" {
-			return nil, reject("campaign: histories and signatures are pushed with the seeds' reports, not with the manifest")
+		if u.History != "" {
+			return nil, reject("campaign: histories are pushed with the seeds' reports, not with the manifest")
 		}
-		if p.requireSignature {
-			return nil, reject("this project requires signed runs; campaigns cannot be signed yet")
+		if len(u.Bundle) > 0 {
+			res, err := verifySignature(p, u.Bundle)
+			if err != nil {
+				return nil, err
+			}
+			if err := m.Attests(res); err != nil {
+				return nil, reject("bundle: %v", err)
+			}
+			r.Attested, r.Signer, r.KeyID = true, clip(res.Signer, 200), res.KeyID
+			in.files[fileBundle] = u.Bundle
+		} else if p.requireSignature {
+			return nil, reject("this project requires signed runs: sign the campaign (strife sign --campaign) and push campaign-bundle.json with it")
 		}
 		r.ID, r.Kind, r.Target = m.Fingerprint, "campaign", m.System
 		r.Verdict, r.Seeds, r.Violations, r.Ops = m.Verdict(), m.TotalSeeds, m.Violations, m.TotalOps
@@ -117,15 +127,11 @@ func verify(p *project, u *Upload, now time.Time) (*ingested, error) {
 	}
 
 	if len(u.Bundle) > 0 {
-		var b attest.Bundle
-		if err := strictJSON(u.Bundle, &b); err != nil {
-			return nil, reject("bundle: %v", err)
-		}
-		res, err := verifyBundle(p, &b)
+		res, err := verifySignature(p, u.Bundle)
 		if err != nil {
 			return nil, err
 		}
-		if res.Fingerprint != rep.Fingerprint || res.Target != rep.Target || res.Verdict != rep.Verdict || res.HistoryHash != rep.HistoryHash {
+		if res.Kind != attest.KindReport || res.Fingerprint != rep.Fingerprint || res.Target != rep.Target || res.Verdict != rep.Verdict || res.HistoryHash != rep.HistoryHash {
 			return nil, reject("bundle: the signed statement is about a different report")
 		}
 		r.Attested, r.Signer, r.KeyID = true, clip(res.Signer, 200), res.KeyID
@@ -136,15 +142,26 @@ func verify(p *project, u *Upload, now time.Time) (*ingested, error) {
 	return in, nil
 }
 
-// verifyBundle accepts a bundle signed by any of the project's keys.
-func verifyBundle(p *project, b *attest.Bundle) (*attest.VerificationResult, error) {
+// verifySignature accepts a report's or a campaign's bundle signed by any
+// of the project's keys and returns what it vouches for; the caller checks
+// that it is about the run pushed with it.
+func verifySignature(p *project, bundle []byte) (*attest.VerificationResult, error) {
 	if len(p.keys) == 0 {
 		return nil, reject("bundle: this project trusts no signing key; add one to trusted_keys")
 	}
+	if err := strictJSON(bundle, new(json.RawMessage)); err != nil {
+		return nil, reject("bundle: %v", err)
+	}
+	var lastErr error
 	for _, k := range p.keys {
-		if res, err := attest.Verify(b, k); err == nil && res.Valid {
+		res, err := attest.VerifyAny(bundle, k)
+		if err == nil && res.Valid {
 			return res, nil
 		}
+		lastErr = err
+	}
+	if lastErr != nil && !errors.Is(lastErr, attest.ErrSignature) {
+		return nil, reject("bundle: %v", lastErr)
 	}
 	return nil, reject("bundle: not signed by any key this project trusts")
 }

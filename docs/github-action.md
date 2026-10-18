@@ -44,6 +44,7 @@ jobs:
 | `push-server` | `""` | URL of a [`strife server`](server.md). When set, the run's reports (or its `campaign.json`) are pushed there after the run, with the commit, branch and a link to the job, also when Strife failed. |
 | `push-project` | `""` | Project on the server. |
 | `push-token-env` | `STRIFE_TOKEN` | Name of the environment variable that holds the project's write token. |
+| `sign-key-env` | `""` | Name of the environment variable that holds an Ed25519 private key (the PEM from `strife keygen`, e.g. a repository secret). When set, the reports or the campaign are signed before they are uploaded and pushed. |
 
 ### Outputs
 

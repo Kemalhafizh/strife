@@ -510,7 +510,8 @@ first something they run themselves, inside their network, that CI feeds.
 - **Design partners:** 2–3 Indonesian fintechs or banks (the `bi-ojk`
   mapping is the hook) running Strife on staging with the registry. Success
   means one dossier used in a real audit.
-- **Registry depth:** signed campaigns, SSO (OIDC) instead of shared tokens,
+- **Registry depth:** signed campaigns ✅ (`strife sign --campaign`, the
+  Action's `sign-key-env`, verified at push and in dossiers), SSO (OIDC) instead of shared tokens,
   object storage for artifacts, trend charts per series, and scheduled
   campaigns run by a customer-side runner (like a self-hosted GitHub
   runner) so data never leaves their network.

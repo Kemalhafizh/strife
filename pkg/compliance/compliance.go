@@ -175,6 +175,9 @@ func Evaluate(opts Options) (*Dossier, error) {
 			if !opts.Verification.Valid {
 				return nil, fmt.Errorf("compliance: attestation verification is invalid")
 			}
+			if opts.Verification.Kind == attest.KindCampaign {
+				return nil, fmt.Errorf("compliance: the attestation bundle is a campaign's, not the report's")
+			}
 			if opts.Verification.Fingerprint != opts.Report.Fingerprint {
 				return nil, fmt.Errorf("compliance: attestation bundle fingerprint %q does not match report fingerprint %q",
 					opts.Verification.Fingerprint, opts.Report.Fingerprint)
@@ -192,6 +195,13 @@ func Evaluate(opts Options) (*Dossier, error) {
 		}
 		if opts.Campaign.Fingerprint == "" {
 			opts.Campaign.Fingerprint = recomputed
+		}
+		// Only a signature over this campaign vouches for it: a valid
+		// signature over some report must not make it "attested".
+		if opts.Report == nil && opts.Verification != nil {
+			if err := opts.Campaign.Attests(opts.Verification); err != nil {
+				return nil, fmt.Errorf("compliance: %w", err)
+			}
 		}
 	}
 	fws := opts.Frameworks

@@ -369,7 +369,16 @@ strife verify --bundle strife-out/raft-seed7/bundle.json \
 strife compliance --report strife-out/raft-seed7/report.json \
   --bundle strife-out/raft-seed7/bundle.json --key audit-key.pub \
   --frameworks dora,soc2,iso27001,bi-ojk --out strife-compliance --strict
+
+# Campaigns are signed whole: the statement covers every seed's verdict and
+# trace, history and schedule hashes through the campaign fingerprint
+strife campaign --system raft --seeds 1..500 --out strife-campaign --sign-key env:STRIFE_SIGNING_KEY
+strife verify --bundle strife-campaign/campaign-bundle.json --key audit-key.pub --campaign strife-campaign/campaign.json
+strife compliance --campaign strife-campaign/campaign.json \
+  --bundle strife-campaign/campaign-bundle.json --key audit-key.pub --out strife-compliance
 ```
+
+A signing key can come from a CI secret instead of a file (`--key env:NAME` or `file:PATH`, holding the PEM `strife keygen` writes). A dossier counts as attested only with a signature over its own report or campaign: a valid signature over any other run is refused.
 
 ### Supported Regulatory Frameworks
 
@@ -505,8 +514,8 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent,kubernetes,kubernetes-agent`, `--json`, `--markdown`) |
 | `strife workload [flags]` | List presets (`--list`), compile specs to `.wasm` (`--compile --out`), or inspect `.wasm` plugins (`--inspect`) |
 | `strife keygen [flags]` | Generate an Ed25519 signing keypair (`<prefix>.key` and `<prefix>.pub`) |
-| `strife sign [flags]` | Sign a `report.json` into an `in-toto` v0.1 attestation bundle, or release artifacts (`--release`) |
-| `strife verify [flags]` | Verify a signed `bundle.json` (and optional `history.jsonl`) or a release directory (`--release-dir`) against an Ed25519 public key |
+| `strife sign [flags]` | Sign a `report.json` or a `campaign.json` (`--campaign`) into an `in-toto` v0.1 attestation bundle, or release artifacts (`--release`) |
+| `strife verify [flags]` | Verify a signed report or campaign bundle (with an optional `history.jsonl`, or `--campaign campaign.json`) or a release directory (`--release-dir`) against an Ed25519 public key |
 | `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk` |
 | `strife server [flags]` | Run the self-hosted run registry (`--config server.json`, `--listen`, `--data`, `--tls-cert`/`--tls-key`) |
 | `strife push [flags] PATH` | Push a run directory, `report.json` or `campaign.json` to the registry (`--server`, `--project`, `$STRIFE_TOKEN`, `--fail-on`) |

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/attest"
+	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
@@ -200,5 +201,52 @@ func TestEvaluateRejectsTamperedReportOrMismatchedBundle(t *testing.T) {
 	repA.Check.Verdict = checker.Violation
 	if _, err := Evaluate(Options{Report: repA}); err == nil {
 		t.Fatalf("expected error when report fingerprint does not match contents")
+	}
+}
+
+// A campaign's dossier is attested only by a signature over that campaign:
+// a valid signature over any report, or over another campaign, must not
+// make it look signed.
+func TestCampaignDossierNeedsItsOwnSignature(t *testing.T) {
+	pub, priv, err := attest.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(verdicts ...checker.Verdict) *campaign.Manifest {
+		m := &campaign.Manifest{Tool: "strife", CampaignID: "c", System: "raft", Faults: []nemesis.Kind{nemesis.Partition, nemesis.ClockSkew}, TotalSeeds: len(verdicts)}
+		for i, v := range verdicts {
+			m.Seeds = append(m.Seeds, campaign.SeedRecord{Seed: uint64(i + 1), Verdict: v, TraceHash: strings.Repeat("a", 64)})
+			if v == checker.Violation {
+				m.Violations++
+			} else {
+				m.Passed++
+			}
+		}
+		m.Fingerprint = m.ComputeFingerprint()
+		return m
+	}
+	verify := func(m *campaign.Manifest) *attest.VerificationResult {
+		b, err := attest.SignCampaign(m.Predicate("ci"), priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, res, err := attest.VerifyCampaign(b, pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	camp, other := mk(checker.Linearizable, checker.Linearizable), mk(checker.Linearizable, checker.Violation)
+
+	d, err := Evaluate(Options{Campaign: camp, Verification: verify(camp)})
+	if err != nil || !d.Summary.Attested || d.Summary.Signer != "ci" {
+		t.Fatalf("own signature: %v %+v", err, d)
+	}
+	if _, err := Evaluate(Options{Campaign: camp, Verification: verify(other)}); err == nil {
+		t.Fatal("another campaign's signature attested this one")
+	}
+	reportSig := &attest.VerificationResult{Valid: true, Kind: attest.KindReport, Target: "raft", Verdict: checker.Linearizable, Fingerprint: camp.Fingerprint}
+	if _, err := Evaluate(Options{Campaign: camp, Verification: reportSig}); err == nil || !strings.Contains(err.Error(), "report") {
+		t.Fatalf("a report's signature attested a campaign: %v", err)
 	}
 }

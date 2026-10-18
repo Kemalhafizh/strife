@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/internal/rng"
+	"github.com/kemalhafizh/strife/internal/secret"
 	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
@@ -1237,8 +1239,9 @@ func cmdSign(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	reportPath := fs.String("report", "", "path to report.json to sign")
-	keyPath := fs.String("key", "", "path to ed25519 private key (.key)")
-	outPath := fs.String("out", "", "output bundle.json path (default: <report_dir>/bundle.json)")
+	campaignPath := fs.String("campaign", "", "path to campaign.json to sign (instead of --report)")
+	keyPath := fs.String("key", "", "ed25519 private key: a .key file, or env:NAME / file:PATH holding its PEM (CI secrets)")
+	outPath := fs.String("out", "", "output bundle path (default: bundle.json next to the report, campaign-bundle.json next to the campaign)")
 	signer := fs.String("signer", "strife-auditor", "signer identity or role name")
 	release := fs.Bool("release", false, "sign the files given as arguments (release artifacts) instead of a report")
 	version := fs.String("version", report.Version, "with --release: the version being released")
@@ -1251,7 +1254,7 @@ func cmdSign(args []string, stdout, stderr io.Writer) (int, error) {
 		if *keyPath == "" || *outPath == "" || fs.NArg() == 0 {
 			return exitUsage, fmt.Errorf("--release needs --key, --out and the files to sign")
 		}
-		priv, err := attest.LoadPrivateKey(*keyPath)
+		priv, err := loadSigningKey(*keyPath)
 		if err != nil {
 			return exitError, err
 		}
@@ -1269,18 +1272,58 @@ func cmdSign(args []string, stdout, stderr io.Writer) (int, error) {
 		fmt.Fprintf(stdout, "signed %d files of %s with key %s: %s\n", len(b.Statement.Subject), *version, b.Signatures[0].KeyID, *outPath)
 		return exitOK, nil
 	}
-	if *reportPath == "" || *keyPath == "" {
-		return exitUsage, fmt.Errorf("both --report and --key are required")
+	if (*reportPath == "") == (*campaignPath == "") || *keyPath == "" {
+		return exitUsage, fmt.Errorf("--key and one of --report and --campaign are required")
 	}
-
-	bundle, err := attest.SignReportFile(*reportPath, *keyPath, *outPath, *signer)
+	priv, err := loadSigningKey(*keyPath)
 	if err != nil {
 		return exitError, err
 	}
+	if *campaignPath != "" {
+		m, err := campaign.LoadManifest(*campaignPath)
+		if err != nil {
+			return exitError, err
+		}
+		if m.Fingerprint != m.ComputeFingerprint() {
+			return exitError, fmt.Errorf("%s: its fingerprint does not match its content (edited?); refusing to sign it", *campaignPath)
+		}
+		b, err := attest.SignCampaign(m.Predicate(*signer), priv)
+		if err != nil {
+			return exitError, err
+		}
+		out := *outPath
+		if out == "" {
+			out = filepath.Join(filepath.Dir(*campaignPath), "campaign-bundle.json")
+		}
+		if err := writeJSONFile(out, b); err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "signed in-toto campaign attestation:\n")
+		fmt.Fprintf(stdout, "  subject:     %s (%d seeds, %d violations, %s)\n", m.System, m.TotalSeeds, m.Violations, m.Verdict())
+		fmt.Fprintf(stdout, "  fingerprint: %s\n", m.Fingerprint)
+		fmt.Fprintf(stdout, "  key id:      %s\n", b.Signatures[0].KeyID)
+		fmt.Fprintf(stdout, "  bundle file: %s\n", out)
+		return exitOK, nil
+	}
 
+	data, err := os.ReadFile(*reportPath)
+	if err != nil {
+		return exitError, err
+	}
+	var rep report.Report
+	if err := json.Unmarshal(data, &rep); err != nil {
+		return exitError, fmt.Errorf("%s: %w", *reportPath, err)
+	}
+	bundle, err := attest.Sign(&rep, priv, *signer)
+	if err != nil {
+		return exitError, err
+	}
 	targetOut := *outPath
 	if targetOut == "" {
 		targetOut = filepath.Join(filepath.Dir(*reportPath), "bundle.json")
+	}
+	if err := writeJSONFile(targetOut, bundle); err != nil {
+		return exitError, err
 	}
 
 	fmt.Fprintf(stdout, "signed in-toto attestation bundle:\n")
@@ -1297,6 +1340,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) (int, error) {
 	bundlePath := fs.String("bundle", "", "path to bundle.json")
 	keyPath := fs.String("key", "", "path to ed25519 public key (.pub)")
 	histPath := fs.String("history", "", "optional: verify that this history.jsonl matches the signed digest")
+	campaignPath := fs.String("campaign", "", "optional: check that a campaign bundle vouches for this campaign.json")
 	releaseDir := fs.String("release-dir", "", "verify a release bundle against the files in this directory")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -1332,6 +1376,28 @@ func cmdVerify(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitViolation, err
 	}
 
+	if res.Kind == attest.KindCampaign || *campaignPath != "" {
+		if *campaignPath != "" {
+			m, err := campaign.LoadManifest(*campaignPath)
+			if err != nil {
+				return exitError, err
+			}
+			if err := m.Attests(res); err != nil {
+				fmt.Fprintf(stderr, "verification FAILED: %v\n", err)
+				return exitViolation, err
+			}
+		}
+		fmt.Fprintf(stdout, "VERIFICATION: SUCCESS ✅ (campaign)\n")
+		fmt.Fprintf(stdout, "  system:       %s\n", res.Target)
+		fmt.Fprintf(stdout, "  verdict:      %s\n", strings.ToUpper(string(res.Verdict)))
+		fmt.Fprintf(stdout, "  signer:       %s (key id: %s)\n", res.Signer, res.KeyID)
+		fmt.Fprintf(stdout, "  signed at:    %s\n", res.SignedAt.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "  fingerprint:  %s\n", res.Fingerprint)
+		if *campaignPath != "" {
+			fmt.Fprintf(stdout, "  campaign:     %s (content matches the signed fingerprint ✅)\n", *campaignPath)
+		}
+		return exitOK, nil
+	}
 	fmt.Fprintf(stdout, "VERIFICATION: SUCCESS ✅\n")
 	fmt.Fprintf(stdout, "  target:       %s (seed %d)\n", res.Target, res.Seed)
 	fmt.Fprintf(stdout, "  verdict:      %s\n", strings.ToUpper(string(res.Verdict)))
@@ -1343,6 +1409,30 @@ func cmdVerify(args []string, stdout, stderr io.Writer) (int, error) {
 		fmt.Fprintf(stdout, "  history file: %s (VERIFIED bit-for-bit ✅)\n", *histPath)
 	}
 	return exitOK, nil
+}
+
+// loadSigningKey reads an Ed25519 private key from a file, or from an
+// env:NAME / file:PATH reference holding its PEM (a CI secret).
+func loadSigningKey(ref string) (ed25519.PrivateKey, error) {
+	if !strings.HasPrefix(ref, "env:") && !strings.HasPrefix(ref, "file:") {
+		return attest.LoadPrivateKey(ref)
+	}
+	pemText, err := secret.Resolve(ref)
+	if err != nil {
+		return nil, fmt.Errorf("--key: %w", err)
+	}
+	if pemText == "" {
+		return nil, fmt.Errorf("--key: %s is empty", ref)
+	}
+	return attest.ParsePrivateKey([]byte(pemText))
+}
+
+func writeJSONFile(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
 func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
@@ -1361,6 +1451,8 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 	shrinkCount := fs.Int("shrink", 0, "minimise up to this many violating seeds")
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
 	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-regression\"")
+	signKey := fs.String("sign-key", "", "sign the manifest into campaign-bundle.json with this Ed25519 key (a .key file, or env:NAME / file:PATH holding its PEM)")
+	signer := fs.String("signer", "strife-auditor", "with --sign-key: signer identity or role name")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -1373,6 +1465,16 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 	case "", string(checker.Linearizable), string(checker.Violation), "no-regression":
 	default:
 		return exitUsage, fmt.Errorf("--expect must be linearizable, violation, or no-regression")
+	}
+	var signWith ed25519.PrivateKey
+	if *signKey != "" {
+		if *out == "" {
+			return exitUsage, fmt.Errorf("--sign-key needs --out: the bundle is written next to campaign.json")
+		}
+		// Read the key before running: a wrong key should not cost a campaign.
+		if signWith, err = loadSigningKey(*signKey); err != nil {
+			return exitUsage, err
+		}
 	}
 	seedList, err := explore.ParseSeeds(*seeds)
 	if err != nil {
@@ -1417,6 +1519,16 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 	if *out != "" {
 		fmt.Fprintf(stdout, "dashboard: %s\n", filepath.Join(*out, "campaign.html"))
 		fmt.Fprintf(stdout, "manifest:  %s\n", filepath.Join(*out, "campaign.json"))
+	}
+	if signWith != nil {
+		b, err := attest.SignCampaign(m.Predicate(*signer), signWith)
+		if err == nil {
+			err = writeJSONFile(filepath.Join(*out, "campaign-bundle.json"), b)
+		}
+		if err != nil {
+			return exitError, fmt.Errorf("signing the campaign: %w", err)
+		}
+		fmt.Fprintf(stdout, "signed:    %s (key %s)\n", filepath.Join(*out, "campaign-bundle.json"), b.Signatures[0].KeyID)
 	}
 	if *saveBaseline != "" {
 		fmt.Fprintf(stdout, "baseline saved: %s\n", *saveBaseline)

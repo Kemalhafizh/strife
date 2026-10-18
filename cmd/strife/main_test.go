@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/report"
 )
 
@@ -439,5 +440,76 @@ func TestWasmWorkloadCompileAndDeterminism(t *testing.T) {
 	code, out = runCLI(t, "sim", "--system", "raft", "--seed", "7", "--duration", "2s", "--workload", wasmPath, "--determinism", "--out", simDir)
 	if code != exitOK || !strings.Contains(out, "determinism: ✓ identical executions") {
 		t.Fatalf("sim with wasm workload failed (%d):\n%s", code, out)
+	}
+}
+
+// A campaign is signed with a key taken from a CI secret, verified against
+// its manifest, attested in its dossier, and pushed with its bundle; an
+// edited manifest neither signs nor verifies.
+func TestSignedCampaignCLI(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "camp")
+	camp := filepath.Join(out, "campaign.json")
+	if code, o := runCLI(t, "campaign", "--system", "raft", "--faults", "partition", "--seeds", "1..3", "--duration", "3s", "--out", out); code != exitOK {
+		t.Fatalf("campaign (%d):\n%s", code, o)
+	}
+	keyPrefix := filepath.Join(dir, "ci")
+	if code, o := runCLI(t, "keygen", "--out", keyPrefix); code != exitOK {
+		t.Fatalf("keygen (%d):\n%s", code, o)
+	}
+	pemKey, err := os.ReadFile(keyPrefix + ".key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_SIGNING_KEY", string(pemKey))
+	if code, o := runCLI(t, "sign", "--campaign", camp, "--key", "env:TEST_SIGNING_KEY", "--signer", "ci"); code != exitOK || !strings.Contains(o, "campaign attestation") {
+		t.Fatalf("sign --campaign (%d):\n%s", code, o)
+	}
+	bundle := filepath.Join(out, "campaign-bundle.json")
+	if code, o := runCLI(t, "verify", "--bundle", bundle, "--key", keyPrefix+".pub", "--campaign", camp); code != exitOK || !strings.Contains(o, "content matches") {
+		t.Fatalf("verify --campaign (%d):\n%s", code, o)
+	}
+	dossier := filepath.Join(dir, "dossier")
+	if code, o := runCLI(t, "compliance", "--campaign", camp, "--bundle", bundle, "--key", keyPrefix+".pub", "--out", dossier); code != exitOK && code != exitViolation {
+		t.Fatalf("compliance (%d):\n%s", code, o)
+	}
+	data, err := os.ReadFile(filepath.Join(dossier, "dossier.json"))
+	if err != nil || !strings.Contains(string(data), `"attested": true`) {
+		t.Fatalf("dossier not attested: %v\n%s", err, data)
+	}
+	// The campaign command signs its own manifest too.
+	out2 := filepath.Join(dir, "camp2")
+	if code, o := runCLI(t, "campaign", "--system", "raft", "--faults", "partition", "--seeds", "1..2", "--duration", "2s", "--out", out2, "--sign-key", "env:TEST_SIGNING_KEY", "--signer", "ci"); code != exitOK || !strings.Contains(o, "signed:") {
+		t.Fatalf("campaign --sign-key (%d):\n%s", code, o)
+	}
+	if code, o := runCLI(t, "verify", "--bundle", filepath.Join(out2, "campaign-bundle.json"), "--key", keyPrefix+".pub", "--campaign", filepath.Join(out2, "campaign.json")); code != exitOK {
+		t.Fatalf("verify the campaign's own signature (%d):\n%s", code, o)
+	}
+	if code, o := runCLI(t, "campaign", "--seeds", "1", "--out", out2, "--sign-key", "env:NO_SUCH_KEY_VAR"); code != exitUsage {
+		t.Fatalf("a missing key must fail before the campaign runs (%d):\n%s", code, o)
+	}
+
+	u, err := uploadFor(camp, true)
+	if err != nil || len(u.Campaign) == 0 || len(u.Bundle) == 0 {
+		t.Fatalf("push would not carry the campaign's bundle: %v", err)
+	}
+
+	// Edit the manifest: it no longer matches its signature, and it no
+	// longer matches its own fingerprint, so it cannot be signed either.
+	m, err := campaign.LoadManifest(camp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Seeds[0].TraceHash = strings.Repeat("0", 64)
+	edited := filepath.Join(dir, "edited.json")
+	data, _ = json.Marshal(m)
+	if err := os.WriteFile(edited, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, o := runCLI(t, "verify", "--bundle", bundle, "--key", keyPrefix+".pub", "--campaign", edited); code != exitViolation {
+		t.Fatalf("an edited campaign verified (%d):\n%s", code, o)
+	}
+	if code, o := runCLI(t, "sign", "--campaign", edited, "--key", keyPrefix+".key"); code == exitOK || !strings.Contains(o, "fingerprint") {
+		t.Fatalf("an edited campaign was signed (%d):\n%s", code, o)
 	}
 }

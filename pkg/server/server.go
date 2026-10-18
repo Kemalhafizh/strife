@@ -490,6 +490,13 @@ func (s *Server) apiDossier(w http.ResponseWriter, r *http.Request, p *project) 
 			return
 		}
 		opts.Campaign = &m
+		// The signature is checked again against the keys trusted now: a
+		// key removed since the push no longer vouches for the run.
+		if data, err := s.store.file(p.name, run.ID, fileBundle); err == nil {
+			if res, err := verifySignature(p, data); err == nil && m.Attests(res) == nil {
+				opts.Verification = res
+			}
+		}
 	} else {
 		rep, _, err := s.loadReport(p, run)
 		if err != nil {
@@ -498,12 +505,9 @@ func (s *Server) apiDossier(w http.ResponseWriter, r *http.Request, p *project) 
 		}
 		opts.Report = rep
 		if data, err := s.store.file(p.name, run.ID, fileBundle); err == nil {
-			var b attest.Bundle
-			if json.Unmarshal(data, &b) == nil {
-				if res, err := verifyBundle(p, &b); err == nil {
-					res.HistoryVerified = run.HistoryVerified
-					opts.Verification = res
-				}
+			if res, err := verifySignature(p, data); err == nil && res.Kind == attest.KindReport {
+				res.HistoryVerified = run.HistoryVerified
+				opts.Verification = res
 			}
 		}
 	}

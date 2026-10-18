@@ -3,6 +3,7 @@ package attest
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,5 +229,61 @@ func TestHistoryFileVerification(t *testing.T) {
 	ok, err = VerifyHistoryFile(res, histPath)
 	if err == nil || ok {
 		t.Fatalf("expected tampered history file to fail verification")
+	}
+}
+
+func TestCampaignAttestation(t *testing.T) {
+	pub, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := CampaignPredicate{System: "raft", Fingerprint: strings.Repeat("c", 64), Verdict: "linearizable", Seeds: 100, Ops: 4000, Signer: "ci"}
+	b, err := SignCampaign(p, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, res, err := VerifyCampaign(b, pub)
+	if err != nil || !res.Valid || res.Kind != KindCampaign || res.Fingerprint != p.Fingerprint || res.Target != "raft" || stmt.Predicate.Seeds != 100 {
+		t.Fatalf("round trip: %+v %+v %v", stmt, res, err)
+	}
+	data, _ := json.Marshal(b)
+	if res, err := VerifyAny(data, pub); err != nil || res.Kind != KindCampaign {
+		t.Fatalf("VerifyAny on a campaign bundle: %+v %v", res, err)
+	}
+	// Another key, or a payload changed after signing, does not verify.
+	other, _, _ := GenerateKeyPair()
+	if _, err := VerifyAny(data, other); !errors.Is(err, ErrSignature) {
+		t.Fatalf("other key: %v", err)
+	}
+	p.Verdict = "violation"
+	forged, _ := SignCampaign(p, priv)
+	tampered := *b
+	tampered.Payload = forged.Payload
+	if _, _, err := VerifyCampaign(&tampered, pub); !errors.Is(err, ErrSignature) {
+		t.Fatalf("payload swapped under the signature: %v", err)
+	}
+	// A report's verifier refuses a campaign's statement.
+	if _, err := Verify(&Bundle{PayloadType: b.PayloadType, Payload: b.Payload, Signatures: b.Signatures}, pub); err == nil {
+		t.Fatal("Verify accepted a campaign statement as a report's")
+	}
+	if _, err := SignCampaign(CampaignPredicate{System: "raft"}, priv); err == nil {
+		t.Fatal("signed a campaign without a fingerprint")
+	}
+}
+
+func TestParsePrivateKey(t *testing.T) {
+	pub, priv, _ := GenerateKeyPair()
+	dir := t.TempDir()
+	if err := SaveKeys(filepath.Join(dir, "k.key"), filepath.Join(dir, "k.pub"), priv, pub); err != nil {
+		t.Fatal(err)
+	}
+	pemBytes, _ := os.ReadFile(filepath.Join(dir, "k.key"))
+	for name, data := range map[string][]byte{"pem": pemBytes, "pem without newline": []byte(strings.TrimSpace(string(pemBytes))), "raw": priv} {
+		if got, err := ParsePrivateKey(data); err != nil || !priv.Equal(got) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := ParsePrivateKey([]byte("nope")); err == nil {
+		t.Error("garbage accepted")
 	}
 }

@@ -53,11 +53,17 @@ behind TLS (directly or through your proxy): tokens travel in the
 ```sh
 strife sign --report strife-out/run/report.json --key ci.key --signer ci --out strife-out/run/bundle.json
 STRIFE_TOKEN=... strife push --server https://strife.internal --project payments strife-out/run
-STRIFE_TOKEN=... strife push --server https://strife.internal --project payments strife-out/campaign.json
+
+strife sign --campaign strife-campaign/campaign.json --key env:STRIFE_SIGNING_KEY --signer ci
+STRIFE_TOKEN=... strife push --server https://strife.internal --project payments strife-campaign/campaign.json
 ```
 
 `strife push` sends `report.json` with `history.jsonl` and `bundle.json`
-when they are next to it, or a `campaign.json`. Commit, branch and a link to
+when they are next to it, or a `campaign.json` with `campaign-bundle.json`
+when it is next to it. A campaign's signature covers every seed's verdict
+and hashes through the campaign fingerprint; the server accepts it only if
+a trusted key signed that very campaign (its fingerprint, system and
+verdict), and `require_signature` applies to campaigns as to reports. Commit, branch and a link to
 the CI job are taken from the usual CI variables (`GITHUB_SHA`,
 `GITHUB_REF_NAME`, `CI_COMMIT_SHA`, …) unless given with `--commit`,
 `--branch`, `--source`. It exits 1 when the server reports a regression
@@ -70,11 +76,16 @@ With the GitHub Action:
 - uses: kemalhafizh/strife@v0.2.0
   env:
     STRIFE_TOKEN: ${{ secrets.STRIFE_TOKEN }}
+    STRIFE_SIGNING_KEY: ${{ secrets.STRIFE_SIGNING_KEY }} # the PEM from strife keygen
   with:
     command: campaign --system raft --seeds 1..200
     push-server: https://strife.internal
     push-project: payments
+    sign-key-env: STRIFE_SIGNING_KEY
 ```
+
+With `sign-key-env`, the Action signs the reports (or the campaign) before
+it uploads and pushes them, as `github-actions:<owner>/<repo>`.
 
 ## Read
 
@@ -101,5 +112,4 @@ A run's ID is its fingerprint: pushing the same run twice stores it once.
 - Not multi-node: one server, one data directory. Back the directory up.
 - No user accounts or SSO: access is by per-project token. Put SSO in front
   with your proxy if you need named users.
-- Campaigns cannot be signed yet; sign the seeds' reports.
 - It stores what CI pushes; it does not run tests itself.

@@ -55,6 +55,15 @@ inputs:
     description: Name of the environment variable holding the project's write token.
     required: false
     default: STRIFE_TOKEN
+  sign-key-env:
+    description: >
+      Name of the environment variable holding an Ed25519 private key (the
+      PEM that strife keygen writes), e.g. from a repository secret. When
+      set, the run's reports (or its campaign.json) are signed before they
+      are uploaded or pushed, so the registry and compliance dossiers count
+      them as attested.
+    required: false
+    default: ""
 
 outputs:
   exit-code:
@@ -134,6 +143,26 @@ runs:
         STRIFE_JUNIT: ${{ inputs.junit }}
         STRIFE_SUMMARY: ${{ inputs.summary }}
       run: STRIFE_BIN="$RUNNER_TEMP/strife-bin/strife" "$GITHUB_ACTION_PATH/scripts/github-action.sh"
+
+    - name: Sign the reports
+      if: ${{ always() && inputs.sign-key-env != '' && inputs.out != '' }}
+      shell: bash
+      env:
+        OUT: ${{ inputs.out }}
+        KEY_ENV: ${{ inputs.sign-key-env }}
+      run: |
+        # A campaign is signed as one manifest; otherwise every run directory.
+        strife="$RUNNER_TEMP/strife-bin/strife"
+        [ -d "$OUT" ] || { echo "::notice::nothing to sign: $OUT does not exist"; exit 0; }
+        [ -n "${!KEY_ENV:-}" ] || { echo "::error title=Strife signing::$KEY_ENV is empty"; exit 1; }
+        signer="github-actions:$GITHUB_REPOSITORY"
+        if [ -f "$OUT/campaign.json" ]; then
+          "$strife" sign --campaign "$OUT/campaign.json" --key "env:$KEY_ENV" --signer "$signer"
+        else
+          find "$OUT" -name report.json | sort | head -n 50 | while read -r r; do
+            "$strife" sign --report "$r" --key "env:$KEY_ENV" --signer "$signer"
+          done
+        fi
 
     - name: Push to the run registry
       if: ${{ always() && inputs.push-server != '' && inputs.out != '' }}

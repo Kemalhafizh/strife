@@ -9,6 +9,16 @@ only gain optional fields.
 ## [Unreleased]
 
 ### Added
+- Signed campaigns: `strife sign --campaign` (or `strife campaign
+  --sign-key`) writes an in-toto statement over the campaign's fingerprint,
+  which covers every seed's verdict and hashes; `strife verify --campaign`
+  checks a bundle against its manifest. `strife push` sends
+  `campaign-bundle.json` with the campaign, the registry verifies it
+  against the project's trusted keys, `require_signature` now covers
+  campaigns, and the registry's dossiers for signed campaigns are attested.
+- Signing keys can come from CI secrets (`--key env:NAME` or `file:PATH`),
+  and the GitHub Action signs reports and campaigns before uploading and
+  pushing them (`sign-key-env`).
 - The `kubernetes-agent` transport and `examples/kubernetes/strife-agent.yaml`:
   strife-agent runs as a DaemonSet, and each fault goes to the agent on the
   target pod's node, which applies it inside the pod: partitions and netem
@@ -62,6 +72,10 @@ only gain optional fields.
   `clock-skew,partition` and `partition,clock-skew`.
 
 ### Security
+- A compliance dossier for a campaign counted as attested with a valid
+  signature over any report or any other campaign. It now needs a
+  signature over that campaign (its fingerprint, system and verdict), and a
+  report's dossier refuses a campaign's signature.
 - strife-agent restarts a killed database with the container init's user,
   groups, capability sets and `no_new_privs`, not as root with every
   capability.

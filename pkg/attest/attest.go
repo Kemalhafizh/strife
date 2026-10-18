@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,8 +120,18 @@ func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	block, _ := pem.Decode(data)
-	if block != nil {
+	priv, err := ParsePrivateKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w (%s)", err, path)
+	}
+	return priv, nil
+}
+
+// ParsePrivateKey reads an Ed25519 private key in the forms LoadPrivateKey
+// accepts: PEM (PKCS #8, as written by SaveKeys) or the raw 64 bytes. CI
+// jobs can then take the key from a secret instead of a file.
+func ParsePrivateKey(data []byte) (ed25519.PrivateKey, error) {
+	if block, _ := pem.Decode(data); block != nil {
 		k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 		if err != nil {
 			return nil, fmt.Errorf("attest: parse pkcs8 private key: %w", err)
@@ -135,7 +144,7 @@ func LoadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	if len(data) == ed25519.PrivateKeySize {
 		return ed25519.PrivateKey(data), nil
 	}
-	return nil, fmt.Errorf("attest: invalid private key format at %s", path)
+	return nil, fmt.Errorf("attest: invalid private key format")
 }
 
 // LoadPublicKey loads an Ed25519 public key from PEM or raw binary.
@@ -262,6 +271,7 @@ func Sign(r *report.Report, priv ed25519.PrivateKey, signer string) (*Bundle, er
 // VerificationResult contains the outcome of verifying an attestation bundle.
 type VerificationResult struct {
 	Valid           bool            `json:"valid"`
+	Kind            string          `json:"kind,omitempty"` // KindReport or KindCampaign
 	KeyID           string          `json:"key_id"`
 	Target          string          `json:"target"`
 	Seed            uint64          `json:"seed"`
@@ -273,39 +283,12 @@ type VerificationResult struct {
 	HistoryVerified bool            `json:"history_verified,omitempty"`
 }
 
-// Verify verifies an attestation bundle against an Ed25519 public key.
+// Verify verifies a report's attestation bundle against an Ed25519 public
+// key.
 func Verify(b *Bundle, pub ed25519.PublicKey) (*VerificationResult, error) {
-	if b.Payload == "" {
-		return nil, errors.New("attest: empty bundle payload")
-	}
-	if len(b.Signatures) == 0 {
-		return nil, errors.New("attest: no signatures in bundle")
-	}
-
-	payloadBytes, err := base64.StdEncoding.DecodeString(b.Payload)
+	payloadBytes, keyID, err := openEnvelope(b.Payload, b.Signatures, pub)
 	if err != nil {
-		return nil, fmt.Errorf("attest: invalid base64 payload: %w", err)
-	}
-
-	expectedKeyID := KeyID(pub)
-	var matchingSig *Signature
-	for i := range b.Signatures {
-		if b.Signatures[i].KeyID == expectedKeyID {
-			matchingSig = &b.Signatures[i]
-			break
-		}
-	}
-	if matchingSig == nil {
-		matchingSig = &b.Signatures[0]
-	}
-
-	sigBytes, err := base64.StdEncoding.DecodeString(matchingSig.Sig)
-	if err != nil {
-		return nil, fmt.Errorf("attest: invalid base64 signature: %w", err)
-	}
-
-	if !ed25519.Verify(pub, payloadBytes, sigBytes) {
-		return &VerificationResult{Valid: false}, errors.New("attest: invalid cryptographic signature (verification failed)")
+		return &VerificationResult{Valid: false}, err
 	}
 
 	var stmt Statement
@@ -324,7 +307,8 @@ func Verify(b *Bundle, pub ed25519.PublicKey) (*VerificationResult, error) {
 
 	res := &VerificationResult{
 		Valid:       true,
-		KeyID:       matchingSig.KeyID,
+		Kind:        KindReport,
+		KeyID:       keyID,
 		Target:      stmt.Predicate.Target,
 		Seed:        stmt.Predicate.Seed,
 		Verdict:     stmt.Predicate.Verdict,
@@ -398,16 +382,13 @@ func SignReportFile(reportPath, privKeyPath, outBundlePath, signer string) (*Bun
 	return bundle, nil
 }
 
-// VerifyBundleFile reads bundle.json from path and verifies it using the public key.
+// VerifyBundleFile reads a report's or a campaign's bundle from path and
+// verifies it with the public key; for a report, historyPath (optional)
+// must match the signed history digest.
 func VerifyBundleFile(bundlePath, pubKeyPath, historyPath string) (*VerificationResult, error) {
 	data, err := os.ReadFile(bundlePath)
 	if err != nil {
 		return nil, err
-	}
-
-	var bundle Bundle
-	if err := json.Unmarshal(data, &bundle); err != nil {
-		return nil, fmt.Errorf("%s: %w", bundlePath, err)
 	}
 
 	pubKey, err := LoadPublicKey(pubKeyPath)
@@ -415,12 +396,15 @@ func VerifyBundleFile(bundlePath, pubKeyPath, historyPath string) (*Verification
 		return nil, fmt.Errorf("%s: %w", pubKeyPath, err)
 	}
 
-	res, err := Verify(&bundle, pubKey)
+	res, err := VerifyAny(data, pubKey)
 	if err != nil {
-		return res, err
+		return res, fmt.Errorf("%s: %w", bundlePath, err)
 	}
 
 	if historyPath != "" {
+		if res.Kind != KindReport {
+			return res, fmt.Errorf("%s: a campaign's statement covers its seeds' histories through the campaign fingerprint; verify a history against its seed's report bundle", bundlePath)
+		}
 		if _, err := VerifyHistoryFile(res, historyPath); err != nil {
 			return res, err
 		}

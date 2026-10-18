@@ -94,7 +94,8 @@ func cmdServer(args []string, stdout, stderr io.Writer) (int, error) {
 }
 
 // cmdPush uploads a run directory (report.json, and history.jsonl and
-// bundle.json when present) or a campaign.json to a strife server.
+// bundle.json when present) or a campaign.json (and campaign-bundle.json
+// next to it when present) to a strife server.
 func cmdPush(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("push", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -189,7 +190,11 @@ func uploadFor(path string, withHistory bool) (*server.Upload, error) {
 			CampaignID string `json:"campaign_id"`
 		}
 		if json.Unmarshal(data, &probe) == nil && probe.CampaignID != "" {
-			return &server.Upload{Campaign: data}, nil
+			u := &server.Upload{Campaign: data}
+			if b, err := os.ReadFile(filepath.Join(filepath.Dir(path), "campaign-bundle.json")); err == nil {
+				u.Bundle = b // from strife sign --campaign
+			}
+			return u, nil
 		}
 		path = filepath.Dir(path) // a report.json: push its directory
 	}

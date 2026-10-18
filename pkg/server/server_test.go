@@ -339,7 +339,7 @@ func TestCampaignRegressionPerSeed(t *testing.T) {
 	if code != http.StatusCreated || res.Run.Change != ChangeRegression || res.Run.Diff == nil || len(res.Run.Diff.Regressed) != 1 || res.Run.Diff.Regressed[0].Seed != 2 {
 		t.Fatalf("campaign regression: %s", body)
 	}
-	// Campaign manifests cannot carry a signature or a history.
+	// Campaign manifests cannot carry a history: the seeds' reports do.
 	if code, _, _ := h.push(Upload{Campaign: campaignManifest(t, checker.Linearizable), History: "x"}); code != http.StatusUnprocessableEntity {
 		t.Fatalf("campaign with history: %d", code)
 	}
@@ -364,5 +364,60 @@ func TestConfigValidation(t *testing.T) {
 		if _, err := New(&c, Options{}); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+func (h *harness) signedCampaign(manifest json.RawMessage) json.RawMessage {
+	h.t.Helper()
+	var m campaign.Manifest
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		h.t.Fatal(err)
+	}
+	b, err := attest.SignCampaign(m.Predicate("ci"), h.priv)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	data, _ := json.Marshal(b)
+	return data
+}
+
+// A project that requires signatures takes campaigns signed by a trusted
+// key, and only with the signature over that very campaign; the dossier
+// generated from it carries the signature.
+func TestSignedCampaigns(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Projects[0].RequireSignature = true })
+	pass := campaignManifest(t, checker.Linearizable, checker.Linearizable)
+	other := campaignManifest(t, checker.Linearizable, checker.Violation)
+	if code, _, body := h.push(Upload{Campaign: pass}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "strife sign --campaign") {
+		t.Fatalf("unsigned campaign accepted: %d %s", code, body)
+	}
+	if code, _, body := h.push(Upload{Campaign: pass, Bundle: h.signedCampaign(other)}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "not") {
+		t.Fatalf("another campaign's signature accepted: %d %s", code, body)
+	}
+	rep, _, _ := liveReport(t, "kafka", false, 1)
+	if code, _, body := h.push(Upload{Campaign: pass, Bundle: h.signed(rep)}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "report") {
+		t.Fatalf("a report's signature accepted for a campaign: %d %s", code, body)
+	}
+	_, foreign, _ := attest.GenerateKeyPair()
+	var m campaign.Manifest
+	_ = json.Unmarshal(pass, &m)
+	fb, _ := attest.SignCampaign(m.Predicate("mallory"), foreign)
+	fdata, _ := json.Marshal(fb)
+	if code, _, body := h.push(Upload{Campaign: pass, Bundle: fdata}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "not signed by any key this project trusts") {
+		t.Fatalf("untrusted key accepted: %d %s", code, body)
+	}
+	code, res, body := h.push(Upload{Campaign: pass, Bundle: h.signedCampaign(pass)})
+	if code != http.StatusCreated || !res.Run.Attested || res.Run.Signer != "ci" {
+		t.Fatalf("signed campaign: %d %s", code, body)
+	}
+	code, out := h.do("GET", "/api/v1/projects/payments/runs/"+res.Run.ID+"/dossier", readTok, nil)
+	var d struct {
+		Summary struct {
+			Attested bool   `json:"attested"`
+			Signer   string `json:"signer"`
+		} `json:"summary"`
+	}
+	if code != 200 || json.Unmarshal(out, &d) != nil || !d.Summary.Attested || d.Summary.Signer != "ci" {
+		t.Fatalf("campaign dossier is not attested: %d %s", code, out)
 	}
 }
