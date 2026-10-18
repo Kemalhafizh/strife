@@ -14,7 +14,9 @@ only gain optional fields.
   target pod's node, which applies it inside the pod: partitions and netem
   in its network namespace, pause and kill on its processes only, freeze
   and io-stall on its cgroup. The pods need no privileges or tools, every
-  fault kind works, and no node helper is needed.
+  fault kind works, and no node helper is needed. In kind: 1.1–1.9 ms per
+  network or cgroup fault and 2.8 ms per signal at P50, against 130–230 ms
+  through `kubectl exec`.
 - strife-agent requests can name a target container (`target.container_id`);
   `-cgroup-root`, `-io-root` and `-require-target` configure an agent that
   serves a whole node. A kill is healed by restarting the database inside
@@ -26,6 +28,20 @@ only gain optional fields.
   and, when the agents healed everything, the shell teardown.
 - `strife bench inject` labels rows by transport, so `agent` and
   `kubernetes-agent` no longer both read `agent:direct`.
+- The `kubernetes-agent` transport looks up every pod's node and container
+  during setup, so the first fault lands on time (a benchmark's first
+  partition took 329 ms) and a missing pod fails the setup.
+- The live Kubernetes check through the DaemonSet runs seed 710, which
+  draws all seven fault kinds, a kill among them, within 60 s.
+
+### Fixed
+- `campaign.html` and `dossier.html` no longer overflow narrow screens: their
+  tables scroll inside their box (at 375 px they overflowed by ~300 px).
+
+### Documentation
+- The order of `--faults` is part of a run's identity: the generator picks
+  kinds by position, so one seed gives different schedules for
+  `clock-skew,partition` and `partition,clock-skew`.
 
 ### Security
 - strife-agent restarts a killed database with the container init's user,

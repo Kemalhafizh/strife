@@ -462,9 +462,20 @@ reports the filter it actually uses.
   mapping is sold.
 - Tag `v0.2.0`, set `STRIFE_RELEASE_KEY`, list the Action on the
   Marketplace.
-- `strife-agent` as a DaemonSet with the pod network namespaces at hand, so
-  Kubernetes faults land in ~1.5 ms instead of ~90 ms through `kubectl
-  exec`.
+
+### 5.7 strife-agent as a Kubernetes DaemonSet ✅ (phase-6/k8s-agent)
+
+Measured in [`BENCHMARKS.md`](BENCHMARKS.md) §1 and §5, run
+[39109099995](https://github.com/Kemalhafizh/strife/actions/runs/39109099995).
+
+| Carried forward | Done |
+|---|---|
+| Kubernetes faults took 130–230 ms each through `kubectl exec` and needed tools (iptables, tc) and `NET_ADMIN` in every pod | One agent per node applies each fault inside the target pod: nf_tables and netem in its network namespace, signals on its processes only, freeze and io-stall on its cgroup. 1.1–1.9 ms per network or cgroup fault, 2.8 ms per signal, 4.5 ms for a restart, at P50 in kind. Pods need no privileges or tools. A 60 s etcd run with all seven kinds enabled stays linearizable (its schedule drew pause, loss and io-stall); the benchmark exercises every kind. |
+| An agent sharing the node's namespaces could fault the node itself | `-require-target` refuses faults that name no pod, network faults on `hostNetwork` pods, cgroups outside the target, and every script (`/exec`, the shell fallback). Teardown leaves the node's interface and packet filter alone, and netem deletion names its kind. |
+| A restart after a kill ran as root with every capability | The agent's own static binary enters the container and takes on its init's user, groups, capability sets and `no_new_privs` before it starts `db.start`; it never inherits the agent's environment. |
+
+Found on the way: deleting netem removed whatever root qdisc an interface
+had, and the CI's agent tokens were derived from the public run ID.
 
 ## Phase 6: Commercial layer (in progress)
 

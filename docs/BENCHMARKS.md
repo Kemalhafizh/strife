@@ -4,8 +4,9 @@ Every number in Strife's documentation comes from this page, and every number
 on this page comes with the command that produced it, the machine it ran on
 and the date. Numbers without a reproduction do not belong in the README.
 
-Measured on 2026-10-17 at commits `e5527d8`, `0249500` and `1dc5577` (CI,
-named per table) and on the working tree of the same branch (local). Shared
+Measured on 2026-10-17 and 2026-10-18 at commits `e5527d8`, `0249500`,
+`1dc5577`, `32ef8a8` and `69d5930` (CI, named per table) and on the working
+tree of the same branch (local). Shared
 CI runners are noisy: treat a single run as a sample, not a specification.
 Where two runs differ, both are shown.
 
@@ -134,8 +135,80 @@ bin/strife bench inject --config examples/kubernetes/strife-host.json \
 Almost all of the ~90 ms is `kubectl exec` (API server, kubelet, CRI exec);
 the cgroup write itself is the same ~10 ms as on Docker. The same job then
 runs etcd for 45 s under freeze and io-stall and requires a linearizable
-verdict (14,297 operations, LINEARIZABLE). An agent on each node would bring
-these to the agent's ~1.5 ms; that is listed in the roadmap.
+verdict (14,297 operations, LINEARIZABLE). The strife-agent DaemonSet below
+brings these to ~1.5 ms.
+
+**Kubernetes through the strife-agent DaemonSet** (`kubernetes-agent`)
+against `kubectl exec` (`kubernetes`), on the same kind cluster and the same
+3-pod etcd StatefulSet. One agent per node applies each fault inside the
+target pod: in its network namespace, to its processes, on its cgroup.
+
+```sh
+# .github/workflows/live.yml, job "kubernetes"
+bin/strife bench inject --config examples/kubernetes/strife-agent.json \
+  --transports kubernetes,kubernetes-agent --faults partition,kill,pause,latency,loss \
+  --cycles 20 --period 500ms
+bin/strife bench inject --config examples/kubernetes/strife-agent.json \
+  --transports kubernetes-agent --faults freeze,io-stall --cycles 20 --period 500ms
+```
+
+Run [39109099995](https://github.com/Kemalhafizh/strife/actions/runs/39109099995)
+at commit `69d5930`, a single-node kind cluster on AMD EPYC 7763, 20 cycles
+every 500 ms (the `kubectl exec` host-fault rows: the node helper above, 10
+cycles in the same run):
+
+| Fault | Edge | `kubectl exec` P50 / P95 | DaemonSet agent P50 / P95 | Inside the agent, P50 |
+|---|---|---|---|---|
+| partition | inject | 229 ms / 236 ms | **1.49 ms** / 2.32 ms ¹ | 414 µs |
+| partition | heal | 224 ms / 236 ms | **1.13 ms** / 1.92 ms | 421 µs |
+| kill | inject | 138 ms / 144 ms | **2.75 ms** / 3.08 ms | 1.46 ms |
+| kill | heal (restart) | 140 ms / 150 ms | **4.49 ms** / 6.25 ms | 3.51 ms |
+| pause | inject | 133 ms / 142 ms | **2.78 ms** / 3.83 ms | 1.71 ms |
+| pause | heal | 139 ms / 143 ms | **2.83 ms** / 3.31 ms | 1.61 ms |
+| latency | inject | 134 ms / 137 ms | **1.38 ms** / 1.81 ms | 297 µs |
+| latency | heal | 133 ms / 139 ms | **1.29 ms** / 1.91 ms | 326 µs |
+| loss | inject | 134 ms / 139 ms | **1.25 ms** / 1.72 ms | 304 µs |
+| loss | heal | 140 ms / 145 ms | **1.26 ms** / 1.76 ms | 308 µs |
+| freeze | inject | 135 ms / 328 ms | **1.86 ms** / 197 ms ¹ | 328 µs |
+| freeze | heal | 135 ms / 154 ms | **1.48 ms** / 1.96 ms | 356 µs |
+| io-stall | inject | 131 ms / 151 ms | **1.33 ms** / 1.62 ms | 312 µs |
+| io-stall | heal | 138 ms / 146 ms | **1.31 ms** / 1.80 ms | 320 µs |
+
+No transition failed (0 errors in every row).
+
+¹ One slow transition per benchmark run: 329 ms for a partition, ~200 ms for
+a freeze, the first of each run. Before its first fault the transport had
+not yet looked up the pods' nodes and container IDs (two `kubectl` calls per
+pod, cached afterwards). A test run always did these lookups before the
+first fault (its fault timing below peaks at 3.65 ms); the transport now
+does them during setup for benchmarks too.
+
+**Reading it:**
+
+- At P50 the DaemonSet agent lands network and cgroup faults 73–198×
+  sooner than `kubectl exec` (1.1–1.9 ms), signals ~50× sooner (2.8 ms) and
+  the restart after a kill 31× sooner (4.5 ms).
+- Unlike the Docker agent above, the latency and loss rows show no late
+  confirmations: the agent replies over the node's network, not through the
+  pod interface it has just impaired.
+- Pause and kill wait until `/proc` shows every process of the container
+  stopped or exited (1.5–1.7 ms inside the agent).
+- The restart after a kill takes 4.5 ms because it runs as the container
+  would. The agent's own binary enters the container's namespaces, takes on
+  its init's user, groups, capability sets and `no_new_privs`, reports back,
+  and only then starts `db.start`. Restarting as root, as at commit
+  `32ef8a8` (run [39084896919](https://github.com/Kemalhafizh/strife/actions/runs/39084896919)),
+  took 1.68 ms.
+- `kubectl exec` partitions take ~230 ms against ~135 ms for the other
+  faults: a partition changes every node, and the slowest of the three
+  parallel execs decides.
+
+The same job runs etcd for 60 s through the DaemonSet with all seven kinds
+enabled. Seed 42 draws pause, packet loss and io-stall: 19,269 operations,
+LINEARIZABLE, faults confirmed at P50 1.21 ms, maximum 3.65 ms.
+`scripts/live/check-k8s-agent-partition.sh` checks that a partition through
+the agent cuts `etcd-0` from `etcd-1` and from nothing else, that a fault
+naming no pod is refused, and that the heal restores the traffic.
 
 **Not measured:** the `ssh` transport (it shells out per command, so expect
 the same order as `docker exec` plus a network round trip), and `clock-skew`.
@@ -259,6 +332,8 @@ that does not produce the expected verdict fails the job.
 | cgroup | etcd | freeze, io-stall | linearizable | pass |
 | kubernetes | etcd StatefulSet in kind | partition, kill, pause, latency ², loss ² | linearizable | pass |
 | kubernetes | same, through the node helper | freeze, io-stall ³ | linearizable | pass |
+| kubernetes | same, through the strife-agent DaemonSet | all seven kinds ², ³ (seed 42 draws pause, loss, io-stall) | linearizable | pass |
+| kubernetes | two etcd pods, through the DaemonSet agent | one partition, then its heal; a fault naming no pod | only that traffic cut, then restored; refused | pass |
 | valkey | Valkey 8, primary + 2 async replicas | partition, pause | linearizable | **violation** (stale replica reads) |
 | valkey | Valkey 8, single primary, `appendfsync always` | kill -9 | linearizable | pass |
 | postgres | PostgreSQL 17 primary, SERIALIZABLE | kill -9, pause | strict serializable | pass, except once: **G2** among three racing commits ⁴ |
@@ -287,5 +362,6 @@ whether this one is among them is not established. The history is kept as
 and checked in `go test ./pkg/txn`.
 
 Runs [39054819049](https://github.com/Kemalhafizh/strife/actions/runs/39054819049)
-(commit `0249500`) and [39056797048](https://github.com/Kemalhafizh/strife/actions/runs/39056797048)
-(commit `1dc5577`) passed all ten jobs.
+(commit `0249500`), [39056797048](https://github.com/Kemalhafizh/strife/actions/runs/39056797048)
+(commit `1dc5577`) and [39109099995](https://github.com/Kemalhafizh/strife/actions/runs/39109099995)
+(commit `69d5930`) passed all ten jobs.

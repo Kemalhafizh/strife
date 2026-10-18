@@ -45,6 +45,7 @@ In the trace above, a Raft implementation acknowledges log appends before `fsync
 
 - **Zero external dependencies.** Both `strife` and `strife-agent` compile from the Go 1.23 standard library alone (`go.mod` has no `require` block). Wire protocols for etcd v3, Redis/Valkey (RESP2), PostgreSQL (v3 protocol with SCRAM-SHA-256 and TLS), MySQL/TiDB (`caching_sha2_password`, TLS), Kafka (Produce v3 / Fetch v4, RecordBatch v2 with CRC-32C), Linux `AF_NETLINK` route and netfilter (`nf_tables`) sockets, Ed25519 `in-toto` signing, and the WebAssembly 1.0 bytecode interpreter are implemented in-tree.
 - **Pinned randomness.** Standard `math/rand` algorithms are not guaranteed to stay identical across Go releases. Strife uses a self-contained `xoshiro256**` PRNG seeded via `SplitMix64` ([`internal/rng`](internal/rng/rng.go)) with per-actor FNV-1a stream forking (`root.Fork("client/3")`), so adding a client or node does not perturb another actor's random draws.
+- **A run is its seed and its configuration, fault order included.** The schedule generator picks a fault kind by its position in `--faults`, so `clock-skew,partition` and `partition,clock-skew` give one seed two different schedules: seed 2 of `raft-lease` is a violation with the first and linearizable with the second. Every report's reproduce command keeps the list in its original order.
 - **Honest verdicts.** When a checker exhausts its step or wall-clock budget without finding either a valid linearization or a proof of impossibility, the verdict is `unknown` (exit code `3`), never a false `linearizable`. A live run in which no operation succeeded is `unknown` too.
 - **Measured claims.** Every performance or detection number in this README links to [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), which gives the command, machine and date that produced it.
 
@@ -253,7 +254,7 @@ strife run  --config strife.json --faults none --expect linearizable   # fault-f
 
 Every fault is a direct kernel call inside the agent, without forking a binary, and counts as applied only once the kernel shows it: a pause once `/proc` reports the process stopped, a kill once it has exited, a freeze once `cgroup.events` reports the cgroup frozen. Partitions are nf_tables rules sent over netlink in one batch per change (IPv4 and IPv6). Deleting a rule makes the kernel wait for an RCU grace period (~14 ms), so a heal inserts an `accept` ahead of the `drop` instead, and the chain is compacted after 250 ms without changes. Before this, the agent forked `iptables`: 4.02 ms to inject and 7.44 ms to heal (2.6 ms and 6.0 ms inside the agent). `iptables` (IPv4) is still the fallback on hosts without nf_tables, and the agent reports which one it used (`filter:nftables`) with every fault.
 
-On Kubernetes, `freeze` and `io-stall` go through a privileged node helper DaemonSet that finds the pod's cgroup and data disk from its container ID: ~90 ms per transition, nearly all of it `kubectl exec`, with etcd verified linearizable under both in kind ([measured](docs/BENCHMARKS.md#1-fault-injection-latency)).
+On Kubernetes, the `kubernetes-agent` transport sends each fault to strife-agent running as a DaemonSet, which applies it inside the target pod: 1.1–1.9 ms per network or cgroup fault and 2.8 ms per signal at P50 in kind, against 130–230 ms through `kubectl exec`; a 60 s etcd run through it with all seven kinds enabled stays linearizable ([measured](docs/BENCHMARKS.md#1-fault-injection-latency)). The agent stays inside its target containers: it refuses faults that name no pod or would reach the node, runs no scripts on the node, and restarts a killed database with the container's own user and capabilities. Without the DaemonSet, `freeze` and `io-stall` go through a privileged node helper that finds the pod's cgroup and data disk from its container ID (~90 ms per transition, nearly all of it `kubectl exec`).
 
 ### Server-Side Diagnostic Probes & Root-Cause Correlation
 
@@ -422,7 +423,7 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 
 | System | Faults | Verdict |
 | :--- | :--- | :--- |
-| etcd 3.5 (Docker, via `strife-agent`, and on Kubernetes in kind, host faults through the node helper) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable; transactions strictly serializable |
+| etcd 3.5 (Docker, via `strife-agent`, and on Kubernetes in kind, through `kubectl exec` with the node helper or through the strife-agent DaemonSet) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable; transactions strictly serializable |
 | PostgreSQL 17, SERIALIZABLE primary | kill -9, pause | strictly serializable, except one run: a **G2 cycle among three racing commits** ([kept and explained](testdata/anomalies/README.md)) |
 | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation holds; **write skew (G2)** caught at serializable |
 | PostgreSQL 17, async standbys | partition | **stale reads** caught; `shrink --live` shows no fault is needed |
