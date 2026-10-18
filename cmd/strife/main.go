@@ -736,7 +736,7 @@ func cmdShrinkHistory(path, modelName, isolation, outDir string, ci report.Outpu
 	if err != nil {
 		return exitUsage, err
 	}
-	m = withIsolation(m, isolation)
+	m = model.WithIsolation(m, isolation)
 
 	fmt.Fprintf(stdout, "\nshrinking history %q (%d ops, model %s)…\n", path, len(ops), modelName)
 
@@ -911,7 +911,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitUsage, err
 	}
-	m = withIsolation(m, *isolation)
+	m = model.WithIsolation(m, *isolation)
 	var r io.Reader = os.Stdin
 	if *path != "-" {
 		f, err := os.Open(*path)
@@ -1606,17 +1606,4 @@ func cmdWorkload(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	tw.Flush()
 	return exitOK, nil
-}
-
-// withIsolation applies --isolation to the transactional models.
-func withIsolation(m model.Model, level string) model.Model {
-	switch t := m.(type) {
-	case model.TxnModel:
-		t.Level = level
-		return t
-	case model.Append:
-		t.Level = level
-		return t
-	}
-	return m
 }

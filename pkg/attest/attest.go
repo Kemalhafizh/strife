@@ -144,8 +144,18 @@ func LoadPublicKey(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	block, _ := pem.Decode(data)
-	if block != nil {
+	pub, err := ParsePublicKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w (%s)", err, path)
+	}
+	return pub, nil
+}
+
+// ParsePublicKey reads an Ed25519 public key in the forms LoadPublicKey
+// accepts: PEM (PKIX, as written by SaveKeys) or the raw 32 bytes. It needs
+// no filesystem, so a browser build can verify bundles with it.
+func ParsePublicKey(data []byte) (ed25519.PublicKey, error) {
+	if block, _ := pem.Decode(data); block != nil {
 		k, err := x509.ParsePKIXPublicKey(block.Bytes)
 		if err != nil {
 			return nil, fmt.Errorf("attest: parse pkix public key: %w", err)
@@ -158,7 +168,7 @@ func LoadPublicKey(path string) (ed25519.PublicKey, error) {
 	if len(data) == ed25519.PublicKeySize {
 		return ed25519.PublicKey(data), nil
 	}
-	return nil, fmt.Errorf("attest: invalid public key format at %s", path)
+	return nil, fmt.Errorf("attest: invalid public key format")
 }
 
 // NewStatement creates an in-toto v0.1 Statement from a Strife Report.

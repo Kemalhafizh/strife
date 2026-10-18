@@ -34,9 +34,15 @@ only gain optional fields.
 - The live Kubernetes check through the DaemonSet runs seed 710, which
   draws all seven fault kinds, a kill among them, within 60 s.
 
+- `attest.ParsePublicKey` reads a public key from bytes (PEM or raw) and
+  `model.WithIsolation` sets a transactional model's level, so a browser
+  build can verify bundles and check histories without copies of either.
+
 ### Fixed
 - `campaign.html` and `dossier.html` no longer overflow narrow screens: their
   tables scroll inside their box (at 375 px they overflowed by ~300 px).
+- `pkg/agent`, and with it `pkg/compliance`, build for `js/wasm` and
+  `wasip1`; CI builds the libraries the website runs in the browser.
 
 ### Documentation
 - The order of `--faults` is part of a run's identity: the generator picks

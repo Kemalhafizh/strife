@@ -354,3 +354,15 @@ func TestTxnModelAndDiagnoser(t *testing.T) {
 		t.Fatal("empty diagnosis")
 	}
 }
+
+func TestWithIsolation(t *testing.T) {
+	if m := WithIsolation(TxnModel{}, "snapshot-isolation"); m.(TxnModel).Level != "snapshot-isolation" {
+		t.Fatalf("txn: %+v", m)
+	}
+	if m := WithIsolation(Append{}, "serializable"); m.(Append).Level != "serializable" {
+		t.Fatalf("append: %+v", m)
+	}
+	if m := WithIsolation(KV{}, "serializable"); m != (KV{}) {
+		t.Fatalf("a non-transactional model must come back unchanged: %+v", m)
+	}
+}

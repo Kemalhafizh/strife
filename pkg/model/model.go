@@ -1019,6 +1019,20 @@ func (IDGen) Diagnose(ops []history.Operation) ([]int, string, bool) {
 // ---------------------------------------------------------------------------
 // TxnModel: multi-key transactional consistency model with Elle-style cycle detection.
 
+// WithIsolation returns m checked at the given isolation level when it is a
+// transactional model (TxnModel, Append), and m unchanged otherwise.
+func WithIsolation(m Model, level string) Model {
+	switch t := m.(type) {
+	case TxnModel:
+		t.Level = level
+		return t
+	case Append:
+		t.Level = level
+		return t
+	}
+	return m
+}
+
 // TxnModel models multi-key transactions checking for isolation anomalies (G0, G1, G2).
 type TxnModel struct {
 	Level string // target isolation level, default "serializable"

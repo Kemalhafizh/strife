@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kemalhafizh/strife/pkg/checker"
@@ -64,6 +65,26 @@ func TestKeyPairGenerationAndPEM(t *testing.T) {
 	}
 	if !priv.Equal(loadedPriv) {
 		t.Errorf("loaded private key does not match original")
+	}
+
+	// The same key parses from bytes: PEM as written, and raw.
+	pemBytes, err := os.ReadFile(pubPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{"pem": pemBytes, "raw": []byte(pub)} {
+		if got, err := ParsePublicKey(data); err != nil || !pub.Equal(got) {
+			t.Errorf("ParsePublicKey(%s): %v", name, err)
+		}
+	}
+	if _, err := ParsePublicKey([]byte("not a key")); err == nil {
+		t.Error("ParsePublicKey accepted garbage")
+	}
+	if err := os.WriteFile(pubPath, []byte("not a key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPublicKey(pubPath); err == nil || !strings.Contains(err.Error(), pubPath) {
+		t.Errorf("LoadPublicKey error should name the file: %v", err)
 	}
 }
 
