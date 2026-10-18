@@ -73,7 +73,9 @@ code{font-family:var(--mono);font-size:12px;background:rgba(255,255,255,0.06);pa
 .box ul{margin:0;padding-left:18px;font-size:13px;color:var(--fg)}
 .box li{margin-bottom:6px}
 .notice{margin-top:20px;padding:14px 16px;border-radius:10px;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.3);font-size:13px}
-footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;font-family:var(--mono);display:flex;justify-content:space-between}
+footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;font-family:var(--mono);display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between;overflow-wrap:anywhere}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+@media (max-width:600px){body{padding:20px 16px}}
 @media print{
   :root{--bg:#ffffff;--panel:#ffffff;--panel2:#f3f4f6;--border:#d1d5db;--fg:#111827;--muted:#4b5563}
   body{padding:0}
@@ -159,6 +161,7 @@ footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--border);color
 	}
 	b.WriteString(`
 </div>
+<div class="table-wrap">
 <table id="ctrl-table">
   <thead>
     <tr>
@@ -187,6 +190,7 @@ footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--border);color
 	}
 	b.WriteString(`</tbody>
 </table>
+</div>
 
 <h2>Methodology, Scope &amp; Limitations</h2>
 <div class="cols">

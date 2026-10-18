@@ -157,6 +157,10 @@ func TestCampaignRunAndRegressionFlow(t *testing.T) {
 	if !strings.Contains(htmlStr, "REGRESSED") {
 		t.Errorf("expected campaign.html to contain REGRESSED badge")
 	}
+	// On a phone the seed table scrolls in its box, not the page.
+	if !strings.Contains(htmlStr, "<div class=\"table-wrap\">\n<table id=\"seed-table\">") {
+		t.Errorf("the seed table is not in a scrolling wrapper")
+	}
 	const startTag = `<script id="campaign-data" type="application/json">`
 	const endTag = `</script>`
 	sIdx := strings.Index(htmlStr, startTag)

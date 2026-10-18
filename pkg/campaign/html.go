@@ -269,6 +269,12 @@ var campaignTmpl = template.Must(template.New("campaign").Parse(`<!doctype html>
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
+  /* Wide tables scroll inside their box, not the whole page. */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  @media (max-width: 600px) {
+    body { padding: 16px; }
+    .search-input { width: 100%; min-width: 0; }
+  }
 </style>
 </head>
 <body>
@@ -324,6 +330,7 @@ var campaignTmpl = template.Must(template.New("campaign").Parse(`<!doctype html>
   <input type="search" id="seed-search" class="search-input" placeholder="Filter by seed, hash, or counterexample...">
 </div>
 
+<div class="table-wrap">
 <table id="seed-table">
   <thead>
     <tr>
@@ -354,6 +361,7 @@ var campaignTmpl = template.Must(template.New("campaign").Parse(`<!doctype html>
     {{end}}
   </tbody>
 </table>
+</div>
 
 <script id="campaign-data" type="application/json">{{.CampaignJSON}}</script>
 <script>

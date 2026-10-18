@@ -103,6 +103,10 @@ func TestEvaluateFullPassAndArtifacts(t *testing.T) {
 	if !strings.Contains(string(htmlBytes), "Regulatory Compliance &amp; Resilience Dossier") {
 		t.Errorf("dossier.html missing header")
 	}
+	// On a phone the control table scrolls in its box, not the page.
+	if !strings.Contains(string(htmlBytes), "<div class=\"table-wrap\">\n<table id=\"ctrl-table\">") {
+		t.Errorf("the control table is not in a scrolling wrapper")
+	}
 }
 
 func TestEvaluatePartialAndViolation(t *testing.T) {
