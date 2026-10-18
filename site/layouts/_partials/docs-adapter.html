@@ -16,6 +16,7 @@ becomes a page; the files under docs/ and each example's README become one page 
   "Custom Workloads & Wasm VM" (dict "slug" "workloads" "group" "guides" "weight" 60 "en" "Deterministic custom workloads compiled to WebAssembly." "id" "Beban kerja kustom yang deterministik, dikompilasi ke WebAssembly.")
   "Regression Campaigns" (dict "slug" "campaigns" "group" "guides" "weight" 70 "en" "Sweep many seeds and gate releases on regressions." "id" "Uji banyak seed sekaligus dan jadikan penjaga rilis.")
   "Cryptographic Attestation & Compliance Dossiers" (dict "slug" "attestation" "group" "guides" "weight" 80 "en" "Sign results with Ed25519 and produce compliance dossiers." "id" "Tanda tangani hasil dengan Ed25519 dan buat dossier kepatuhan.")
+  "Run Registry (`strife server`)" (dict "slug" "run-registry" "group" "guides" "weight" 85 "en" "Keep every CI run in your own network: verified on arrival, compared for regressions, ready for auditors." "id" "Simpan setiap run CI di jaringan sendiri: diverifikasi saat diterima, dibandingkan untuk regresi, siap untuk auditor.")
   "CI Integration" (dict "slug" "ci" "group" "guides" "weight" 90 "en" "Run Strife in any CI system." "id" "Jalankan Strife di sistem CI apa pun.")
   "Empirical Validation" (dict "slug" "validation" "group" "reference" "weight" 110 "en" "How the checkers and fault injectors are validated." "id" "Cara checker dan injektor gangguan divalidasi.")
   "Architecture" (dict "slug" "architecture" "group" "reference" "weight" 120 "en" "Packages, data flow and the CLI reference." "id" "Paket, alur data, dan referensi CLI.")
@@ -45,9 +46,19 @@ becomes a page; the files under docs/ and each example's README become one page 
          first horizontal rule. */}}
   {{- $introText := delimit $intro "\n" | replaceRE `(?s)^.*?\n---\n` "" | replaceRE `(?s)\n---\s*$` "" }}
 
+  {{- /* Chapters left out on purpose. Any other chapter without an entry
+         above is still published, right after the chapter before it, so a
+         new README chapter never silently drops out of the site. */}}
+  {{- $skip := slice "License" }}
+  {{- $prev := dict "group" "guides" "weight" 0 }}
   {{- range $parts }}
     {{- $meta := index $chapters .title }}
+    {{- if and (not $meta) (not (in $skip .title)) }}
+      {{- $meta = dict "slug" (anchorize .title) "group" $prev.group "weight" (add $prev.weight 1) }}
+      {{- warnf "docs: README chapter %q has no entry in docs-adapter.html, published at docs/%s with defaults" .title $meta.slug }}
+    {{- end }}
     {{- if $meta }}
+      {{- $prev = $meta }}
       {{- $text := delimit .body "\n" | replaceRE `(?s)\n---\s*$` "" }}
       {{- if eq $meta.slug "overview" }}{{ $text = printf "%s\n\n## Design Constraints\n\n%s" $introText $text }}{{ end }}
       {{- /* Anchors this chapter answers to, so README-internal links resolve. */}}
@@ -62,7 +73,7 @@ becomes a page; the files under docs/ and each example's README become one page 
         "path" $meta.slug
         "title" (cond (eq $meta.slug "overview") "Overview" .title)
         "content" (dict "mediaType" "text/markdown" "value" $text)
-        "params" (dict "group" $meta.group "order" $meta.weight "blurb" (index $meta $L) "source" "README.md" "anchors" $anchors "headingShift" $shift "docsLang" "en")
+        "params" (dict "group" $meta.group "order" $meta.weight "blurb" (index $meta $L | default "") "source" "README.md" "anchors" $anchors "headingShift" $shift "docsLang" "en")
       ) }}
     {{- end }}
   {{- end }}
@@ -71,6 +82,7 @@ becomes a page; the files under docs/ and each example's README become one page 
 {{- $files := slice
   (dict "file" "repo/docs/BENCHMARKS.md" "slug" "benchmarks" "source" "docs/BENCHMARKS.md" "group" "reference" "weight" 100 "en" "Every published number, with the command, machine and date behind it." "id" "Setiap angka yang dipublikasikan, beserta perintah, mesin, dan tanggalnya.")
   (dict "file" "repo/docs/github-action.md" "slug" "github-action" "source" "docs/github-action.md" "group" "guides" "weight" 95 "en" "Inputs, outputs and recipes for the GitHub Action." "id" "Input, output, dan resep untuk GitHub Action.")
+  (dict "file" "repo/docs/server.md" "slug" "server" "source" "docs/server.md" "group" "reference" "weight" 105 "en" "Configuration, API and limits of the self-hosted run registry." "id" "Konfigurasi, API, dan batasan registri run yang di-host sendiri.")
 }}
 {{- range resources.Match "repo/examples/*/README.md" }}
   {{- $name := path.Base (path.Dir .Name) }}

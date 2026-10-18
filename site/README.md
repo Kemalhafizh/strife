@@ -49,8 +49,11 @@ The site never copies the engine's text or numbers; it reads them at build
 time, so a change in the engine shows up here (or fails the build):
 
 - `README.md` chapters, `docs/BENCHMARKS.md`, `docs/github-action.md`,
-  `examples/*/README.md` and `CHANGELOG.md` become pages. `docs/ROADMAP.md`
-  stays internal.
+  `docs/server.md`, `examples/*/README.md` and `CHANGELOG.md` become pages.
+  `docs/ROADMAP.md` stays internal. A README chapter without an entry in
+  `layouts/_partials/docs-adapter.html` is still published, after the chapter
+  before it, with a build warning; add an entry to give it its slug, group
+  and summary.
 - `pkg/explore`, `pkg/checker`, `pkg/report` and `pkg/attest` are compiled
   to WebAssembly through `wasm/bridge`, which adds no logic of its own.
 - Release archives are expected as `strife_<tag>_<os>_<arch>.tar.gz|.zip`

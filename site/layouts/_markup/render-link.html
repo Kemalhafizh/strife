@@ -29,11 +29,12 @@ site, and anything else (source files, scripts) to GitHub.
     {{- $url = cond (ne $target "") (printf "%s#%s" $target $frag) $dest }}
   {{- else if ne $path "" }}
     {{- $file := path.Clean (path.Join (path.Dir $src) $path) | strings.TrimSuffix "/" }}
-    {{- $pages := dict
-      "docs/BENCHMARKS.md" "/docs/benchmarks"
-      "docs/github-action.md" "/docs/github-action"
-      "CHANGELOG.md" (cond (eq site.Language.Lang "id") "/rilis" "/changelog") }}
-    {{- with index $pages $file }}{{ with site.GetPage . }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
+    {{- if eq $file "CHANGELOG.md" }}
+      {{- with site.GetPage (cond (eq site.Language.Lang "id") "/rilis" "/changelog") }}{{ $target = .RelPermalink }}{{ end }}
+    {{- else if ne $file "README.md" }}
+      {{- /* A file the docs section publishes (docs-adapter.html), by its source. */}}
+      {{- range $docs }}{{ if and (not $target) (eq .Params.source $file) }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
+    {{- end }}
     {{- with findRESubmatch `^examples/([^/]+)(/README\.md)?$` $file 1 }}
       {{- with site.GetPage (printf "/docs/examples/%s" (index (index . 0) 1)) }}{{ $target = .RelPermalink }}{{ end }}
     {{- end }}

@@ -69,7 +69,7 @@ target = "assets/repo/CHANGELOG.md"
 [[module.mounts]]
 source = "../docs"
 target = "assets/repo/docs"
-includeFiles = ["BENCHMARKS.md", "github-action.md"]
+includeFiles = ["BENCHMARKS.md", "github-action.md", "server.md"]
 
 [[module.mounts]]
 source = "../examples"
