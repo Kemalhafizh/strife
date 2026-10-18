@@ -83,8 +83,8 @@ description = "Deterministic fault injection, linearizability checking and signe
 # Contact channels. Leave a field empty to hide it. The contact form needs at
 # least one of email, whatsapp or formEndpoint.
 [params.contact]
-email = ""        # e.g. halo@example.co.id
-whatsapp = ""     # international format, digits only, e.g. 6281234567890
+email = "muhammadkemalhafizh@gmail.com"
+whatsapp = "6287788075547" # international format, digits only
 calendar = ""     # a booking page (Cal.com, Google Calendar appointments, ...)
 formEndpoint = "" # optional Formspree-compatible endpoint; email is used otherwise
 security = ""     # address for vulnerability reports; email is used otherwise
