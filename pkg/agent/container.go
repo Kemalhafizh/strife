@@ -133,8 +133,11 @@ func (x *containerIndex) nsInit(pid int) bool {
 
 // cgroupDir finds the container's cgroup v2 directory under the cgroup root:
 // the path /proc/<pid>/cgroup names when the agent shares the node's cgroup
-// namespace, else the directory named after the container (a Kubernetes
-// pod has a cgroup namespace of its own, so the path it reads is relative).
+// namespace, else a directory named after the container (a Kubernetes pod
+// has a cgroup namespace of its own, so the path it reads is relative).
+// Several directories can carry the ID: CRI-O puts the container's monitor
+// in crio-conmon-<id>.scope next to the container's crio-<id>.scope. The
+// one holding the container's init wins, then any but a monitor's.
 func (x *containerIndex) cgroupDir(pid int, id string) string {
 	if x.cgroupRoot == "" {
 		return ""
@@ -150,7 +153,8 @@ func (x *containerIndex) cgroupDir(pid int, id string) string {
 			}
 		}
 	}
-	found := ""
+	var named []string
+	holder := ""
 	_ = filepath.WalkDir(x.cgroupRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.IsDir() {
 			return nil
@@ -158,13 +162,43 @@ func (x *containerIndex) cgroupDir(pid int, id string) string {
 		if strings.Count(strings.TrimPrefix(path, x.cgroupRoot), "/") > 10 {
 			return fs.SkipDir
 		}
-		if strings.Contains(d.Name(), id) {
-			found = path
+		if !strings.Contains(d.Name(), id) {
+			return nil
+		}
+		if holds(path, pid) {
+			holder = path
 			return fs.SkipAll
 		}
+		named = append(named, path)
 		return nil
 	})
-	return found
+	if holder != "" {
+		return holder
+	}
+	for _, p := range named {
+		if !strings.Contains(filepath.Base(p), "conmon") {
+			return p
+		}
+	}
+	if len(named) > 0 {
+		return named[0]
+	}
+	return ""
+}
+
+// holds reports whether the cgroup at dir lists pid among its processes.
+func holds(dir string, pid int) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "cgroup.procs"))
+	if err != nil {
+		return false
+	}
+	want := strconv.Itoa(pid)
+	for _, f := range strings.Fields(string(data)) {
+		if f == want {
+			return true
+		}
+	}
+	return false
 }
 
 func isDir(p string) bool {
@@ -216,13 +250,4 @@ func nsOf(proc, pid, ns string) string {
 func sameNamespace(proc string, pid int, ns string) bool {
 	own := nsOf(proc, "self", ns)
 	return own != "" && own == nsOf(proc, strconv.Itoa(pid), ns)
-}
-
-// onNodeNetwork reports whether pid uses the node's network namespace (a
-// hostNetwork pod: the one of the node's init, which a DaemonSet agent
-// sees) or the agent's own. A network fault "in its container" would hit
-// the node.
-func onNodeNetwork(proc string, pid int) bool {
-	ns := nsOf(proc, strconv.Itoa(pid), "net")
-	return ns != "" && (ns == nsOf(proc, "self", "net") || ns == nsOf(proc, "1", "net"))
 }

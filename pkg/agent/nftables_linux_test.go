@@ -4,6 +4,7 @@ package agent
 
 import (
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
 	"slices"
@@ -23,11 +24,26 @@ func inFreshNetns(t *testing.T, fn func() string) {
 	t.Helper()
 	skip := make(chan string, 1)
 	go func() {
-		runtime.LockOSThread() // never unlocked: the thread dies with the goroutine
+		runtime.LockOSThread()
+		// Back to the original namespace before the thread is released:
+		// a thread left in the fresh one could start other tests'
+		// processes there.
+		own, err := os.Open("/proc/thread-self/ns/net")
+		if err != nil {
+			skip <- "cannot open the thread's network namespace: " + err.Error()
+			return // the thread stays locked and dies with the goroutine
+		}
+		defer own.Close()
 		if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
+			runtime.UnlockOSThread()
 			skip <- "cannot create a network namespace: " + err.Error()
 			return
 		}
+		defer func() {
+			if setns(own.Fd()) == nil {
+				runtime.UnlockOSThread()
+			}
+		}()
 		if err := loopbackUp(); err != nil {
 			skip <- "cannot bring up lo: " + err.Error()
 			return

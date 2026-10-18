@@ -59,18 +59,30 @@ type Server struct {
 	probes  *probe.Collector
 
 	containers *containerIndex
+	ownNetns   string // the agent's network namespace, read at start
 	nsMu       sync.Mutex
-	nsFilters  map[string]*nsFilter // per target container
+	nsFilters  map[string]*nsFilter // by network namespace of the targets
 
 	mu           sync.Mutex
-	activeFaults map[string]ApplyRequest // by faultKey
+	activeFaults map[string]activeFault // by faultKey
 }
 
-// nsFilter is the packet filter inside one target container's network
-// namespace, bound to the init process it was entered through.
+// nsFilter is the packet filter inside a network namespace that target
+// containers live in, shared by the containers of one pod. It holds the
+// namespace open: a container that restarts inside its pod gets a new ID
+// and init, but its rules stay in the pod's namespace and must be healed
+// there.
 type nsFilter struct {
-	pid    int
+	ns     *os.File
 	engine *FilterEngine
+}
+
+// activeFault is a fault in effect, resolved: its interface, cgroup and
+// device, and the network namespace it was applied in ("" for the agent's
+// own).
+type activeFault struct {
+	req   ApplyRequest
+	netns string
 }
 
 // NewServer initializes a new strife-agent server.
@@ -91,9 +103,10 @@ func NewServer(cfg ServerConfig) *Server {
 			Epoch: now,
 		}),
 		containers: newContainerIndex("/proc", cfg.CgroupRoot),
+		ownNetns:   nsOf("/proc", "thread-self", "net"),
 		nsFilters:  map[string]*nsFilter{},
 
-		activeFaults: make(map[string]ApplyRequest),
+		activeFaults: make(map[string]activeFault),
 	}
 	if cfg.CgroupRoot == "" {
 		s.containers.cgroupRoot = defaultCgroupRoot()
@@ -158,12 +171,6 @@ func (s *Server) Serve(l net.Listener) error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.Teardown()
 	_ = s.filter.Close() // remove the agent's nftables tables / iptables rules
-	s.nsMu.Lock()
-	for id, f := range s.nsFilters {
-		_ = f.engine.Close() // fails harmlessly once the container is gone
-		delete(s.nsFilters, id)
-	}
-	s.nsMu.Unlock()
 	return s.httpSrv.Shutdown(ctx)
 }
 
@@ -172,14 +179,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 type scope struct {
 	c      *container // nil: the agent's own
 	filter *FilterEngine
+	ns     *os.File // the container's network namespace
+	netns  string   // its name, "net:[inode]"
 }
 
 // run runs fn in the scope's network namespace.
 func (sc scope) run(fn func() error) error {
-	if sc.c == nil {
+	if sc.ns == nil {
 		return fn()
 	}
-	return inNetns(sc.c.pid, fn)
+	return inNetns(sc.ns, fn)
 }
 
 // owns reports whether pid belongs to the scope (nil: every process).
@@ -187,7 +196,11 @@ func (sc scope) owns() func(pid int) bool {
 	if sc.c == nil {
 		return nil
 	}
-	return func(pid int) bool { return sc.c != nil && containerHas(pid, sc.c.id) }
+	return ownedBy(sc.c)
+}
+
+func ownedBy(c *container) func(pid int) bool {
+	return func(pid int) bool { return containerHas(pid, c.id) }
 }
 
 func containerHas(pid int, id string) bool {
@@ -204,20 +217,32 @@ func (s *Server) scopeFor(req ApplyRequest) (scope, error) {
 	if err != nil {
 		return scope{}, err
 	}
+	ns, key, err := openNetns(c.pid)
+	if err != nil {
+		return scope{}, err
+	}
 	s.nsMu.Lock()
 	defer s.nsMu.Unlock()
-	f, ok := s.nsFilters[c.id]
-	if !ok || f.pid != c.pid {
+	f, ok := s.nsFilters[key]
+	if ok {
+		ns.Close()
+	} else {
 		e := NewFilterEngine()
 		if s.cfg.filters != nil {
 			e.backends = s.cfg.filters
 		}
-		pid := c.pid
-		e.run = func(fn func() error) error { return inNetns(pid, fn) }
-		f = &nsFilter{pid: pid, engine: e}
-		s.nsFilters[c.id] = f
+		e.run = func(fn func() error) error { return inNetns(ns, fn) }
+		f = &nsFilter{ns: ns, engine: e}
+		s.nsFilters[key] = f
 	}
-	return scope{c: c, filter: f.engine}, nil
+	return scope{c: c, filter: f.engine, ns: f.ns, netns: key}, nil
+}
+
+// onNodeNetwork reports whether netns is the node's network namespace (that
+// of the node's init, which a DaemonSet agent sees) or the agent's own: a
+// network fault "in a container" there would hit the node.
+func (s *Server) onNodeNetwork(netns string) bool {
+	return netns != "" && (netns == s.ownNetns || netns == nsOf("/proc", "1", "net"))
 }
 
 // faultKey identifies an active fault: one fault spans several containers
@@ -337,7 +362,7 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 	if sc.c != nil && req.Kind == nemesis.ClockSkew {
 		return ApplyResponse{Success: false, Error: "agent: containers share their node's clock; clock-skew would skew the whole node", KernelAtNs: time.Now().UnixNano()}
 	}
-	if sc.c != nil && (req.Kind == nemesis.Partition || req.Kind == nemesis.Latency || req.Kind == nemesis.Loss) && onNodeNetwork("/proc", sc.c.pid) {
+	if sc.c != nil && (req.Kind == nemesis.Partition || req.Kind == nemesis.Latency || req.Kind == nemesis.Loss) && s.onNodeNetwork(sc.netns) {
 		return ApplyResponse{Success: false, Error: fmt.Sprintf("agent: container %.12s uses its node's network (hostNetwork); a %s fault there would hit the whole node", sc.c.id, req.Kind), KernelAtNs: time.Now().UnixNano()}
 	}
 
@@ -414,7 +439,7 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 			stored := req
 			stored.Iface, stored.Cgroup, stored.IODevice = iface, cgroup, ioDev
 			s.mu.Lock()
-			s.activeFaults[faultKey(req)] = stored
+			s.activeFaults[faultKey(req)] = activeFault{req: stored, netns: sc.netns}
 			s.mu.Unlock()
 		}
 
@@ -524,21 +549,26 @@ func (s *Server) Teardown() {
 		_ = s.filter.Flush()
 		_ = s.netlink.DelNetem(s.cfg.Interface)
 	}
+	// Faults stored resolved: cgroup paths and the device, the interface,
+	// the network namespace. Network faults are healed in the namespace
+	// they were applied in, which outlives a container restarting in its
+	// pod; then the agent removes its tables there and lets go of it.
 	s.nsMu.Lock()
-	for _, f := range s.nsFilters {
-		_ = f.engine.Flush()
+	for _, a := range s.activeFaults {
+		if a.req.Kind == nemesis.Latency || a.req.Kind == nemesis.Loss {
+			if f := s.nsFilters[a.netns]; f != nil {
+				_ = inNetns(f.ns, func() error { return s.netlink.DelNetem(a.req.Iface) })
+			}
+		}
+	}
+	for key, f := range s.nsFilters {
+		_ = f.engine.Close()
+		_ = f.ns.Close()
+		delete(s.nsFilters, key)
 	}
 	s.nsMu.Unlock()
-	for _, req := range s.activeFaults {
-		// Faults stored resolved: cgroup paths and the device, the
-		// interface. A container that is gone has nothing left to heal.
-		sc, err := s.scopeFor(req)
-		if err != nil {
-			continue
-		}
-		if (req.Kind == nemesis.Latency || req.Kind == nemesis.Loss) && sc.c != nil {
-			_ = sc.run(func() error { return s.netlink.DelNetem(req.Iface) })
-		}
+	for _, a := range s.activeFaults {
+		req := a.req
 		if req.Kind == nemesis.Freeze && req.Cgroup != "" {
 			_ = s.cgroup.Unfreeze(req.Cgroup)
 		}
@@ -546,10 +576,19 @@ func (s *Server) Teardown() {
 			_ = s.cgroup.HealIOStall(req.Cgroup, req.IODevice)
 		}
 		if req.Kind == nemesis.Pause && req.Process != "" {
-			_, _ = s.process.ResumeIn(req.Process, sc.owns())
+			// A container that is gone has no stopped process left.
+			var owns func(int) bool
+			if req.Target != nil {
+				c, err := s.containers.resolve(req.Target.ContainerID)
+				if err != nil {
+					continue
+				}
+				owns = ownedBy(c)
+			}
+			_, _ = s.process.ResumeIn(req.Process, owns)
 		}
 	}
-	s.activeFaults = make(map[string]ApplyRequest)
+	s.activeFaults = make(map[string]activeFault)
 }
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {

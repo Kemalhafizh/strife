@@ -57,6 +57,34 @@ func fakeNode(t *testing.T, id, cgroupLine string) (proc, cgroot string) {
 	return proc, cgroot
 }
 
+// On CRI-O the container's monitor has a cgroup named after the container
+// too, and it sorts first for IDs that start past "c". From a pod's own
+// cgroup namespace the agent must still find the container's.
+func TestCgroupDirSkipsCRIOMonitor(t *testing.T) {
+	id := strings.Repeat("f0", 32)
+	pod := filepath.Join("kubepods.slice", "kubepods-besteffort.slice", "kubepods-besteffort-pod1.slice")
+	want := filepath.Join(pod, "crio-"+id+".scope")
+	for _, procs := range []bool{true, false} {
+		proc, cgroot := fakeNode(t, id, "0::/../../../"+want+"\n")
+		for _, dir := range []string{"crio-conmon-" + id + ".scope", "crio-" + id + ".scope"} {
+			if err := os.MkdirAll(filepath.Join(cgroot, pod, dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if procs { // the container's init is listed in its cgroup
+			_ = os.WriteFile(filepath.Join(cgroot, pod, "crio-conmon-"+id+".scope", "cgroup.procs"), []byte("39\n"), 0o644)
+			_ = os.WriteFile(filepath.Join(cgroot, want, "cgroup.procs"), []byte("40\n41\n"), 0o644)
+		}
+		c, err := newContainerIndex(proc, cgroot).resolve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.cgroup != filepath.Join(cgroot, want) {
+			t.Fatalf("procs listed %v: got %s, want the container's %s", procs, c.cgroup, want)
+		}
+	}
+}
+
 func TestContainerIndexResolves(t *testing.T) {
 	id := strings.Repeat("be", 32)
 	want := "kubepods.slice/kubepods-pod1.slice/cri-containerd-" + id + ".scope"

@@ -21,10 +21,12 @@ import (
 )
 
 // nsRecorder is a packet filter that records which network namespace each
-// of its calls ran in.
+// of its calls ran in, and what each sync dropped.
 type nsRecorder struct {
-	mu     sync.Mutex
-	syncNS []uint64
+	mu         sync.Mutex
+	syncNS     []uint64
+	syncIPs    [][]net.IP
+	teardownNS []uint64
 }
 
 func netnsInode(path string) uint64 {
@@ -38,11 +40,38 @@ func netnsInode(path string) uint64 {
 func (r *nsRecorder) Name() string    { return "recorder" }
 func (r *nsRecorder) Available() bool { return true }
 func (r *nsRecorder) Compact() error  { return nil }
-func (r *nsRecorder) Teardown() error { return nil }
-func (r *nsRecorder) Sync([]net.IP) error {
+func (r *nsRecorder) Teardown() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.teardownNS = append(r.teardownNS, netnsInode("/proc/thread-self/ns/net"))
+	return nil
+}
+func (r *nsRecorder) Sync(ips []net.IP) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.syncNS = append(r.syncNS, netnsInode("/proc/thread-self/ns/net"))
+	r.syncIPs = append(r.syncIPs, ips)
+	return nil
+}
+
+// nsNetlink stands in for netem and records the network namespace of each
+// change.
+type nsNetlink struct {
+	mu       sync.Mutex
+	set, del []uint64
+}
+
+func (n *nsNetlink) Available() bool { return true }
+func (n *nsNetlink) SetNetem(string, time.Duration, time.Duration, float64) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.set = append(n.set, netnsInode("/proc/thread-self/ns/net"))
+	return nil
+}
+func (n *nsNetlink) DelNetem(string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.del = append(n.del, netnsInode("/proc/thread-self/ns/net"))
 	return nil
 }
 
@@ -216,7 +245,7 @@ func TestTargetedContainer(t *testing.T) {
 
 	// A container sharing the node's network (hostNetwork) gets no network
 	// faults: they would land on the node.
-	hostNet := startInCgroup(t, root, "strife-test-"+strings.Repeat("c", 64), syscall.CLONE_NEWPID, marker)
+	hostNet, _ := startInCgroup(t, root, "strife-test-"+strings.Repeat("c", 64), syscall.CLONE_NEWPID, "sleep", marker)
 	for _, kind := range []nemesis.Kind{nemesis.Partition, nemesis.Latency, nemesis.Loss} {
 		req := ApplyRequest{Action: ActionInject, FaultID: 7, Kind: kind, TargetIPs: []string{"10.0.0.9"}, Delay: time.Millisecond, Target: &Target{ContainerID: hostNet}}
 		if resp := srv.executeApply(req); resp.Success || !strings.Contains(resp.Error, "uses its node's network") {
@@ -231,10 +260,10 @@ func TestTargetedContainer(t *testing.T) {
 	}
 }
 
-// startInCgroup starts sleep in a new cgroup named name under root, in new
+// startInCgroup starts argv in a new cgroup named name under root, in new
 // namespaces per cloneflags, and returns the container ID the name ends in.
 // Both are removed when the test ends.
-func startInCgroup(t *testing.T, root, name string, cloneflags uintptr, marker string) string {
+func startInCgroup(t *testing.T, root, name string, cloneflags uintptr, argv ...string) (string, *exec.Cmd) {
 	t.Helper()
 	cg := filepath.Join(root, name)
 	if err := os.Mkdir(cg, 0o755); err != nil {
@@ -245,7 +274,7 @@ func startInCgroup(t *testing.T, root, name string, cloneflags uintptr, marker s
 		t.Fatal(err)
 	}
 	defer dir.Close()
-	cmd := exec.Command("sleep", marker)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: cloneflags, UseCgroupFD: true, CgroupFD: int(dir.Fd())}
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(cg)
@@ -258,7 +287,84 @@ func startInCgroup(t *testing.T, root, name string, cloneflags uintptr, marker s
 			time.Sleep(20 * time.Millisecond)
 		}
 	})
-	return name[strings.LastIndexByte(name, '-')+1:]
+	return name[strings.LastIndexByte(name, '-')+1:], cmd
+}
+
+// A pod's network namespace belongs to its sandbox, not to its containers:
+// when a container restarts, it comes back with a new ID and init in the
+// same namespace. Faults applied through the old container must be healed
+// there, through the new one or by a teardown after the old one is gone.
+func TestPodNetnsOutlivesContainer(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: creates cgroups and namespaces")
+	}
+	root := defaultCgroupRoot()
+	if root == "" {
+		t.Skip("no cgroup v2 hierarchy")
+	}
+	if _, err := exec.LookPath("nsenter"); err != nil {
+		t.Skip("needs nsenter")
+	}
+	raw := make([]byte, 64)
+	_, _ = rand.Read(raw)
+	marker := strconv.Itoa(1_000_000 + int(raw[0])<<8 | int(raw[1]))
+	pause := exec.Command("sleep", marker) // the sandbox: holds the pod's network namespace
+	pause.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
+	if err := pause.Start(); err != nil {
+		t.Skipf("cannot create a network namespace: %v", err)
+	}
+	defer func() { _ = pause.Process.Kill(); _ = pause.Wait() }()
+	podNet := "/proc/" + strconv.Itoa(pause.Process.Pid) + "/ns/net"
+	want := netnsInode(podNet)
+	inPod := func(id string) (string, *exec.Cmd) {
+		id, cmd := startInCgroup(t, root, "strife-test-"+id, syscall.CLONE_NEWPID, "nsenter", "--net="+podNet, "--", "sleep", marker)
+		for i := 0; netnsInode("/proc/"+strconv.Itoa(cmd.Process.Pid)+"/ns/net") != want; i++ {
+			if i == 200 {
+				t.Fatal("the container never joined the pod's network namespace")
+			}
+			time.Sleep(10 * time.Millisecond) // nsenter has not switched yet
+		}
+		return id, cmd
+	}
+
+	rec, nl := &nsRecorder{}, &nsNetlink{}
+	srv := NewServer(ServerConfig{NodeName: "test", RequireTarget: true, filters: []filterBackend{rec}})
+	srv.netlink = nl
+	apply := func(id string, req ApplyRequest) {
+		t.Helper()
+		req.Target = &Target{ContainerID: id}
+		if resp := srv.executeApply(req); !resp.Success {
+			t.Fatalf("%s %s on %.12s: %s", req.Action, req.Kind, id, resp.Error)
+		}
+	}
+	idA, a := inPod(hex.EncodeToString(raw[:32]))
+	apply(idA, ApplyRequest{Action: ActionInject, FaultID: 1, Kind: nemesis.Partition, TargetIPs: []string{"10.0.0.9"}})
+	apply(idA, ApplyRequest{Action: ActionInject, FaultID: 2, Kind: nemesis.Latency, Delay: time.Millisecond})
+	if len(rec.syncNS) != 1 || rec.syncNS[0] != want || len(nl.set) != 1 || nl.set[0] != want {
+		t.Fatalf("faults not applied in the pod's namespace %d: filter %v, netem %v", want, rec.syncNS, nl.set)
+	}
+
+	// The container restarts: its init is gone, a new container runs in
+	// the same pod. The heal arrives for the new container, as the
+	// transport sends it once the old ID is unknown.
+	_ = a.Process.Kill()
+	_ = a.Wait()
+	idB, _ := inPod(hex.EncodeToString(raw[32:]))
+	apply(idB, ApplyRequest{Action: ActionHeal, FaultID: 1, Kind: nemesis.Partition})
+	if last := len(rec.syncNS) - 1; last < 1 || rec.syncNS[last] != want || len(rec.syncIPs[last]) != 0 {
+		t.Fatalf("partition not healed in the pod's namespace %d: synced %v with %v", want, rec.syncNS, rec.syncIPs)
+	}
+
+	// The latency fault, applied through the old container, is still on:
+	// teardown heals it in the pod's namespace and removes the filter
+	// there.
+	srv.Teardown()
+	if len(nl.del) != 1 || nl.del[0] != want {
+		t.Fatalf("netem not removed from the pod's namespace %d: %v", want, nl.del)
+	}
+	if len(rec.teardownNS) != 1 || rec.teardownNS[0] != want {
+		t.Fatalf("filter not torn down in the pod's namespace %d: %v", want, rec.teardownNS)
+	}
 }
 
 // The helper narrows a root process to the container's bounding set and

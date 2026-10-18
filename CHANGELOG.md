@@ -44,6 +44,17 @@ only gain optional fields.
   tables scroll inside their box (at 375 px they overflowed by ~300 px).
 - `pkg/agent`, and with it `pkg/compliance`, build for `js/wasm` and
   `wasip1`; CI builds the libraries the website runs in the browser.
+- strife-agent keeps a target's packet filter per network namespace and
+  holds that namespace open. A container restarting inside its pod comes
+  back with a new ID and init in the same namespace; its partition and
+  netem used to stay in place after the heal and the teardown. Containers
+  of one pod also no longer overwrite each other's rules.
+- On CRI-O, `"cgroup": "auto"` could resolve to the container's monitor
+  (`crio-conmon-<id>.scope`) instead of the container, so freeze and
+  io-stall missed the database. The cgroup that holds the container's init
+  is preferred.
+- strife-agent compares targets with its own network namespace as read at
+  start, not with its main thread's at the time of the request.
 
 ### Documentation
 - The order of `--faults` is part of a run's identity: the generator picks
