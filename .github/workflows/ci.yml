@@ -103,6 +103,9 @@ jobs:
   # Dogfood the GitHub Action exactly as users consume it.
   action:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the registry check pushes with the job's OIDC identity
     steps:
       - uses: actions/checkout@v4
       - name: correct Raft passes through the action
@@ -145,13 +148,24 @@ jobs:
       - name: start a run registry (strife server)
         env:
           STRIFE_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-registry
+          REPO_ID: ${{ github.repository_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           go build -o bin/strife ./cmd/strife
           mkdir -p registry
-          # The project accepts only runs signed by this job's own key.
+          # "ci" accepts only runs signed by this job's own key. "ci-oidc"
+          # holds no write token: only this run of this repository may push,
+          # proven by the OIDC token GitHub gives the job.
           bin/strife keygen --out registry/ci
           { echo "STRIFE_SIGNING_KEY<<PEM"; cat registry/ci.key; echo PEM; } >> "$GITHUB_ENV"
-          echo '{"listen":"127.0.0.1:8088","data":"registry/data","projects":[{"name":"ci","token":"env:STRIFE_TOKEN","trusted_keys":["ci.pub"],"require_signature":true}]}' > registry/server.json
+          python3 - > registry/server.json <<'PY'
+          import json, os
+          print(json.dumps({"listen": "127.0.0.1:8088", "data": "registry/data", "projects": [
+            {"name": "ci", "token": "env:STRIFE_TOKEN", "trusted_keys": ["ci.pub"], "require_signature": True},
+            {"name": "ci-oidc", "read_token": "env:STRIFE_TOKEN", "oidc": [{
+              "issuer": "https://token.actions.githubusercontent.com", "audience": "strife-ci",
+              "claims": {"repository_id": os.environ["REPO_ID"], "run_id": os.environ["RUN_ID"]}}]}]}))
+          PY
           nohup bin/strife server --config registry/server.json > registry/server.log 2>&1 &
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8088/healthz && exit 0; sleep 0.5; done
           cat registry/server.log; exit 1
@@ -178,3 +192,30 @@ jobs:
           curl -fsS -H "Authorization: Bearer $STRIFE_TOKEN" "http://127.0.0.1:8088/api/v1/projects/ci/runs/$id/dossier" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["summary"]["attested"], d["summary"]; print("dossier attested by", d["summary"]["signer"])'
           bin/strife verify --bundle registry-out/campaign-bundle.json --key registry/ci.pub --campaign registry-out/campaign.json
           curl -fsS -u "x:$STRIFE_TOKEN" http://127.0.0.1:8088/ui/ci | grep -q raft-stale-reads
+      # Forks get no OIDC token for pull requests.
+      - name: the action pushes with the job's OIDC identity, no stored token
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: ./
+        with:
+          command: sim --system raft --seed 11 --duration 2s
+          out: registry-oidc-out
+          artifact-name: strife-registry-oidc
+          push-server: http://127.0.0.1:8088
+          push-project: ci-oidc
+          push-oidc-audience: strife-ci
+      - name: the registry knows which job pushed
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          STRIFE_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-registry
+          REPO: ${{ github.repository }}
+        run: |
+          runs=$(curl -fsS -H "Authorization: Bearer $STRIFE_TOKEN" http://127.0.0.1:8088/api/v1/projects/ci-oidc/runs)
+          echo "$runs"
+          python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert len(r)==1 and r[0]["pusher"].startswith("repo:"+sys.argv[2]+":") and r[0]["pusher"].endswith("(token.actions.githubusercontent.com)"), r' "$runs" "$REPO"
+          # The read token cannot push, and neither can a token for another audience.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $STRIFE_TOKEN" -d '{}' http://127.0.0.1:8088/api/v1/projects/ci-oidc/runs)
+          test "$code" = 401
+          other=$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=elsewhere" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $other" -d '{}' http://127.0.0.1:8088/api/v1/projects/ci-oidc/runs)
+          test "$code" = 401
+          grep -q "audience" registry/server.log

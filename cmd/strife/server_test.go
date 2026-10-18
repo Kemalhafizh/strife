@@ -1,11 +1,20 @@
 package main
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"math/big"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kemalhafizh/strife/pkg/server"
 )
@@ -66,5 +75,92 @@ func TestPushToServer(t *testing.T) {
 	}
 	if code, o := runCLI(t, "push", "--server", hs.URL, "--project", "core", "--fail-on", "none", filepath.Join(camp, "campaign.json")); code != exitOK || !strings.Contains(o, "stored campaign raft-stale-reads") {
 		t.Fatalf("campaign push: exit %d\n%s", code, o)
+	}
+}
+
+// TestPushWithGitHubOIDC pushes with the identity token GitHub Actions
+// gives a job, to a registry that trusts the job's repository and holds
+// no shared token; the issuer's keys come from a file, as in a registry
+// that cannot reach GitHub.
+func TestPushWithGitHubOIDC(t *testing.T) {
+	dir := t.TempDir()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := base64.RawURLEncoding.EncodeToString
+	jwks, _ := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"kty": "RSA", "kid": "gh", "n": enc(key.N.Bytes()), "e": enc(big.NewInt(int64(key.E)).Bytes()),
+	}}})
+	_ = os.WriteFile(filepath.Join(dir, "jwks.json"), jwks, 0o644)
+	const issuer = "https://token.actions.githubusercontent.com"
+
+	// GitHub's token service: the job's request token in, a JWT for the
+	// audience asked out.
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer job-request-token" || r.URL.Query().Get("api-version") != "2.0" {
+			http.Error(w, "no", http.StatusForbidden)
+			return
+		}
+		hdr, _ := json.Marshal(map[string]string{"alg": "RS256", "kid": "gh"})
+		claims, _ := json.Marshal(map[string]any{
+			"iss": issuer, "aud": r.URL.Query().Get("audience"), "sub": "repo:acme/core:ref:refs/heads/main",
+			"repository_id": "42", "exp": time.Now().Add(5 * time.Minute).Unix(),
+		})
+		signed := enc(hdr) + "." + enc(claims)
+		digest := sha256.Sum256([]byte(signed))
+		sig, _ := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": signed + "." + enc(sig)})
+	}))
+	defer tokens.Close()
+
+	srv, err := server.New(&server.Config{
+		Data: filepath.Join(dir, "data"),
+		Projects: []server.ProjectConfig{{Name: "core", OIDC: []server.OIDCRule{{
+			Issuer: issuer, Audience: "strife-registry", Claims: map[string]string{"repository_id": "42"},
+			JWKS: "file:" + filepath.Join(dir, "jwks.json"),
+		}}}},
+	}, server.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	defer hs.Close()
+	out := filepath.Join(dir, "out")
+	if code, o := runCLI(t, "sim", "--system", "raft", "--seed", "5", "--duration", "2s", "--out", out); code != exitOK {
+		t.Fatalf("sim: %s", o)
+	}
+	run := filepath.Join(out, "raft-seed5")
+
+	// Outside a job allowed to ask for tokens, the CLI says what is missing.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	if code, o := runCLI(t, "push", "--server", hs.URL, "--project", "core", "--token", "github-oidc:strife-registry", run); code != exitError || !strings.Contains(o, "id-token: write") {
+		t.Fatalf("outside a job: exit %d\n%s", code, o)
+	}
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", tokens.URL+"/token?api-version=2.0")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "job-request-token")
+	if code, o := runCLI(t, "push", "--server", hs.URL, "--project", "core", "--token", "github-oidc:another-registry", run); code != exitError || !strings.Contains(o, "401") {
+		t.Fatalf("a token for another audience: exit %d\n%s", code, o)
+	}
+	code, o := runCLI(t, "push", "--server", hs.URL, "--project", "core", "--token", "github-oidc:strife-registry", run)
+	if code != exitOK || !strings.Contains(o, "stored simulation raft") {
+		t.Fatalf("push: exit %d\n%s", code, o)
+	}
+	// The registry records which job pushed the run.
+	tok, err := githubOIDCToken("strife-registry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/api/v1/projects/core/runs", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var runs []server.Run
+	if err := json.NewDecoder(resp.Body).Decode(&runs); err != nil || len(runs) != 1 ||
+		runs[0].Pusher != "repo:acme/core:ref:refs/heads/main (token.actions.githubusercontent.com)" {
+		t.Fatalf("stored runs: %v %+v", err, runs)
 	}
 }

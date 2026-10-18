@@ -105,6 +105,7 @@ var pages = template.Must(template.New("").Funcs(funcs).Parse(`
 <dt>History</dt><dd>{{if .Run.HistoryVerified}}stored, SHA-256 matches the report{{else if eq .Run.Kind "campaign"}}kept with each seed's report{{else}}not pushed{{end}}</dd>
 <dt>Signature</dt><dd>{{if .Run.Attested}}valid, by {{.Run.Signer}} (key {{.Run.KeyID}}){{else}}unsigned{{end}}</dd>
 {{if or .Run.Commit .Run.Branch}}<dt>Commit</dt><dd class="mono">{{.Run.Commit}}{{if .Run.Branch}} on {{.Run.Branch}}{{end}}</dd>{{end}}
+{{if .Run.Pusher}}<dt>Pushed by</dt><dd class="mono">{{.Run.Pusher}}</dd>{{end}}
 {{if .Run.Source}}<dt>Source</dt><dd>{{if .Source}}<a href="{{.Source}}" rel="noopener noreferrer">{{.Run.Source}}</a>{{else}}{{.Run.Source}}{{end}}</dd>{{end}}
 <dt>Received</dt><dd>{{.Run.Received.Format "2006-01-02 15:04:05 MST"}}</dd>
 </dl></div>

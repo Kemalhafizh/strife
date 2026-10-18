@@ -55,6 +55,14 @@ inputs:
     description: Name of the environment variable holding the project's write token.
     required: false
     default: STRIFE_TOKEN
+  push-oidc-audience:
+    description: >
+      Push with this job's GitHub OIDC identity token, minted for this
+      audience, instead of a stored write token. The registry project needs
+      an "oidc" rule for the audience and this repository, and the job
+      "permissions: id-token: write".
+    required: false
+    default: ""
   sign-key-env:
     description: >
       Name of the environment variable holding an Ed25519 private key (the
@@ -172,15 +180,18 @@ runs:
         SERVER: ${{ inputs.push-server }}
         PROJECT: ${{ inputs.push-project }}
         TOKEN_ENV: ${{ inputs.push-token-env }}
+        OIDC_AUDIENCE: ${{ inputs.push-oidc-audience }}
       run: |
         # A campaign is pushed as one manifest; otherwise every run directory.
         strife="$RUNNER_TEMP/strife-bin/strife"
+        token="env:$TOKEN_ENV"
+        [ -z "$OIDC_AUDIENCE" ] || token="github-oidc:$OIDC_AUDIENCE"
         [ -d "$OUT" ] || { echo "::notice::nothing to push: $OUT does not exist"; exit 0; }
         targets=$(find "$OUT" -maxdepth 1 -name campaign.json)
         [ -n "$targets" ] || targets=$(find "$OUT" -name report.json -exec dirname {} \; | sort -u | head -n 50)
         status=0
         for t in $targets; do
-          if ! out=$("$strife" push --server "$SERVER" --project "$PROJECT" --token "env:$TOKEN_ENV" --fail-on none "$t" 2>&1); then
+          if ! out=$("$strife" push --server "$SERVER" --project "$PROJECT" --token "$token" --fail-on none "$t" 2>&1); then
             echo "::warning title=Strife push failed::$out"
             status=1
             continue

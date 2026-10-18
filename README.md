@@ -411,7 +411,9 @@ STRIFE_TOKEN=... strife push --server https://strife.internal --project payments
 - **Regressions per series.** Runs of the same kind, target and fault kinds form a series. Each run is compared with the previous one and recorded as a regression, a fix, still failing or still passing; campaigns are compared seed by seed. `strife push` fails the CI job on a regression (`--fail-on regression|violation|none`), and a Slack-compatible webhook hears about regressions and fixes.
 - **Everything an auditor asks for.** A dashboard (no JavaScript, strict CSP) with a trend page per series (verdicts, violating seeds and operations over the latest 60 runs, drawn as SVG on the server), a JSON API, the original artifacts, the interactive timeline, and compliance dossiers generated on demand with the signature re-verified. Campaigns can be signed whole (`strife sign --campaign`), so a project that requires signatures takes them too.
 
-The Action pushes with `push-server` and `push-project`, and signs first with `sign-key-env`; CI dogfoods this on every commit by pushing a campaign to a live server and checking the API and dashboard. Configuration, API and limits: [`docs/server.md`](docs/server.md).
+- **No stored CI secret needed.** A project can admit CI jobs by the OIDC identity token their platform mints (GitHub Actions, GitLab CI), matched on claims such as the repository ID and branch; every run records which job pushed it.
+
+The Action pushes with `push-server` and `push-project` (and `push-oidc-audience` to use the job's identity instead of a token), and signs first with `sign-key-env`; CI dogfoods this on every commit by pushing a signed campaign to a live server, and a run with a real GitHub OIDC token to a project that has no write token. Configuration, API and limits: [`docs/server.md`](docs/server.md).
 
 ---
 
@@ -518,7 +520,7 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife verify [flags]` | Verify a signed report or campaign bundle (with an optional `history.jsonl`, or `--campaign campaign.json`) or a release directory (`--release-dir`) against an Ed25519 public key |
 | `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk` |
 | `strife server [flags]` | Run the self-hosted run registry (`--config server.json`, `--listen`, `--data`, `--tls-cert`/`--tls-key`) |
-| `strife push [flags] PATH` | Push a run directory, `report.json` or `campaign.json` to the registry (`--server`, `--project`, `$STRIFE_TOKEN`, `--fail-on`) |
+| `strife push [flags] PATH` | Push a run directory, `report.json` or `campaign.json` to the registry (`--server`, `--project`, `$STRIFE_TOKEN` or `--token github-oidc:AUDIENCE`, `--fail-on`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 

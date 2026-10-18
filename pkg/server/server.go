@@ -124,11 +124,26 @@ func equal(a, b string) bool {
 	return b != "" && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-func (s *Server) canWrite(p *project, r *http.Request) bool { return equal(token(r), p.token) }
+// canWrite reports whether r may push to p, and who pushes: "token" for
+// the project's write token, or the subject of an OIDC token.
+func (s *Server) canWrite(p *project, r *http.Request) (string, bool) {
+	t := token(r)
+	if equal(t, p.token) {
+		return "token", true
+	}
+	if id, ok := s.oidcAccess(r.Context(), p, t, true); ok {
+		return id.String(), true
+	}
+	return "", false
+}
 
 func (s *Server) canRead(p *project, r *http.Request) bool {
 	t := token(r)
-	return s.cfg.PublicRead || equal(t, p.token) || equal(t, p.readToken)
+	if s.cfg.PublicRead || equal(t, p.token) || equal(t, p.readToken) {
+		return true
+	}
+	_, ok := s.oidcAccess(r.Context(), p, t, false)
+	return ok
 }
 
 type ctxKey struct{}
@@ -221,7 +236,11 @@ type PushResult struct {
 
 func (s *Server) apiPush(w http.ResponseWriter, r *http.Request) {
 	p := s.projects[r.PathValue("project")]
-	if p == nil || !s.canWrite(p, r) {
+	var pusher string
+	if p != nil {
+		pusher, _ = s.canWrite(p, r)
+	}
+	if pusher == "" {
 		httpError(w, http.StatusUnauthorized, "unknown project or missing write token")
 		return
 	}
@@ -236,6 +255,9 @@ func (s *Server) apiPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in, err := verify(p, &u, s.now())
+	if err == nil {
+		in.run.Pusher = pusher
+	}
 	var rj *rejection
 	if errors.As(err, &rj) {
 		httpError(w, http.StatusUnprocessableEntity, rj.msg)

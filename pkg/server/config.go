@@ -37,9 +37,14 @@ type Config struct {
 type ProjectConfig struct {
 	Name string `json:"name"`
 	// Token allows pushing runs and reading; ReadToken allows reading only.
-	// Both take "env:NAME" or "file:PATH" references.
-	Token     string `json:"token"`
+	// Both take "env:NAME" or "file:PATH" references. Token may be left
+	// out when an OIDC rule grants write access.
+	Token     string `json:"token,omitempty"`
 	ReadToken string `json:"read_token,omitempty"`
+	// OIDC admits CI jobs by the identity token their platform gives
+	// them (GitHub Actions: "permissions: id-token: write"), so they push
+	// without a stored secret.
+	OIDC []OIDCRule `json:"oidc,omitempty"`
 	// TrustedKeys are Ed25519 public keys (.pub files from strife keygen)
 	// whose signatures make a run "attested".
 	TrustedKeys []string `json:"trusted_keys,omitempty"`
@@ -57,6 +62,7 @@ type ProjectConfig struct {
 type project struct {
 	name             string
 	token, readToken string
+	oidc             []*oidcRule
 	keys             []ed25519.PublicKey
 	requireSignature bool
 	webhook          string
@@ -92,6 +98,7 @@ func (c *Config) resolve() (map[string]*project, error) {
 		return nil, fmt.Errorf("server: no projects configured")
 	}
 	out := map[string]*project{}
+	var iss issuers
 	for _, pc := range c.Projects {
 		if !validName.MatchString(pc.Name) {
 			return nil, fmt.Errorf("server: project name %q: use lowercase letters, digits, - and _", pc.Name)
@@ -101,10 +108,22 @@ func (c *Config) resolve() (map[string]*project, error) {
 		}
 		p := &project{name: pc.Name, requireSignature: pc.RequireSignature, retain: pc.Retain}
 		var err error
-		if p.token, err = secret.Resolve(pc.Token); err != nil || p.token == "" {
-			return nil, fmt.Errorf("server: project %s: a token is required (%v)", pc.Name, err)
+		oidcWrite := false
+		for _, r := range pc.OIDC {
+			if err := checkRule(r); err != nil {
+				return nil, fmt.Errorf("server: project %s: %w", pc.Name, err)
+			}
+			rule := &oidcRule{OIDCRule: r, write: r.Access != "read", issuer: iss.get(r.Issuer, r.JWKS)}
+			oidcWrite = oidcWrite || rule.write
+			p.oidc = append(p.oidc, rule)
 		}
-		if len(p.token) < 16 {
+		if p.token, err = secret.Resolve(pc.Token); err != nil {
+			return nil, fmt.Errorf("server: project %s: token: %w", pc.Name, err)
+		}
+		switch {
+		case p.token == "" && !oidcWrite:
+			return nil, fmt.Errorf("server: project %s: a token, or an oidc rule with write access, is required", pc.Name)
+		case p.token != "" && len(p.token) < 16:
 			return nil, fmt.Errorf("server: project %s: the token must be at least 16 characters", pc.Name)
 		}
 		if p.readToken, err = secret.Resolve(pc.ReadToken); err != nil {

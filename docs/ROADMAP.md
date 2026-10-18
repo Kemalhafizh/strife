@@ -511,7 +511,8 @@ first something they run themselves, inside their network, that CI feeds.
   mapping is the hook) running Strife on staging with the registry. Success
   means one dossier used in a real audit.
 - **Registry depth:** signed campaigns ✅ (`strife sign --campaign`, the
-  Action's `sign-key-env`, verified at push and in dossiers), SSO (OIDC) instead of shared tokens,
+  Action's `sign-key-env`, verified at push and in dossiers), OIDC instead of shared tokens (CI pushes with its job identity ✅; SSO
+  for people next),
   object storage for artifacts, trend charts per series ✅ (server-drawn
   SVG, no script), and scheduled
   campaigns run by a customer-side runner (like a self-hosted GitHub

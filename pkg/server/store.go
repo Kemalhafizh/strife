@@ -36,6 +36,9 @@ type Run struct {
 	Commit   string    `json:"commit,omitempty"`
 	Branch   string    `json:"branch,omitempty"`
 	Source   string    `json:"source,omitempty"` // e.g. the CI run URL
+	// Pusher is who pushed the run: "token" (the project's write token)
+	// or the subject of the CI job's OIDC token, with its issuer.
+	Pusher string `json:"pusher,omitempty"`
 
 	HasHistory      bool   `json:"has_history"`
 	HistoryVerified bool   `json:"history_verified"` // its hash matches the report

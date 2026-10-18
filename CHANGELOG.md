@@ -9,6 +9,15 @@ only gain optional fields.
 ## [Unreleased]
 
 ### Added
+- The run registry admits CI jobs by their OIDC identity token, so CI
+  pushes without a stored write token: a project's `oidc` rules name an
+  issuer, an audience and claim patterns (`"repository_id"`, `"ref":
+  "refs/heads/main"`). Tokens are verified against the issuer's published
+  keys (RS256, ES256), found by discovery or given as a file. `strife push
+  --token github-oidc:AUDIENCE` and the Action's `push-oidc-audience` use
+  the GitHub Actions job's token, and every run records who pushed it. CI
+  pushes this way with a real GitHub token to a project that has no write
+  token.
 - Signed campaigns: `strife sign --campaign` (or `strife campaign
   --sign-key`) writes an in-toto statement over the campaign's fingerprint,
   which covers every seed's verdict and hashes; `strife verify --campaign`

@@ -37,8 +37,9 @@ docker run -p 8080:8080 -v $PWD:/etc/strife -v strife-data:/var/lib/strife \
 | `public_read` | let anyone read every project without a token (trusted networks only) |
 | `max_upload` | largest accepted push in bytes, default 256 MiB |
 | `projects[].name` | lowercase letters, digits, `-` and `_` |
-| `projects[].token` | write token (push and read), at least 16 characters; `env:NAME` or `file:PATH` |
+| `projects[].token` | write token (push and read), at least 16 characters; `env:NAME` or `file:PATH`. Optional when an `oidc` rule grants write access |
 | `projects[].read_token` | read-only token, for dashboards and auditors |
+| `projects[].oidc` | CI jobs admitted by their OIDC identity token instead of a stored token ([below](#push-without-a-stored-token-oidc)) |
 | `projects[].trusted_keys` | Ed25519 public keys from `strife keygen` whose signatures make runs *attested* |
 | `projects[].require_signature` | refuse runs that are not signed by a trusted key |
 | `projects[].webhook` | URL that receives `{"text", "run", "url"}` on regressions and fixes |
@@ -87,6 +88,63 @@ With the GitHub Action:
 With `sign-key-env`, the Action signs the reports (or the campaign) before
 it uploads and pushes them, as `github-actions:<owner>/<repo>`.
 
+### Push without a stored token (OIDC)
+
+A CI job can prove who it is with the short-lived OIDC token its platform
+mints for it, so no write token is stored in CI at all. The project names
+the issuer, the audience the token must be minted for, and the claims that
+identify the jobs it admits:
+
+```json
+{
+  "name": "payments",
+  "read_token": "env:PAYMENTS_READ_TOKEN",
+  "oidc": [{
+    "issuer": "https://token.actions.githubusercontent.com",
+    "audience": "strife",
+    "claims": { "repository_id": "123456789", "ref": "refs/heads/main" }
+  }]
+}
+```
+
+| Rule field | Meaning |
+|---|---|
+| `issuer` | the token's `iss`, an `https://` URL; its keys are found through `/.well-known/openid-configuration` |
+| `audience` | the token's `aud` must contain it |
+| `claims` | claim name to a [`path.Match`](https://pkg.go.dev/path#Match) pattern; all must match. At least one is required |
+| `access` | `write` (push and read, the default) or `read` |
+| `jwks` | the issuer's keys from an `https://` URL or `file:PATH` instead of discovery, for a registry that cannot reach the issuer |
+
+Patterns match whole values, and `*` stops at `/`: `refs/heads/*` admits
+`refs/heads/main` but not `refs/heads/feature/x`. Prefer GitHub's
+`repository_id` and `repository_owner_id` to `repository`: the IDs survive
+a rename and cannot be taken over by whoever registers a deleted name.
+Tokens must be signed with RS256 or ES256 by a key the issuer publishes,
+be unexpired (a minute of clock skew is allowed) and be minted for the
+audience. The key set is cached and fetched again for a key it does not
+know, at most once a minute. GitLab CI (`https://gitlab.com`, its
+`project_id` and `ref` claims) and other OIDC issuers work the same way.
+
+In GitHub Actions, give the job `id-token: write` and name the audience:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+steps:
+  - uses: kemalhafizh/strife@v0.2.0
+    with:
+      command: campaign --system raft --seeds 1..200
+      push-server: https://strife.internal
+      push-project: payments
+      push-oidc-audience: strife
+```
+
+Outside the Action, `strife push --token github-oidc:strife` asks GitHub for
+the token. Each run records who pushed it (`pusher`): `token`, or the
+token's subject and issuer, e.g.
+`repo:acme/payments:ref:refs/heads/main (token.actions.githubusercontent.com)`.
+
 ## Read
 
 The dashboard is at `/` (projects you can read) and `/ui/<project>`; each
@@ -101,7 +159,7 @@ password. The API takes `Authorization: Bearer <token>`:
 | Endpoint | Returns |
 |---|---|
 | `GET /api/v1/projects` | the projects your token can read, with run, series and failure counts |
-| `POST /api/v1/projects/{p}/runs` | push (write token); `201` stored, `200` already stored, `422` did not verify |
+| `POST /api/v1/projects/{p}/runs` | push (write token or OIDC identity); `201` stored, `200` already stored, `422` did not verify |
 | `GET /api/v1/projects/{p}/runs` | runs, newest first; filters `series`, `target`, `kind`, `verdict`, `change`, `branch`, `limit` |
 | `GET /api/v1/projects/{p}/series` | each series with its latest run, recent verdicts and how long it has been failing |
 | `GET /api/v1/projects/{p}/runs/{id}` | one run's metadata |
@@ -115,6 +173,7 @@ A run's ID is its fingerprint: pushing the same run twice stores it once.
 ## What it is not (yet)
 
 - Not multi-node: one server, one data directory. Back the directory up.
-- No user accounts or SSO: access is by per-project token. Put SSO in front
-  with your proxy if you need named users.
+- No user accounts or SSO for people: they read with per-project tokens
+  (CI jobs can push with their OIDC identity instead). Put SSO in front with
+  your proxy if you need named users.
 - It stores what CI pushes; it does not run tests itself.

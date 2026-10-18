@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -101,7 +102,7 @@ func cmdPush(args []string, stdout, stderr io.Writer) (int, error) {
 	fs.SetOutput(stderr)
 	srvURL := fs.String("server", os.Getenv("STRIFE_SERVER"), "server URL, e.g. https://strife.internal (or $STRIFE_SERVER)")
 	proj := fs.String("project", os.Getenv("STRIFE_PROJECT"), "project to push to (or $STRIFE_PROJECT)")
-	tok := fs.String("token", "env:STRIFE_TOKEN", "write token: env:NAME or file:PATH")
+	tok := fs.String("token", "env:STRIFE_TOKEN", "write token: env:NAME or file:PATH, or github-oidc:AUDIENCE for the GitHub Actions job's identity token")
 	commit := fs.String("commit", firstEnv("GITHUB_SHA", "CI_COMMIT_SHA", "GIT_COMMIT"), "commit the run tested")
 	branch := fs.String("branch", firstEnv("GITHUB_HEAD_REF", "GITHUB_REF_NAME", "CI_COMMIT_REF_NAME", "BRANCH_NAME"), "branch the run tested")
 	source := fs.String("source", ciRunURL(), "link back to the CI job")
@@ -113,8 +114,14 @@ func cmdPush(args []string, stdout, stderr io.Writer) (int, error) {
 	if fs.NArg() != 1 || *srvURL == "" || *proj == "" {
 		return exitUsage, errors.New("usage: strife push --server URL --project NAME [--token env:STRIFE_TOKEN] RUN_DIR|campaign.json")
 	}
-	token, err := secret.Resolve(*tok)
-	if err != nil || token == "" {
+	var token string
+	var err error
+	if aud, ok := strings.CutPrefix(*tok, "github-oidc:"); ok {
+		token, err = githubOIDCToken(aud)
+		if err != nil {
+			return exitError, fmt.Errorf("--token: %w", err)
+		}
+	} else if token, err = secret.Resolve(*tok); err != nil || token == "" {
 		return exitUsage, fmt.Errorf("--token: %v", err)
 	}
 	u, err := uploadFor(fs.Arg(0), !*noHistory)
@@ -166,6 +173,44 @@ func cmdPush(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitViolation, nil
 	}
 	return exitOK, nil
+}
+
+// githubOIDCToken asks GitHub Actions for this job's OIDC identity token,
+// minted for audience. The job needs "permissions: id-token: write".
+func githubOIDCToken(audience string) (string, error) {
+	reqURL, reqTok := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL"), os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+	if reqURL == "" || reqTok == "" {
+		return "", errors.New("github-oidc: not in a GitHub Actions job allowed to request identity tokens (add \"permissions: id-token: write\")")
+	}
+	if audience == "" {
+		return "", errors.New("github-oidc: name the audience, e.g. github-oidc:strife")
+	}
+	u, err := url.Parse(reqURL)
+	if err != nil {
+		return "", fmt.Errorf("github-oidc: ACTIONS_ID_TOKEN_REQUEST_URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("audience", audience)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+reqTok)
+	req.Header.Set("Accept", "application/json")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("github-oidc: %w", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Value string `json:"value"`
+	}
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(data, &out) != nil || out.Value == "" {
+		return "", fmt.Errorf("github-oidc: the token service answered %s", resp.Status)
+	}
+	return out.Value, nil
 }
 
 func changeText(c string) string {

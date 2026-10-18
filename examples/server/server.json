@@ -15,6 +15,17 @@
     {
       "name": "ledger",
       "token": "file:/run/secrets/strife-ledger-token"
+    },
+    {
+      "name": "accounts",
+      "read_token": "env:STRIFE_ACCOUNTS_READ_TOKEN",
+      "oidc": [
+        {
+          "issuer": "https://token.actions.githubusercontent.com",
+          "audience": "strife",
+          "claims": { "repository_id": "123456789", "ref": "refs/heads/main" }
+        }
+      ]
     }
   ]
 }
