@@ -30,8 +30,19 @@ if ! probe "$c"; then
   heal >/dev/null
   exit 1
 fi
-resp=$(apply '{"action":"inject","fault_id":902,"kind":"partition","target_ips":["10.9.9.9"]}' 2>&1 || true)
-case "$resp" in *"target container"*|*"500"*) echo "untargeted fault refused: ok" ;; *) echo "the DaemonSet agent accepted a fault on the node itself: $resp"; heal >/dev/null; exit 1 ;; esac
+# Refused means an HTTP error carrying the agent's reason, not merely a body
+# that happens to hold "500" (a success's nanosecond timestamps can).
+out=$(mktemp)
+code=$(curl -sS -m 30 -o "$out" -w '%{http_code}' -H "Authorization: Bearer $STRIFE_AGENT_TOKEN" \
+  -d '{"action":"inject","fault_id":902,"kind":"partition","target_ips":["10.9.9.9"]}' "http://$agent:9292/apply")
+resp=$(cat "$out"); rm -f "$out"
+if [ "$code" -ge 400 ] && grep -q 'target container' <<<"$resp"; then
+  echo "untargeted fault refused: ok ($code)"
+else
+  echo "the DaemonSet agent accepted a fault on the node itself: $code $resp"
+  heal >/dev/null
+  exit 1
+fi
 echo "heal: $(heal)"
 probe "$a" || { echo "$a cannot reach $b after healing"; exit 1; }
 echo "DaemonSet agent partition verified: only $a cut off from $b, then restored"

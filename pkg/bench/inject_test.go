@@ -83,3 +83,52 @@ func TestAgentSideTimeIsReported(t *testing.T) {
 		t.Fatalf("markdown:\n%s", md)
 	}
 }
+
+// hostResolver stands in for a transport that finds cgroups and disks:
+// kubectl through a node helper finds paths, kubernetes-agent says "auto".
+type hostResolver struct{ cgroup, dev string }
+
+func (h hostResolver) Name() string { return "resolver" }
+func (h hostResolver) Exec(context.Context, transport.Node, string) (string, error) {
+	return "", nil
+}
+func (h hostResolver) HostExec(context.Context, transport.Node, string) (string, error) {
+	return "", nil
+}
+func (h hostResolver) ResolveCgroup(_ context.Context, n transport.Node) (string, error) {
+	if h.cgroup == transport.Auto {
+		return transport.Auto, nil
+	}
+	return h.cgroup + "/" + n.Name, nil
+}
+func (h hostResolver) ResolveIODevice(context.Context) (string, error) { return h.dev, nil }
+
+// Each transport compared sees "auto" cgroups and disks as it needs them,
+// resolved for the kinds benchmarked rather than the config's own faults:
+// kubectl rows freezing "auto/cgroup.freeze" made every comparison with
+// kubernetes-agent fail.
+func TestHostViewPerTransport(t *testing.T) {
+	cfg := &runner.Config{
+		Nodes: []transport.Node{{Name: "n1", IP: "10.0.0.1", Cgroup: "auto"}, {Name: "n2", IP: "10.0.0.2", Cgroup: "auto"}},
+		DB:    runner.DBConfig{Config: client.Config{Kind: "memory"}, Process: "db", Start: "/start.sh"},
+	}
+	cfg.Nemesis.IODevice = "auto"
+	kinds := []nemesis.Kind{nemesis.Freeze, nemesis.IOStall}
+	paths, err := hostView(context.Background(), cfg, kinds, hostResolver{"/sys/fs/cgroup/pods", "8:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.Nodes[1].Cgroup != "/sys/fs/cgroup/pods/n2" || paths.Nemesis.IODevice != "8:0" {
+		t.Fatalf("kubectl view: %+v, io %q", paths.Nodes, paths.Nemesis.IODevice)
+	}
+	agents, err := hostView(context.Background(), cfg, kinds, hostResolver{transport.Auto, transport.Auto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agents.Nodes[0].Cgroup != transport.Auto || agents.Nemesis.IODevice != transport.Auto {
+		t.Fatalf("agent view: %+v, io %q", agents.Nodes, agents.Nemesis.IODevice)
+	}
+	if cfg.Nodes[0].Cgroup != transport.Auto || cfg.Nemesis.IODevice != transport.Auto || len(cfg.Nemesis.Faults) != 0 {
+		t.Fatalf("hostView changed the shared cluster: %+v %+v", cfg.Nodes, cfg.Nemesis)
+	}
+}

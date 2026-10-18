@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -340,26 +342,46 @@ func TestPodNetnsOutlivesContainer(t *testing.T) {
 	idA, a := inPod(hex.EncodeToString(raw[:32]))
 	apply(idA, ApplyRequest{Action: ActionInject, FaultID: 1, Kind: nemesis.Partition, TargetIPs: []string{"10.0.0.9"}})
 	apply(idA, ApplyRequest{Action: ActionInject, FaultID: 2, Kind: nemesis.Latency, Delay: time.Millisecond})
-	if len(rec.syncNS) != 1 || rec.syncNS[0] != want || len(nl.set) != 1 || nl.set[0] != want {
+	apply(idA, ApplyRequest{Action: ActionInject, FaultID: 3, Kind: nemesis.Loss, Loss: 0.1})
+	if len(rec.syncNS) != 1 || rec.syncNS[0] != want || len(nl.set) != 2 || nl.set[0] != want {
 		t.Fatalf("faults not applied in the pod's namespace %d: filter %v, netem %v", want, rec.syncNS, nl.set)
 	}
 
-	// The container restarts: its init is gone, a new container runs in
-	// the same pod. The heal arrives for the new container, as the
-	// transport sends it once the old ID is unknown.
+	// The container restarts: its init is gone. Before the new one runs,
+	// the transport has no other ID to send: the heal through the old one
+	// reaches the pod's namespace all the same.
 	_ = a.Process.Kill()
 	_ = a.Wait()
+	apply(idA, ApplyRequest{Action: ActionHeal, FaultID: 2, Kind: nemesis.Latency})
+	if len(nl.del) != 1 || nl.del[0] != want {
+		t.Fatalf("netem not removed from the pod's namespace %d through the gone container: %v", want, nl.del)
+	}
+	if resp := srv.executeApply(ApplyRequest{Action: ActionHeal, FaultID: 9, Kind: nemesis.Latency, Target: &Target{ContainerID: idA}}); resp.Success {
+		t.Fatalf("healed a fault never applied through a gone container: %+v", resp)
+	}
+
+	// Once the new container runs, the transport sends the heal through it.
 	idB, _ := inPod(hex.EncodeToString(raw[32:]))
 	apply(idB, ApplyRequest{Action: ActionHeal, FaultID: 1, Kind: nemesis.Partition})
 	if last := len(rec.syncNS) - 1; last < 1 || rec.syncNS[last] != want || len(rec.syncIPs[last]) != 0 {
 		t.Fatalf("partition not healed in the pod's namespace %d: synced %v with %v", want, rec.syncNS, rec.syncIPs)
 	}
+	// Both heals cleared the faults' records, the one through the
+	// replacement included; only the loss fault is left on.
+	srv.mu.Lock()
+	left := slices.Collect(maps.Keys(srv.activeFaults))
+	srv.mu.Unlock()
+	if len(left) != 1 || left[0] != "3/"+idA {
+		t.Fatalf("faults on record after the heals: %v", left)
+	}
 
-	// The latency fault, applied through the old container, is still on:
+	// The loss fault, applied through the old container, is still on:
 	// teardown heals it in the pod's namespace and removes the filter
 	// there.
-	srv.Teardown()
-	if len(nl.del) != 1 || nl.del[0] != want {
+	if err := srv.Teardown(); err != nil {
+		t.Fatal(err)
+	}
+	if len(nl.del) != 2 || nl.del[1] != want {
 		t.Fatalf("netem not removed from the pod's namespace %d: %v", want, nl.del)
 	}
 	if len(rec.teardownNS) != 1 || rec.teardownNS[0] != want {

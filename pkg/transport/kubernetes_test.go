@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -35,5 +36,30 @@ func TestKubernetesExecArgs(t *testing.T) {
 	}
 	if _, ok := tr.(IPResolver); !ok {
 		t.Fatal("kubernetes transport cannot resolve pod IPs")
+	}
+}
+
+// A pod's container is the one the node names, else the one kubectl exec
+// reaches: the kubelet lists statuses by name, so the first status of a
+// pod with a metrics sidecar is the sidecar's.
+func TestPodContainerMatchesKubectlExec(t *testing.T) {
+	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	statuses := "metrics=containerd://" + a + " postgresql=containerd://" + b + " "
+	for _, c := range []struct {
+		container, out, want string
+	}{
+		{"", "|postgresql|" + statuses, b},
+		{"", "metrics|postgresql|" + statuses, a},
+		{"metrics", "|postgresql|" + statuses, a},
+		{"postgresql", "metrics|postgresql|" + statuses, b},
+		{"", "|postgresql|postgresql= ", ""}, // created, not started
+		{"", "|postgresql|", ""},             // no statuses yet
+		{"exporter", "|postgresql|" + statuses, ""},
+		{"", "garbage", ""},
+	} {
+		got, err := podContainer(Node{Container: c.container}, "pg-0", c.out)
+		if got != c.want || (err == nil) != (c.want != "") {
+			t.Errorf("container %q from %q: got %q, %v; want %q", c.container, c.out, got, err, c.want)
+		}
 	}
 }

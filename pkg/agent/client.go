@@ -193,6 +193,12 @@ func (c *Client) Teardown(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		var body struct {
+			Error string `json:"error"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&body) == nil && body.Error != "" {
+			return fmt.Errorf("agent teardown %s: %s", c.addr, body.Error)
+		}
 		return fmt.Errorf("agent teardown %s returned status %d", c.addr, resp.StatusCode)
 	}
 	return nil

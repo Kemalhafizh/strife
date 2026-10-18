@@ -117,7 +117,11 @@ func Inject(ctx context.Context, c InjectConfig) (*InjectResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		inj := &runner.Injector{Transport: tr, Nodes: c.Cluster.Nodes, Env: env, CommandTimeout: 10 * time.Second}
+		cl, err := hostView(ctx, c.Cluster, c.Kinds, tr)
+		if err != nil {
+			return nil, fmt.Errorf("bench: %s: %w", name, err)
+		}
+		inj := &runner.Injector{Transport: tr, Nodes: cl.Nodes, Env: cl.Env(), CommandTimeout: 10 * time.Second}
 		if errs := inj.Setup(ctx, c.Kinds); len(errs) > 0 {
 			return nil, fmt.Errorf("bench: setup via %s: %s", name, strings.Join(errs, "; "))
 		}
@@ -140,6 +144,22 @@ func Inject(ctx context.Context, c InjectConfig) (*InjectResult, error) {
 		cancel()
 	}
 	return res, nil
+}
+
+// hostView resolves the cluster's "auto" cgroups and disk the way tr needs
+// them: kubernetes-agent leaves "auto" to its agents, while kubectl through
+// a node helper, docker or an agent in each container need the paths on the
+// host. A transport that cannot look them up borrows docker's.
+func hostView(ctx context.Context, cl *runner.Config, kinds []nemesis.Kind, tr transport.Transport) (*runner.Config, error) {
+	c := *cl
+	c.Nemesis.Faults = kinds
+	if _, ok := tr.(transport.HostResolver); !ok {
+		var err error
+		if tr, err = transport.New(transport.Config{Type: "docker", Sudo: cl.Transport.Sudo}); err != nil {
+			return nil, err
+		}
+	}
+	return runner.ResolveHost(ctx, &c, tr)
 }
 
 func measure(ctx context.Context, inj *runner.Injector, name string, kind nemesis.Kind, cycles int, period time.Duration, nodes int) []Row {

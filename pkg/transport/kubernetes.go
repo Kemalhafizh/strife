@@ -191,6 +191,38 @@ func (k *Kubernetes) helper(ctx context.Context, node string) (string, error) {
 
 var containerID = regexp.MustCompile(`^[a-z0-9-]+://([0-9a-f]{12,})$`)
 
+// containersPath is the kubectl jsonpath podContainer reads: the container
+// kubectl exec picks when told none (the default-container annotation, else
+// the first in the pod spec), then every container's name and runtime ID.
+const containersPath = `{.metadata.annotations.kubectl\.kubernetes\.io/default-container}{"|"}{.spec.containers[0].name}{"|"}` +
+	`{range .status.containerStatuses[*]}{.name}{"="}{.containerID}{" "}{end}`
+
+// podContainer returns the runtime ID of n's container in pod p, from the
+// output of containersPath: the container n names, else the one kubectl
+// exec reaches, so every transport faults the same container. The kubelet
+// lists container statuses by name, so the first may well be a sidecar.
+func podContainer(n Node, p, out string) (string, error) {
+	parts := strings.SplitN(strings.TrimSpace(out), "|", 3)
+	if len(parts) != 3 {
+		return "", fmt.Errorf("pod %s: unexpected kubectl output %q", p, out)
+	}
+	name := n.Container
+	for _, alt := range parts[:2] {
+		if name == "" {
+			name = alt
+		}
+	}
+	for _, f := range strings.Fields(parts[2]) {
+		if c, id, _ := strings.Cut(f, "="); c == name {
+			if m := containerID.FindStringSubmatch(id); m != nil {
+				return m[1], nil
+			}
+			break
+		}
+	}
+	return "", fmt.Errorf("pod %s has no running container %q yet", p, name)
+}
+
 // ResolveCgroup implements HostResolver: the cgroup of n's container, as the
 // node helper sees it, found by the container ID the kubelet reports.
 func (k *Kubernetes) ResolveCgroup(ctx context.Context, n Node) (string, error) {
@@ -198,26 +230,22 @@ func (k *Kubernetes) ResolveCgroup(ctx context.Context, n Node) (string, error) 
 		return "", fmt.Errorf("kubernetes transport: %w (configure transport.node_helper)", ErrNoHost)
 	}
 	_, p := k.pod(n)
-	path := "{.status.containerStatuses[0].containerID}"
-	if n.Container != "" {
-		path = fmt.Sprintf(`{.status.containerStatuses[?(@.name=="%s")].containerID}`, n.Container)
-	}
-	out, err := run(ctx, k.Binary, append(k.base(n), "get", "pod", p, "-o", "jsonpath="+path)...)
+	out, err := run(ctx, k.Binary, append(k.base(n), "get", "pod", p, "-o", "jsonpath="+containersPath)...)
 	if err != nil {
 		return "", err
 	}
-	m := containerID.FindStringSubmatch(strings.TrimSpace(out))
-	if m == nil {
-		return "", fmt.Errorf("kubernetes transport: pod %s has no running container ID (%q)", p, out)
+	id, err := podContainer(n, p, out)
+	if err != nil {
+		return "", fmt.Errorf("kubernetes transport: %w", err)
 	}
 	root := k.Helper.cgroupRoot()
-	found, err := k.HostExec(ctx, n, fmt.Sprintf("find %s -maxdepth 8 -type d -name '*%s*' 2>/dev/null | head -n 1", Quote(root), m[1]))
+	found, err := k.HostExec(ctx, n, fmt.Sprintf("find %s -maxdepth 8 -type d -name '*%s*' 2>/dev/null | head -n 1", Quote(root), id))
 	if err != nil {
 		return "", err
 	}
 	cg := strings.TrimSpace(found)
 	if !strings.HasPrefix(cg, root+"/") {
-		return "", fmt.Errorf("kubernetes transport: no cgroup for container %.12s under %s on the node", m[1], root)
+		return "", fmt.Errorf("kubernetes transport: no cgroup for container %.12s under %s on the node", id, root)
 	}
 	return cg, nil
 }
