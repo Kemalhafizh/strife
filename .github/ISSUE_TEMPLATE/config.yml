@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation & Guides
+    url: https://kemalhafizh.github.io/strife/docs/
+    about: Read the guides on deterministic simulation, checkers, strife-agent, and CLI usage.
+  - name: Interactive Browser Playground & Studio
+    url: https://kemalhafizh.github.io/strife/try/
+    about: Run simulations, inspect counterexample timelines, and verify traces directly in your browser.
+  - name: Private Security Vulnerability Report
+    url: https://github.com/Kemalhafizh/strife/security/advisories/new
+    about: Report a security issue privately following SECURITY.md.

@@ -1,0 +1,32 @@
+name: Feature Request
+description: Propose a new consistency model, protocol client, fault injector, or CLI capability.
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - "Consistency Model / Anomaly Checker (pkg/model, pkg/checker, pkg/txn)"
+        - "Live Protocol Client (pkg/client)"
+        - "Fault Injection / Agent Capability (pkg/nemesis, pkg/agent)"
+        - "Simulator / Built-in System (pkg/sim, pkg/explore)"
+        - "Attestation / Compliance Mapping (pkg/attest, pkg/compliance)"
+        - "CLI / Run Registry / CI Action (cmd/strife, pkg/serve)"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Anomaly to Detect
+      description: What distributed-systems failure mode, invariant, or workflow does this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Design
+      description: Sketch the CLI flags, model state transition, or protocol interaction. Note that Strife keeps zero external Go dependencies (stdlib only).
+    validations:
+      required: true

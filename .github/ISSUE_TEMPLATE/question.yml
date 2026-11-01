@@ -1,0 +1,29 @@
+name: Question / Discussion
+description: Ask a question about using Strife, modeling an invariant, or interpreting a counterexample.
+title: "[question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about running Strife, writing a custom model/workload, or reading a counterexample trace? Ask here!
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      options:
+        - "Simulator & Determinism (strife sim / campaign)"
+        - "Linearizability / Transactional Checkers (strife check)"
+        - "Live Cluster Testing & strife-agent (strife run / plan)"
+        - "Custom Workloads & WebAssembly (strife workload)"
+        - "Contributing / Architecture"
+        - "Other"
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question or Context
+      description: Share what you are trying to test or build, along with any relevant command, config, or history snippet.
+    validations:
+      required: true

@@ -520,7 +520,7 @@ make test-short  # Fast unit tests with the race detector (-race)
 make chaos       # Full CI gauntlet: 200 seeds of Raft + bug discovery + shrinking verification
 ```
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for architectural decisions, benchmark methodology, and roadmap history.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines, [`SECURITY.md`](SECURITY.md) for vulnerability disclosure, [`SUPPORT.md`](SUPPORT.md) for community support, and [`docs/ROADMAP.md`](docs/ROADMAP.md) for architectural decisions and benchmark methodology.
 
 ## License
 
