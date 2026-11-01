@@ -284,10 +284,14 @@ func extractEvidence(rep *report.Report, camp *campaign.Manifest, ver *attest.Ve
 		for _, s := range camp.Seeds {
 			faultCount += s.Faults
 		}
+		modelName := "kv"
+		if strings.Contains(camp.System, "ledger") {
+			modelName = "ledger"
+		}
 		sum = EvidenceSummary{
 			Target:            camp.System,
 			RunKind:           "campaign",
-			Model:             "kv",
+			Model:             modelName,
 			Verdict:           camp.Verdict(),
 			SeedsTested:       camp.TotalSeeds,
 			SeedsLinearizable: camp.Passed,
@@ -461,7 +465,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 		}
 
 	case FrameworkBIOJK:
-		return []ControlResult{
+		out := []ControlResult{
 			evalControl(
 				FrameworkBIOJK,
 				"bi-ojk.pemulihan-bencana",
@@ -495,6 +499,20 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"Tandatangani laporan dengan kunci privat Ed25519 ('strife sign') untuk memenuhi bukti non-repudiation auditor.",
 			),
 		}
+		if sum.Model == "ledger" {
+			out = append(out, evalControl(
+				FrameworkBIOJK,
+				"bi-ojk.rekonsiliasi-buku-besar",
+				"Rekonsiliasi Buku Besar Berpasangan & Konservasi Saldo (Double-Entry Ledger)",
+				"Seluruh mutasi rekening memenuhi keseimbangan jurnal berpasangan (debit = kredit), konservasi total dana (ΣB_i = M_0), bebas saldo negatif (overdraft write-skew), dan idempotensi retry.",
+				isClean,
+				sum.TotalOperations > 0,
+				fmt.Sprintf("Pemeriksa buku besar berpasangan (model %q) memverifikasi %d transaksi/audit pada %q (%d pelanggaran konservasi/overdraft/double-spend).",
+					sum.Model, sum.TotalOperations, sum.Target, sum.SeedsViolating),
+				"Pastikan tidak terdapat pelanggaran LEDGER-CONSERVATION, LEDGER-OVERDRAFT, LEDGER-DOUBLE-SPEND, maupun LEDGER-UNBALANCED.",
+			))
+		}
+		return out
 	}
 	return nil
 }
@@ -503,18 +521,19 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 // They point to the text an auditor should read; they do not claim that a
 // passing check satisfies the provision on its own.
 var Citations = map[string]string{
-	"dora.resilience-testing":   "Regulation (EU) 2022/2554 (DORA), Art. 24 (general requirements for digital operational resilience testing) and Art. 25 (testing of ICT tools and systems)",
-	"dora.data-integrity":       "Regulation (EU) 2022/2554 (DORA), Art. 9(3)(b)-(c) (minimise the risk of corruption or loss of data; prevent the impairment of the integrity of data)",
-	"dora.recovery":             "Regulation (EU) 2022/2554 (DORA), Art. 11 (response and recovery) and Art. 12 (backup policies and procedures, restoration and recovery procedures)",
-	"soc2.processing-integrity": "AICPA Trust Services Criteria (2017, revised points of focus 2022), PI1.3 (processing) and PI1.4 (outputs)",
-	"soc2.recovery":             "AICPA Trust Services Criteria (2017, revised points of focus 2022), A1.2 (recovery infrastructure) and A1.3 (recovery plan testing)",
-	"soc2.test-evidence":        "AICPA Trust Services Criteria (2017, revised points of focus 2022), CC4.1 (ongoing and separate evaluations of controls)",
-	"iso27001.redundancy":       "ISO/IEC 27001:2022 Annex A, 8.13 (information backup) and 8.14 (redundancy of information processing facilities)",
-	"iso27001.clock-sync":       "ISO/IEC 27001:2022 Annex A, 8.17 (clock synchronization)",
-	"iso27001.security-testing": "ISO/IEC 27001:2022 Annex A, 8.29 (security testing in development and acceptance)",
-	"bi-ojk.pemulihan-bencana":  "POJK No. 11/POJK.03/2022 tentang Penyelenggaraan Teknologi Informasi oleh Bank Umum (rencana pemulihan bencana dan pengujiannya)",
-	"bi-ojk.integritas-data":    "POJK No. 11/POJK.03/2022 (pengamanan dan integritas data) dan SEOJK No. 29/SEOJK.03/2022 tentang Ketahanan dan Keamanan Siber bagi Bank Umum",
-	"bi-ojk.jejak-audit":        "POJK No. 11/POJK.03/2022 (jejak audit atas penyelenggaraan teknologi informasi)",
+	"dora.resilience-testing":        "Regulation (EU) 2022/2554 (DORA), Art. 24 (general requirements for digital operational resilience testing) and Art. 25 (testing of ICT tools and systems)",
+	"dora.data-integrity":            "Regulation (EU) 2022/2554 (DORA), Art. 9(3)(b)-(c) (minimise the risk of corruption or loss of data; prevent the impairment of the integrity of data)",
+	"dora.recovery":                  "Regulation (EU) 2022/2554 (DORA), Art. 11 (response and recovery) and Art. 12 (backup policies and procedures, restoration and recovery procedures)",
+	"soc2.processing-integrity":      "AICPA Trust Services Criteria (2017, revised points of focus 2022), PI1.3 (processing) and PI1.4 (outputs)",
+	"soc2.recovery":                  "AICPA Trust Services Criteria (2017, revised points of focus 2022), A1.2 (recovery infrastructure) and A1.3 (recovery plan testing)",
+	"soc2.test-evidence":             "AICPA Trust Services Criteria (2017, revised points of focus 2022), CC4.1 (ongoing and separate evaluations of controls)",
+	"iso27001.redundancy":            "ISO/IEC 27001:2022 Annex A, 8.13 (information backup) and 8.14 (redundancy of information processing facilities)",
+	"iso27001.clock-sync":            "ISO/IEC 27001:2022 Annex A, 8.17 (clock synchronization)",
+	"iso27001.security-testing":      "ISO/IEC 27001:2022 Annex A, 8.29 (security testing in development and acceptance)",
+	"bi-ojk.pemulihan-bencana":       "POJK No. 11/POJK.03/2022 tentang Penyelenggaraan Teknologi Informasi oleh Bank Umum (rencana pemulihan bencana dan pengujiannya)",
+	"bi-ojk.integritas-data":         "POJK No. 11/POJK.03/2022 (pengamanan dan integritas data) dan SEOJK No. 29/SEOJK.03/2022 tentang Ketahanan dan Keamanan Siber bagi Bank Umum",
+	"bi-ojk.jejak-audit":             "POJK No. 11/POJK.03/2022 (jejak audit atas penyelenggaraan teknologi informasi)",
+	"bi-ojk.rekonsiliasi-buku-besar": "POJK No. 11/POJK.03/2022 (integritas pemrosesan transaksi keuangan & rekonsiliasi buku besar) dan PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran",
 }
 
 func evalControl(fw FrameworkID, id, title, req string, safetyOK, coverageOK bool, evidence, gapHint string) ControlResult {

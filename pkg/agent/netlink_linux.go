@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -61,11 +62,16 @@ func clampU32(ns int64) uint32 {
 }
 
 // LinuxNetlink implements NetlinkEngine for Linux.
-type LinuxNetlink struct{}
+type LinuxNetlink struct {
+	mu         sync.Mutex
+	blockedIPs map[string]bool
+}
 
 // NewNetlinkEngine returns a LinuxNetlink instance.
 func NewNetlinkEngine() *LinuxNetlink {
-	return &LinuxNetlink{}
+	return &LinuxNetlink{
+		blockedIPs: make(map[string]bool),
+	}
 }
 
 // Available checks if RTNETLINK socket or tc is usable.
@@ -302,5 +308,105 @@ func (n *LinuxNetlink) setNetemTC(iface string, delay, jitter time.Duration, los
 func (n *LinuxNetlink) delNetemTC(iface string) error {
 	cmd := exec.Command("tc", "qdisc", "del", "dev", iface, "root")
 	_ = cmd.Run() // Ignore errors if already deleted
+	return nil
+}
+
+// BlockIP installs bidirectional kernel FIB blackhole rules (RTM_NEWRULE with
+// FR_ACT_BLACKHOLE) for the given peer IP or CIDR via AF_NETLINK.
+func (n *LinuxNetlink) BlockIP(ip string) error {
+	flags := uint16(nlmFRequest | nlmFAck | nlmFCreate | nlmFReplace)
+	if err := n.sendFIBRule(RTMNewRule, flags, ip, false); err != nil {
+		return err
+	}
+	if err := n.sendFIBRule(RTMNewRule, flags, ip, true); err != nil {
+		_ = n.sendFIBRule(RTMDelRule, uint16(nlmFRequest|nlmFAck), ip, false)
+		return err
+	}
+	n.mu.Lock()
+	if n.blockedIPs == nil {
+		n.blockedIPs = make(map[string]bool)
+	}
+	n.blockedIPs[ip] = true
+	n.mu.Unlock()
+	return nil
+}
+
+// UnblockIP removes the bidirectional kernel FIB blackhole rules (RTM_DELRULE)
+// for the given peer IP or CIDR via AF_NETLINK.
+func (n *LinuxNetlink) UnblockIP(ip string) error {
+	flags := uint16(nlmFRequest | nlmFAck)
+	errDst := n.sendFIBRule(RTMDelRule, flags, ip, false)
+	errSrc := n.sendFIBRule(RTMDelRule, flags, ip, true)
+	n.mu.Lock()
+	delete(n.blockedIPs, ip)
+	n.mu.Unlock()
+	if errDst != nil {
+		return errDst
+	}
+	return errSrc
+}
+
+// FlushBlockedIPs removes all FIB blackhole rules installed by this engine.
+func (n *LinuxNetlink) FlushBlockedIPs() error {
+	n.mu.Lock()
+	ips := make([]string, 0, len(n.blockedIPs))
+	for ip := range n.blockedIPs {
+		ips = append(ips, ip)
+	}
+	n.mu.Unlock()
+
+	var firstErr error
+	for _, ip := range ips {
+		if err := n.UnblockIP(ip); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (n *LinuxNetlink) sendFIBRule(msgType, flags uint16, ipStr string, isSrc bool) error {
+	fd, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW, syscall.NETLINK_ROUTE)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	if err := syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &netlinkTimeout); err != nil {
+		return err
+	}
+
+	seq := uint32(time.Now().UnixNano())
+	pid := uint32(syscall.Getpid())
+	pkt, err := BuildFIBRuleNetlinkMsg(msgType, flags, seq, pid, ipStr, isSrc, StrifeFIBRulePriority)
+	if err != nil {
+		return err
+	}
+
+	sa := &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}
+	if err := syscall.Sendto(fd, pkt, 0, sa); err != nil {
+		return err
+	}
+
+	rb := make([]byte, 4096)
+	nr, _, err := syscall.Recvfrom(fd, rb, 0)
+	if err != nil {
+		return err
+	}
+	if nr < syscall.SizeofNlMsghdr {
+		return fmt.Errorf("netlink: short fib rule reply (%d bytes)", nr)
+	}
+	respHdr := (*syscall.NlMsghdr)(unsafe.Pointer(&rb[0]))
+	if respHdr.Type == syscall.NLMSG_ERROR && nr >= syscall.SizeofNlMsghdr+4 {
+		errno := -int32(binary.LittleEndian.Uint32(rb[syscall.SizeofNlMsghdr : syscall.SizeofNlMsghdr+4]))
+		if errno == 0 {
+			return nil
+		}
+		if msgType == RTMNewRule && syscall.Errno(errno) == syscall.EEXIST {
+			return nil
+		}
+		if msgType == RTMDelRule && syscall.Errno(errno) == syscall.ENOENT {
+			return nil
+		}
+		return syscall.Errno(errno)
+	}
 	return nil
 }

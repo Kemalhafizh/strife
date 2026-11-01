@@ -11,12 +11,18 @@
 package raft
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kemalhafizh/strife/internal/rng"
 	"github.com/kemalhafizh/strife/pkg/sim"
 )
+
+// LedgerInitialBalance is the starting balance of every account ("acct:0",
+// "acct:1", ...) when a Raft cluster runs in double-entry ledger mode.
+const LedgerInitialBalance int64 = 1000
 
 // Config tunes a node.
 type Config struct {
@@ -37,6 +43,13 @@ type Config struct {
 	// UnsafeFsync acknowledges votes and entries before they are durable
 	// (think fsync=off or a lying disk cache). A crash loses acked state.
 	UnsafeFsync bool
+	// Ledger switches the state machine to a double-entry financial ledger
+	// supporting atomic account-to-account transfers and full balance audits.
+	Ledger bool
+	// OverdraftSkew validates sender account balances against local state
+	// when a transfer arrives (before replication) rather than re-checking at
+	// commit time, allowing concurrent transfers to overdraft an account.
+	OverdraftSkew bool
 }
 
 // Defaults returns the timing parameters used by Strife's built-in systems.
@@ -353,7 +366,14 @@ func (n *Node) applyCommitted() {
 	}
 }
 
-func (n *Node) apply(e Entry) sim.ClientReply {
+func (n *Node) acctBal(k string) int64 {
+	if v, ok := n.kv[k]; ok {
+		return v
+	}
+	return LedgerInitialBalance
+}
+
+func (n *Node) apply(e Entry) any {
 	r := sim.ClientReply{ReqID: e.ReqID, Status: sim.StatusOK, Leader: n.id}
 	if e.Noop {
 		return r
@@ -369,6 +389,39 @@ func (n *Node) apply(e Entry) sim.ClientReply {
 		} else {
 			r.Status = sim.StatusFail
 		}
+	case sim.FLedgerTransfer:
+		lr := sim.LedgerReply{ReqID: e.ReqID, Status: sim.StatusOK, Leader: n.id}
+		fromAcct, toAcct, ok := strings.Cut(e.Op.Key, "->")
+		if !ok || fromAcct == toAcct || e.Op.Value <= 0 {
+			lr.Status = sim.StatusFail
+			return lr
+		}
+		fromBal := n.acctBal(fromAcct)
+		toBal := n.acctBal(toAcct)
+		if !n.cfg.OverdraftSkew && fromBal < e.Op.Value {
+			lr.Status = sim.StatusFail
+			return lr
+		}
+		newFrom := fromBal - e.Op.Value
+		newTo := toBal + e.Op.Value
+		n.kv[fromAcct] = newFrom
+		n.kv[toAcct] = newTo
+		lr.OldFrom = fromBal
+		lr.OldTo = toBal
+		lr.NewFrom = newFrom
+		lr.NewTo = newTo
+		return lr
+	case sim.FLedgerAudit:
+		lr := sim.LedgerReply{
+			ReqID:    e.ReqID,
+			Status:   sim.StatusOK,
+			Leader:   n.id,
+			Balances: make([]int64, e.Op.Value),
+		}
+		for i := int64(0); i < e.Op.Value; i++ {
+			lr.Balances[i] = n.acctBal(fmt.Sprintf("acct:%d", i))
+		}
+		return lr
 	}
 	return r
 }
@@ -426,7 +479,30 @@ func (n *Node) Receive(from sim.NodeID, msg any) {
 
 func (n *Node) onClient(from sim.NodeID, m sim.ClientRequest) {
 	if n.role != leader {
-		n.send(from, sim.ClientReply{ReqID: m.ReqID, Status: sim.StatusRedirect, Leader: n.leader})
+		if n.cfg.Ledger {
+			n.send(from, sim.LedgerReply{ReqID: m.ReqID, Status: sim.StatusRedirect, Leader: n.leader})
+		} else {
+			n.send(from, sim.ClientReply{ReqID: m.ReqID, Status: sim.StatusRedirect, Leader: n.leader})
+		}
+		return
+	}
+	if n.cfg.Ledger && n.cfg.OverdraftSkew && m.Op.F == sim.FLedgerTransfer {
+		fromAcct, _, ok := strings.Cut(m.Op.Key, "->")
+		if !ok || n.acctBal(fromAcct) < m.Op.Value {
+			n.send(from, sim.LedgerReply{ReqID: m.ReqID, Status: sim.StatusFail, Leader: n.id})
+			return
+		}
+		term := n.state.term
+		n.w.After(n.id, 25*time.Millisecond, func() {
+			if n.role != leader || n.state.term != term {
+				return
+			}
+			n.state.log = append(n.state.log, Entry{Term: n.state.term, Op: m.Op, Client: from, ReqID: m.ReqID})
+			idx := n.lastIndex()
+			n.pending[idx] = pending{client: from, reqID: m.ReqID, term: n.state.term}
+			n.leaderAppended(idx)
+			n.broadcast()
+		})
 		return
 	}
 	if m.Op.F == "read" && (n.cfg.StaleReads || (n.cfg.LeaseReads && n.applied >= n.noopIndex && n.leaseValid())) {

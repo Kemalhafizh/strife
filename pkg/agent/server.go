@@ -82,14 +82,20 @@ func (s *Server) Probes() *probe.Collector {
 
 // Capabilities returns detected system capabilities.
 func (s *Server) Capabilities() Capabilities {
+	k8sAvail := false
+	if s.cgroup != nil && s.cgroup.K8s != nil {
+		k8sAvail = s.cgroup.K8s.Available()
+	}
 	return Capabilities{
-		OS:            runtime.GOOS,
-		Arch:          runtime.GOARCH,
-		Netlink:       s.netlink.Available(),
-		CgroupV2:      s.cgroup.Available(),
-		DirectSignals: runtime.GOOS == "linux" || runtime.GOOS == "darwin",
-		IPTables:      true,
-		TC:            s.netlink.Available(),
+		OS:             runtime.GOOS,
+		Arch:           runtime.GOARCH,
+		Netlink:        s.netlink.Available(),
+		NetlinkFIBRule: runtime.GOOS == "linux" && s.netlink.Available(),
+		CgroupV2:       s.cgroup.Available(),
+		Kubernetes:     k8sAvail,
+		DirectSignals:  runtime.GOOS == "linux" || runtime.GOOS == "darwin",
+		IPTables:       true,
+		TC:             s.netlink.Available(),
 	}
 }
 
@@ -178,12 +184,21 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 		case nemesis.Partition:
 			method = "filter:iptables"
 			var dropped []string
+			usedNetlink := 0
 			for _, ip := range req.TargetIPs {
+				if nlErr := s.netlink.BlockIP(ip); nlErr == nil {
+					usedNetlink++
+					dropped = append(dropped, ip)
+					continue
+				}
 				if e := s.filter.Drop(ip); e != nil && err == nil {
 					err = e
 				} else {
 					dropped = append(dropped, ip)
 				}
+			}
+			if usedNetlink > 0 && usedNetlink == len(req.TargetIPs) {
+				method = "netlink:fib-rule"
 			}
 			applied = fmt.Sprintf("partition:dropped:%s", strings.Join(dropped, ","))
 
@@ -255,6 +270,7 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 		switch req.Kind {
 		case nemesis.Partition:
 			method = "filter:iptables"
+			_ = s.netlink.FlushBlockedIPs()
 			err = s.filter.Flush()
 			applied = "partition:healed"
 
@@ -336,6 +352,7 @@ func (s *Server) Teardown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	_ = s.netlink.FlushBlockedIPs()
 	_ = s.filter.Flush()
 	_ = s.netlink.DelNetem(s.cfg.Interface)
 	for _, req := range s.activeFaults {

@@ -112,15 +112,19 @@ operation on the same key** (the worst case for P-compositionality):
 | 1,000 ops | 20 | 0 % | 98 k ops/s | 41 |
 | 10,000 ops | 20 | 0 % | 107 k ops/s | 33 |
 | 100,000 ops | 20 | 0 % | 95 k ops/s | 30 |
-| 1,000 ops | 50 | 0 % | 63 k ops/s | 75 |
-| 10,000 ops | 50 | 0 % | **unknown** after 50 M steps | – |
+| 1,000 ops | 50 | 0 % | 63 k ops/s | 1.1 |
+| 10,000 ops | 50 | 0 % | 18.7 k ops/s | 2.3 |
 | 10,000 ops | 10 | 1 % | 301 k ops/s | 3.0 |
 | 10,000 ops | 10 | 5 % | 344 k ops/s | 3.0 |
 
-The last full row is the honest limit: with 50 processes racing on a single
-key, the default budget (`MaxSteps` = 50 million per key) runs out and the
-verdict is `unknown` (exit code 3), never `linearizable`. Real workloads
-spread operations over several keys, which are checked independently.
+Value-interval pruning (`kvPruner` in `pkg/checker/linearizable.go`) propagates
+transitive effective `[effCall, effReturn]` windows across sole-creator writes
+and compare-and-swaps, pruning unreachable value transitions via dead-gap
+matching and ranking open candidates by earliest unsatisfied observer deadline.
+On 10,000 operations across 50 concurrent processes racing on a single key,
+this reduces search steps from `> 50,000,000` (`unknown`) to **22,913 steps**
+(**2.29 steps/op**, ~534 ms). Real workloads spread operations over several
+keys, which are checked independently.
 
 **Proving a violation:** a stale read is diagnosed directly, without
 exhausting the search: 1.1 M ops/s at 1,000 ops, 527 k ops/s at 100,000 ops

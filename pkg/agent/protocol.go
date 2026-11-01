@@ -15,6 +15,9 @@ type NetlinkEngine interface {
 	Available() bool
 	SetNetem(iface string, delay, jitter time.Duration, loss float64) error
 	DelNetem(iface string) error
+	BlockIP(ip string) error
+	UnblockIP(ip string) error
+	FlushBlockedIPs() error
 }
 
 // Action represents an operation requested from strife-agent.
@@ -29,14 +32,16 @@ const (
 
 // Capabilities describes the fault injection mechanisms available on this node.
 type Capabilities struct {
-	OS            string `json:"os"`
-	Arch          string `json:"arch"`
-	Netlink       bool   `json:"netlink"`
-	CgroupV2      bool   `json:"cgroup_v2"`
-	DirectSignals bool   `json:"direct_signals"`
-	NFTables      bool   `json:"nftables"`
-	IPTables      bool   `json:"iptables"`
-	TC            bool   `json:"tc"`
+	OS             string `json:"os"`
+	Arch           string `json:"arch"`
+	Netlink        bool   `json:"netlink"`
+	NetlinkFIBRule bool   `json:"netlink_fib_rule"`
+	CgroupV2       bool   `json:"cgroup_v2"`
+	Kubernetes     bool   `json:"kubernetes"`
+	DirectSignals  bool   `json:"direct_signals"`
+	NFTables       bool   `json:"nftables"`
+	IPTables       bool   `json:"iptables"`
+	TC             bool   `json:"tc"`
 }
 
 // StatusResponse is returned by GET /status and GET /health.

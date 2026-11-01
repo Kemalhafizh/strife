@@ -1,0 +1,255 @@
+package serve
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/subtle"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/kemalhafizh/strife/pkg/attest"
+	"github.com/kemalhafizh/strife/pkg/campaign"
+	"github.com/kemalhafizh/strife/pkg/report"
+)
+
+// Config configures the strife serve HTTP daemon.
+type Config struct {
+	ListenAddr     string
+	StoreDir       string
+	Token          string
+	SigningKeyPath string
+	Signer         string
+}
+
+// Server is the strife serve HTTP daemon and run registry.
+type Server struct {
+	cfg       Config
+	store     *Store
+	privKey   ed25519.PrivateKey
+	keyID     string
+	startTime time.Time
+	httpSrv   *http.Server
+}
+
+// IngestPayload accepts either a wrapped ingest envelope, a raw report.Report,
+// or a raw campaign.Manifest.
+type IngestPayload struct {
+	Commit   string             `json:"commit,omitempty"`
+	Branch   string             `json:"branch,omitempty"`
+	Report   *report.Report     `json:"report,omitempty"`
+	Campaign *campaign.Manifest `json:"campaign,omitempty"`
+}
+
+// NewServer initializes a Server backed by StoreDir.
+func NewServer(cfg Config) (*Server, error) {
+	if cfg.ListenAddr == "" {
+		cfg.ListenAddr = "127.0.0.1:8080"
+	}
+	if cfg.Signer == "" {
+		cfg.Signer = "strife-serve"
+	}
+	st, err := NewStore(cfg.StoreDir)
+	if err != nil {
+		return nil, err
+	}
+	var priv ed25519.PrivateKey
+	var keyID string
+	if cfg.SigningKeyPath != "" {
+		k, err := attest.LoadPrivateKey(cfg.SigningKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("serve: load signing key: %w", err)
+		}
+		priv = k
+		if pub, ok := priv.Public().(ed25519.PublicKey); ok {
+			keyID = attest.KeyID(pub)
+		}
+	}
+
+	s := &Server{
+		cfg:       cfg,
+		store:     st,
+		privKey:   priv,
+		keyID:     keyID,
+		startTime: time.Now().UTC(),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleUI)
+	mux.HandleFunc("/api/v1/health", s.handleHealth)
+	mux.HandleFunc("/api/v1/runs", s.handleRuns)
+	mux.HandleFunc("/api/v1/runs/", s.handleRunByID)
+	mux.HandleFunc("/api/v1/ingest", s.handleIngest)
+
+	s.httpSrv = &http.Server{
+		Addr:         cfg.ListenAddr,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+	return s, nil
+}
+
+// Store returns the underlying persistent Store.
+func (s *Server) Store() *Store {
+	return s.store
+}
+
+// Serve accepts HTTP requests on listener l.
+func (s *Server) Serve(l net.Listener) error {
+	return s.httpSrv.Serve(l)
+}
+
+// ListenAndServe starts listening on cfg.ListenAddr.
+func (s *Server) ListenAndServe() error {
+	return s.httpSrv.ListenAndServe()
+}
+
+// Shutdown gracefully stops the HTTP server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpSrv.Shutdown(ctx)
+}
+
+func (s *Server) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+	if s.cfg.Token == "" {
+		return true
+	}
+	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) != 1 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	runs := s.store.List("", "")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         "ok",
+		"version":        report.Version,
+		"uptime_seconds": int64(time.Since(s.startTime).Seconds()),
+		"stored_runs":    len(runs),
+		"targets":        s.store.Targets(),
+		"signing_active": len(s.privKey) == ed25519.PrivateKeySize,
+		"key_id":         s.keyID,
+	})
+}
+
+func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	runs := s.store.List(target, kind)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": len(runs),
+		"runs":  runs,
+	})
+}
+
+func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/runs/")
+	id = strings.TrimSpace(strings.TrimSuffix(id, "/"))
+	if id == "" {
+		s.handleRuns(w, r)
+		return
+	}
+	_, payload, err := s.store.Lookup(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !s.checkAuth(w, r) {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	commit := strings.TrimSpace(r.URL.Query().Get("commit"))
+	branch := strings.TrimSpace(r.URL.Query().Get("branch"))
+
+	var env IngestPayload
+	if err := json.Unmarshal(body, &env); err == nil && (env.Report != nil || env.Campaign != nil) {
+		if env.Commit != "" {
+			commit = env.Commit
+		}
+		if env.Branch != "" {
+			branch = env.Branch
+		}
+	} else {
+		var rawMap map[string]json.RawMessage
+		if err := json.Unmarshal(body, &rawMap); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid json: %v", err)})
+			return
+		}
+		if _, hasSeeds := rawMap["seeds"]; hasSeeds {
+			var m campaign.Manifest
+			if err := json.Unmarshal(body, &m); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			env.Campaign = &m
+		} else {
+			var rep report.Report
+			if err := json.Unmarshal(body, &rep); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			env.Report = &rep
+		}
+	}
+
+	var (
+		res  *IngestResult
+		err2 error
+	)
+	if env.Campaign != nil {
+		if commit != "" && env.Campaign.Commit == "" {
+			env.Campaign.Commit = commit
+		}
+		if branch != "" && env.Campaign.Branch == "" {
+			env.Campaign.Branch = branch
+		}
+		res, err2 = s.store.IngestCampaign(env.Campaign)
+	} else {
+		res, err2 = s.store.IngestReport(env.Report, commit, branch, s.privKey, s.cfg.Signer)
+	}
+	if err2 != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err2.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, res)
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+}

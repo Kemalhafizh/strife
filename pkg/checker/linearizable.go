@@ -186,12 +186,22 @@ type entry struct {
 	next  *entry
 }
 
+type cand struct {
+	e    *entry
+	next model.State
+	prio int64
+	ret  int64
+	lock bool
+}
+
 type frame struct {
 	e     *entry
 	state model.State
 	// forced frames linearize a read-only operation eagerly; there is no
 	// alternative worth trying at that level (see search).
 	forced bool
+	cands  []cand
+	idx    int
 }
 
 type cacheEntry struct {
@@ -406,6 +416,7 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 
 	state := m.Init()
 	lin := newLinSet(n)
+	pruner := newKVPruner(m, ops, lin)
 	cache := map[uint64][]cacheEntry{}
 	var stack []frame
 	bestDepth := -1
@@ -444,62 +455,116 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 		return nil
 	}
 
-	e := head.next
+	buildCands := func() ([]cand, *entry) {
+		var rMin *entry
+		for c := head.next; c != nil; c = c.next {
+			if !c.call {
+				rMin = c
+				break
+			}
+		}
+		var out []cand
+		for c := head.next; c != nil && c.call; c = c.next {
+			if t := twin[c.id]; t >= 0 && !lin.has(t) {
+				continue
+			}
+			ok, next := m.Step(state, ops[c.id].Input, ops[c.id].Output)
+			if !ok {
+				continue
+			}
+			if pruner != nil && !pruner.canTransition(m, c.id, state, next, rMin) {
+				continue
+			}
+			out = append(out, cand{
+				e:    c,
+				next: next,
+				ret:  ops[c.id].Return,
+			})
+		}
+		if pruner != nil && len(out) > 1 {
+			pruner.rankCandidates(m, state, head.next, rMin, out)
+			sort.SliceStable(out, func(i, j int) bool {
+				a, b := out[i], out[j]
+				if a.lock != b.lock {
+					return !a.lock
+				}
+				if a.prio != b.prio {
+					return a.prio < b.prio
+				}
+				if a.ret != b.ret {
+					return a.ret < b.ret
+				}
+				return ops[a.e.id].Call < ops[b.e.id].Call
+			})
+		}
+		return out, rMin
+	}
+
+	var curCands []cand
+	var curIdx int
+	var curRMin *entry
+	needLevel := true
+
 	for head.next != nil {
 		res.Steps++
 		if res.Steps > maxSteps {
 			res.Verdict, res.Reason = Unknown, ReasonSteps
-			return res, nil
+			return res, best
 		}
 		if timeout > 0 && res.Steps&0xfff == 0 && time.Now().After(deadline) {
 			res.Verdict, res.Reason = Unknown, ReasonTime
 			return res, nil
 		}
-		if e.call && e == head.next {
+
+		if needLevel {
 			if c := eagerRead(); c != nil {
 				lin.set(c.id)
 				if !cached(state) {
 					stack = append(stack, frame{e: c, state: state, forced: true})
 					lift(c)
-					e = head.next
 					continue
 				}
 				// Known dead end: the level fails without alternatives.
 				lin.clear(c.id)
-				e = &entry{id: c.id, call: false} // fall through to backtracking
+				curCands, curIdx, curRMin = nil, 0, nil
+				needLevel = false
+			} else {
+				curCands, curRMin = buildCands()
+				curIdx = 0
+				needLevel = false
 			}
 		}
-		if e.call {
-			if t := twin[e.id]; t >= 0 && !lin.has(t) {
-				e = e.next
+
+		if curIdx < len(curCands) {
+			ch := curCands[curIdx]
+			curIdx++
+			lin.set(ch.e.id)
+			if !cached(ch.next) {
+				stack = append(stack, frame{
+					e:     ch.e,
+					state: state,
+					cands: curCands,
+					idx:   curIdx,
+				})
+				state = ch.next
+				lift(ch.e)
+				needLevel = true
 				continue
 			}
-			ok, next := m.Step(state, ops[e.id].Input, ops[e.id].Output)
-			if ok {
-				lin.set(e.id)
-				if !cached(next) {
-					stack = append(stack, frame{e: e, state: state})
-					state = next
-					lift(e)
-					e = head.next
-					continue
-				}
-				lin.clear(e.id)
-			}
-			e = e.next
+			lin.clear(ch.e.id)
 			continue
 		}
 
-		// A return event: its operation must already have been linearized,
-		// so the current prefix is a dead end.
-		if record && len(stack) > bestDepth && e.match != nil {
+		// All candidate calls before rMin are exhausted: the current prefix
+		// is a dead end.
+		if record && len(stack) > bestDepth && curRMin != nil && curRMin.match != nil {
 			bestDepth = len(stack)
-			best = &deadEnd{state: state, stuck: e.id}
+			best = &deadEnd{state: state, stuck: curRMin.id}
 			for _, f := range stack {
 				best.linearized = append(best.linearized, f.e.id)
 			}
-			for c := head.next; c != nil && c != e; c = c.next {
-				if c.call && c.id != e.id {
+			for c := head.next; c != nil && c != curRMin; c = c.next {
+				if c.call && c.id != curRMin.id {
 					best.candidates = append(best.candidates, c.id)
 				}
 			}
@@ -514,8 +579,11 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 			state = top.state
 			lin.clear(top.e.id)
 			unlift(top.e)
-			e = top.e.next
 			if !top.forced {
+				curCands = top.cands
+				curIdx = top.idx
+				curRMin = nil
+				needLevel = false
 				break
 			}
 		}

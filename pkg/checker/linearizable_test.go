@@ -284,6 +284,93 @@ func BenchmarkCheck(b *testing.B) {
 	}
 }
 
+// generateConcurrentKVHistory constructs a genuinely concurrent single-key
+// linearizable history of n operations across procs processes where invocation
+// order (Call) is scrambled relative to the true server linearization order.
+func generateConcurrentKVHistory(seed uint64, n, procs int, numValues int64) []history.Operation {
+	r := rng.New(seed)
+	ops := make([]history.Operation, 0, n)
+	procFreeAt := make([]int64, procs)
+	var cur int64
+	var set bool
+	var serverTime int64 = 100
+
+	for i := 0; i < n; i++ {
+		p := i % procs
+		serverTime += 1 + r.Int64n(5)
+		if procFreeAt[p]+2 > serverTime {
+			serverTime = procFreeAt[p] + 2
+		}
+		// Call happened before serverTime (after process p became free);
+		// Return happens after serverTime, creating up to procs-way overlap.
+		maxLead := serverTime - procFreeAt[p] - 1
+		if maxLead > int64(procs)*4 {
+			maxLead = int64(procs) * 4
+		}
+		lead := int64(1)
+		if maxLead > 1 {
+			lead += r.Int64n(maxLead)
+		}
+		call := serverTime - lead
+		ret := serverTime + 1 + r.Int64n(int64(procs)*4)
+		procFreeAt[p] = ret + 1
+
+		in := history.Op{Index: i, Process: p, Type: history.Invoke, Key: "x"}
+		out := history.Op{Process: p, Type: history.OK, Key: "x"}
+		roll := r.Intn(10)
+		switch {
+		case roll < 5: // 50% reads
+			in.F = history.FRead
+			if set {
+				out.Value = v(cur)
+			}
+		case roll < 8: // 30% writes
+			in.F = history.FWrite
+			cur = r.Int64n(numValues)
+			set = true
+			in.Value = v(cur)
+		default: // 20% CAS
+			in.F = history.FCas
+			if set {
+				in.Old = v(cur)
+			}
+			cur = r.Int64n(numValues)
+			set = true
+			in.Value = v(cur)
+		}
+		ops = append(ops, history.Operation{
+			ID:      i,
+			Process: p,
+			Call:    call,
+			Return:  ret,
+			Input:   in,
+			Output:  out,
+		})
+	}
+	return ops
+}
+
+func TestCheck50ConcurrentProcesses(t *testing.T) {
+	for _, n := range []int{500, 1000, 2000, 5000, 10000} {
+		ops := generateConcurrentKVHistory(2026, n, 50, 64)
+		rep := CheckOperations(model.KV{}, ops, Options{SearchOnly: true, MaxSteps: 100_000})
+		if rep.Verdict != Linearizable {
+			t.Fatalf("n=%d: expected linearizable, got %s (steps=%d, reason=%s)", n, rep.Verdict, rep.Keys[0].Steps, rep.Keys[0].Reason)
+		}
+	}
+}
+
+func BenchmarkCheck50Concurrent(b *testing.B) {
+	ops := generateConcurrentKVHistory(2026, 10_000, 50, 64)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rep := CheckOperations(model.KV{}, ops, Options{})
+		if rep.Verdict != Linearizable {
+			b.Fatalf("unexpected verdict: %s", rep.Verdict)
+		}
+	}
+}
+
 func TestQueueModelLinearizable(t *testing.T) {
 	b := &builder{}
 	b.add(inv(0, "enqueue", "q", v(10))).add(done(0, history.OK, "enqueue", "q", v(10)))

@@ -10,7 +10,7 @@ import (
 var v = history.Int
 
 func TestByNameAndNames(t *testing.T) {
-	expectedNames := []string{"kv", "set", "queue", "counter", "idgen", "txn", "append"}
+	expectedNames := []string{"kv", "set", "queue", "counter", "idgen", "txn", "append", "ledger"}
 	names := Names()
 	if !reflect.DeepEqual(names, expectedNames) {
 		t.Fatalf("expected names %v, got %v", expectedNames, names)
@@ -36,6 +36,8 @@ func TestByNameAndNames(t *testing.T) {
 		"unique-id":     "idgen",
 		"transaction":   "txn",
 		"transactional": "txn",
+		"double-entry":  "ledger",
+		"bank-ledger":   "ledger",
 	}
 	for alias, canonical := range aliases {
 		m, err := ByName(alias)

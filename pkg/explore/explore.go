@@ -32,18 +32,31 @@ type System struct {
 	Hint string
 }
 
+// Model returns the consistency model used to check histories from this system.
+func (s System) Model() model.Model {
+	if s.Raft.Ledger {
+		return model.Ledger{InitialBalance: raft.LedgerInitialBalance}
+	}
+	return model.KV{}
+}
+
 // Systems lists the built-in simulated systems.
 func Systems() []System {
 	d := raft.Defaults()
-	stale, lease, unsafe := d, d, d
+	stale, lease, unsafe, ledger, ledgerOverdraft := d, d, d, d, d
 	stale.StaleReads = true
 	lease.LeaseReads = true
 	unsafe.UnsafeFsync = true
+	ledger.Ledger = true
+	ledgerOverdraft.Ledger = true
+	ledgerOverdraft.OverdraftSkew = true
 	return []System{
 		{Name: "raft", Description: "Correct Raft; reads go through the log.", Raft: d, Expect: checker.Linearizable},
 		{Name: "raft-stale-reads", Description: "Leader serves reads locally without confirming leadership.", Raft: stale, Expect: checker.Violation, Hint: "partition"},
 		{Name: "raft-lease", Description: "Leader-lease reads timed with the wall clock; clock jumps outlive the lease.", Raft: lease, Expect: checker.Violation, Hint: "clock-skew,partition"},
 		{Name: "raft-unsafe-fsync", Description: "Acks votes and entries before fsync completes.", Raft: unsafe, Expect: checker.Violation, Hint: "kill,io-stall"},
+		{Name: "raft-ledger", Description: "Double-entry financial ledger over Raft; transfers and balance audits go through the log.", Raft: ledger, Expect: checker.Linearizable},
+		{Name: "raft-ledger-overdraft", Description: "Validates sender balance against local state before replication, allowing concurrent transfers to overdraft.", Raft: ledgerOverdraft, Expect: checker.Violation, Hint: "partition,latency"},
 	}
 }
 
@@ -175,7 +188,7 @@ func Run(cfg Config) (*Result, error) {
 	for i := 0; i < cfg.Clients; i++ {
 		id := sim.ClientBase + sim.NodeID(i)
 		w.Add(id, &client{
-			w: w, id: id, idx: i, cfg: cfg, rec: rec, process: i,
+			w: w, id: id, idx: i, cfg: cfg, sys: sys, rec: rec, process: i,
 			rand:   root.Fork(fmt.Sprintf("client/%d", i)),
 			guess:  sim.NodeID(i % cfg.Nodes),
 			plugin: plug,
@@ -205,7 +218,7 @@ func Run(cfg Config) (*Result, error) {
 	w.Run(int64(cfg.Duration + cfg.OpTimeout + 100*time.Millisecond))
 
 	ops := rec.Ops()
-	rep, err := checker.Check(model.KV{}, ops, checker.Options{MaxSteps: cfg.MaxSteps, Timeout: cfg.CheckTimeout})
+	rep, err := checker.Check(sys.Model(), ops, checker.Options{MaxSteps: cfg.MaxSteps, Timeout: cfg.CheckTimeout})
 	if err != nil {
 		return nil, err
 	}
@@ -345,7 +358,8 @@ func Explore(base Config, seeds []uint64, workers int, onResult func(*Result)) [
 					s.Verdict, s.Ops, s.Faults, s.TraceHash = res.Check.Verdict, res.Check.Operations, len(res.Schedule.Faults), res.TraceHash
 					s.Elapsed = res.Elapsed
 					if res.Check.Verdict == checker.Violation {
-						_ = checker.AddWitnesses(model.KV{}, res.History, &res.Check, checker.WitnessOptions{DiagnoseOnly: true})
+						sys, _ := LookupSystem(cfg.System)
+						_ = checker.AddWitnesses(sys.Model(), res.History, &res.Check, checker.WitnessOptions{DiagnoseOnly: true})
 					}
 					for _, k := range res.Check.Failures() {
 						if k.Counterexample != nil {

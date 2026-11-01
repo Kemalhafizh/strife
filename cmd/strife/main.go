@@ -29,6 +29,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/probe"
 	"github.com/kemalhafizh/strife/pkg/report"
 	"github.com/kemalhafizh/strife/pkg/runner"
+	"github.com/kemalhafizh/strife/pkg/serve"
 	"github.com/kemalhafizh/strife/pkg/shrink"
 	"github.com/kemalhafizh/strife/pkg/transport"
 	"github.com/kemalhafizh/strife/pkg/workload"
@@ -58,6 +59,7 @@ Usage:
   strife sign       [flags]   cryptographically sign a report artifact (in-toto attestation)
   strife verify     [flags]   verify a signed compliance bundle against a public key
   strife compliance [flags]   generate a regulatory compliance & resilience audit dossier
+  strife serve      [flags]   run the continuous verification & run registry HTTP daemon
   strife systems              list the built-in simulated systems
   strife version
 
@@ -101,6 +103,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdVerify(rest, stdout, stderr)
 	case "compliance":
 		code, err = cmdCompliance(rest, stdout, stderr)
+	case "serve":
+		code, err = cmdServe(rest, stdout, stderr)
 	case "systems":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "SYSTEM\tEXPECTED\tEXPOSED BY\tDESCRIPTION")
@@ -270,8 +274,8 @@ func reproduce(c explore.Config, planPath string) string {
 		c.System, c.Seed, c.Nodes, c.Clients, c.Keys, c.Values, c.Duration, c.OpTimeout)
 	fmt.Fprintf(&b, " --read-ratio %g --cas-ratio %g --fault-interval %v --fault-length %v", c.ReadRatio, c.CasRatio, c.FaultInterval, c.FaultLength)
 	if c.Workload != "" {
-		wArg := c.Workload
-		if strings.ContainsAny(wArg, " \t'\"$`\\;&|<>()*?[]{}!#~") {
+		wArg := filepath.ToSlash(c.Workload)
+		if strings.ContainsAny(wArg, " \t'\"$`;&|<>()*?[]{}!#") {
 			wArg = transport.Quote(wArg)
 		}
 		fmt.Fprintf(&b, " --workload %s", wArg)
@@ -295,7 +299,8 @@ func reproduce(c explore.Config, planPath string) string {
 		if planPath == "" {
 			planPath = "schedule.json"
 		}
-		if strings.ContainsAny(planPath, " \t'\"$`\\;&|<>()*?[]{}!#~") {
+		planPath = filepath.ToSlash(planPath)
+		if strings.ContainsAny(planPath, " \t'\"$`;&|<>()*?[]{}!#") {
 			planPath = transport.Quote(planPath)
 		}
 		fmt.Fprintf(&b, " --plan %s", planPath)
@@ -315,7 +320,8 @@ func simReport(res *explore.Result, dir string) (*report.Report, error) {
 }
 
 func writeSimReport(res *explore.Result, dir string) (string, error) {
-	addWitnesses(model.KV{}, res.History, &res.Check)
+	sys, _ := explore.LookupSystem(res.Config.System)
+	addWitnesses(sys.Model(), res.History, &res.Check)
 	r, err := simReport(res, dir)
 	if err != nil {
 		return "", err
@@ -348,7 +354,8 @@ func simOne(cfg explore.Config, o simOptions, stdout io.Writer) (int, error) {
 			return emitCI(o.ci, exitError, err, report.ErrorSuite(suiteName, err))
 		}
 	}
-	addWitnesses(model.KV{}, res.History, &res.Check)
+	sys, _ := explore.LookupSystem(cfg.System)
+	addWitnesses(sys.Model(), res.History, &res.Check)
 	printResult(stdout, res)
 	dir := ""
 	if o.out != "" {
@@ -1599,6 +1606,49 @@ func withIsolation(m model.Model, level string) model.Model {
 	case model.Append:
 		t.Level = level
 		return t
+	case model.Ledger:
+		t.Level = level
+		return t
 	}
 	return m
+}
+
+func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	listen := fs.String("listen", "127.0.0.1:8080", "TCP address to listen on")
+	storeDir := fs.String("store", "strife-registry", "directory for persistent run registry and artifacts")
+	token := fs.String("token", "", "optional Bearer token required for POST /api/v1/ingest")
+	keyPath := fs.String("key", "", "optional Ed25519 private key (.key) to sign ingested reports automatically")
+	signer := fs.String("signer", "strife-serve", "signer identity recorded in automatic in-toto attestations")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+
+	srv, err := serve.NewServer(serve.Config{
+		ListenAddr:     *listen,
+		StoreDir:       *storeDir,
+		Token:          *token,
+		SigningKeyPath: *keyPath,
+		Signer:         *signer,
+	})
+	if err != nil {
+		return exitError, err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+
+	fmt.Fprintf(stdout, "strife serve listening on http://%s (store: %s)\n", *listen, *storeDir)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, flag.ErrHelp) && !strings.Contains(err.Error(), "Server closed") {
+		return exitError, err
+	}
+	return exitOK, nil
 }

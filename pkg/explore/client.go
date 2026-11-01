@@ -20,6 +20,7 @@ type client struct {
 	id      sim.NodeID
 	idx     int
 	cfg     Config
+	sys     System
 	rand    *rng.Rand
 	rec     *history.Recorder
 	process int
@@ -77,6 +78,38 @@ func (c *client) next() {
 			inv.Txn = nil
 			c.op = sim.KVOp{F: history.FWrite, Key: inv.Key, Value: v}
 		}
+	} else if c.sys.Raft.Ledger {
+		nAccts := max(2, c.cfg.Keys)
+		r := c.rand.Float64()
+		if r < 0.2 {
+			c.op = sim.KVOp{F: sim.FLedgerAudit, Key: "audit", Value: int64(nAccts)}
+			auditTxn := make([]history.MicroOp, nAccts)
+			for i := 0; i < nAccts; i++ {
+				auditTxn[i] = history.MicroOp{F: history.MicroRead, Key: fmt.Sprintf("acct:%d", i)}
+			}
+			inv = history.Op{Process: c.process, Type: history.Invoke, F: history.FTxn, Key: "audit", Txn: auditTxn}
+		} else {
+			fromIdx := c.rand.Intn(nAccts)
+			toIdx := (fromIdx + 1 + c.rand.Intn(nAccts-1)) % nAccts
+			fromAcct := fmt.Sprintf("acct:%d", fromIdx)
+			toAcct := fmt.Sprintf("acct:%d", toIdx)
+			pairKey := fromAcct + "->" + toAcct
+			amt := (1 + c.rand.Int64n(int64(c.cfg.Values))) * 200
+			c.op = sim.KVOp{F: sim.FLedgerTransfer, Key: pairKey, Value: amt}
+			inv = history.Op{
+				Process: c.process,
+				Type:    history.Invoke,
+				F:       history.FTxn,
+				Key:     pairKey,
+				Value:   history.Int(amt),
+				Txn: []history.MicroOp{
+					{F: history.MicroRead, Key: fromAcct},
+					{F: history.MicroWrite, Key: fromAcct},
+					{F: history.MicroRead, Key: toAcct},
+					{F: history.MicroWrite, Key: toAcct},
+				},
+			}
+		}
 	} else {
 		key := fmt.Sprintf("k%d", c.rand.Intn(c.cfg.Keys))
 		inv = history.Op{Process: c.process, Type: history.Invoke, Key: key}
@@ -102,7 +135,11 @@ func (c *client) next() {
 	c.w.After(c.id, c.cfg.OpTimeout, func() {
 		if c.busy && c.gen == gen {
 			c.guess = c.home()
-			c.complete(history.Info, sim.ClientReply{})
+			if c.sys.Raft.Ledger {
+				c.completeLedger(history.Info, sim.LedgerReply{})
+			} else {
+				c.complete(history.Info, sim.ClientReply{})
+			}
 		}
 	})
 	c.attempt()
@@ -116,6 +153,30 @@ func (c *client) attempt() {
 }
 
 func (c *client) Receive(from sim.NodeID, msg any) {
+	if lr, ok := msg.(sim.LedgerReply); ok {
+		if !c.busy || lr.ReqID != c.reqID {
+			return
+		}
+		switch lr.Status {
+		case sim.StatusRedirect:
+			if lr.Leader >= 0 && lr.Leader != from {
+				c.guess = lr.Leader
+			} else {
+				c.guess = sim.NodeID((int(from) + 1) % c.cfg.Nodes)
+			}
+			gen := c.gen
+			c.w.After(c.id, 5*time.Millisecond, func() {
+				if c.busy && c.gen == gen {
+					c.attempt()
+				}
+			})
+		case sim.StatusOK:
+			c.completeLedger(history.OK, lr)
+		case sim.StatusFail:
+			c.completeLedger(history.Fail, lr)
+		}
+		return
+	}
 	m, ok := msg.(sim.ClientReply)
 	if !ok || !c.busy || m.ReqID != c.reqID {
 		return
@@ -138,6 +199,44 @@ func (c *client) Receive(from sim.NodeID, msg any) {
 	case sim.StatusFail:
 		c.complete(history.Fail, m)
 	}
+}
+
+func (c *client) completeLedger(t history.Type, lr sim.LedgerReply) {
+	out := history.Op{Process: c.process, Type: t, F: history.FTxn, Key: c.invoked.Key}
+	if t == history.OK {
+		switch c.op.F {
+		case sim.FLedgerTransfer:
+			fromAcct, toAcct, _ := strings.Cut(c.op.Key, "->")
+			out.Txn = []history.MicroOp{
+				{F: history.MicroRead, Key: fromAcct, Value: history.Int(lr.OldFrom)},
+				{F: history.MicroWrite, Key: fromAcct, Value: history.Int(lr.NewFrom)},
+				{F: history.MicroRead, Key: toAcct, Value: history.Int(lr.OldTo)},
+				{F: history.MicroWrite, Key: toAcct, Value: history.Int(lr.NewTo)},
+			}
+		case sim.FLedgerAudit:
+			out.Txn = make([]history.MicroOp, len(lr.Balances))
+			for i, b := range lr.Balances {
+				out.Txn[i] = history.MicroOp{F: history.MicroRead, Key: fmt.Sprintf("acct:%d", i), Value: history.Int(b)}
+			}
+		}
+	}
+	if t == history.Info {
+		out.Error = "timeout"
+	}
+	if t != history.Info {
+		out.Node = fmt.Sprintf("n%d", lr.Leader)
+	}
+	c.rec.Record(out)
+	c.busy = false
+	c.gen++
+	if t == history.Info {
+		c.process += c.cfg.Clients
+	}
+	think := time.Duration(0)
+	if c.cfg.Think > 0 {
+		think = time.Duration(c.rand.Int64n(int64(c.cfg.Think)))
+	}
+	c.w.After(c.id, think, c.next)
 }
 
 func (c *client) complete(t history.Type, m sim.ClientReply) {

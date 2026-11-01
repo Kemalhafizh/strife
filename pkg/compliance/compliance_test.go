@@ -198,3 +198,58 @@ func TestEvaluateRejectsTamperedReportOrMismatchedBundle(t *testing.T) {
 		t.Fatalf("expected error when report fingerprint does not match contents")
 	}
 }
+
+func TestEvaluateLedgerModelIncludesBIOJKReconciliation(t *testing.T) {
+	v := int64(200)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FTxn, Key: "acct:0->acct:1", Value: &v, Time: 100},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FTxn, Key: "acct:0->acct:1", Value: &v, Time: 200},
+	}
+	sched := nemesis.Schedule{
+		Nodes:    5,
+		Duration: 10 * time.Second,
+		Faults: []nemesis.Fault{
+			{ID: 1, Kind: nemesis.Partition, Nodes: []int{0, 1}, Start: time.Second, End: 3 * time.Second},
+			{ID: 2, Kind: nemesis.Kill, Nodes: []int{2}, Start: 2 * time.Second, End: 4 * time.Second},
+			{ID: 3, Kind: nemesis.IOStall, Nodes: []int{3}, Start: 3 * time.Second, End: 5 * time.Second},
+			{ID: 4, Kind: nemesis.ClockSkew, Nodes: []int{4}, Start: 4 * time.Second, End: 6 * time.Second},
+		},
+	}
+	rep, err := report.New(
+		report.KindSimulation,
+		"raft-ledger",
+		7,
+		map[string]any{"nodes": 5},
+		sched,
+		ops,
+		checker.Report{
+			Model:      "ledger",
+			Verdict:    checker.Linearizable,
+			Operations: 1,
+			Checked:    1,
+		},
+		"trace-ledger-7",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dossier, err := Evaluate(Options{
+		Report:     rep,
+		Frameworks: []FrameworkID{FrameworkBIOJK},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(dossier.Controls) != 4 {
+		t.Fatalf("expected 4 BI/OJK controls for ledger model, got %d", len(dossier.Controls))
+	}
+	found := false
+	for _, c := range dossier.Controls {
+		if c.ControlID == "bi-ojk.rekonsiliasi-buku-besar" && c.Status == StatusPass {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected passing bi-ojk.rekonsiliasi-buku-besar control, got %+v", dossier.Controls)
+	}
+}

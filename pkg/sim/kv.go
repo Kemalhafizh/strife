@@ -35,3 +35,23 @@ const (
 	StatusFail     = "fail"
 	StatusRedirect = "redirect"
 )
+
+// Ledger operations carried in KVOp.F when Raft is configured as a
+// double-entry financial ledger.
+const (
+	FLedgerTransfer = "ledger-transfer"
+	FLedgerAudit    = "ledger-audit"
+)
+
+// LedgerReply answers a ClientRequest for a double-entry financial ledger
+// operation (FLedgerTransfer or FLedgerAudit).
+type LedgerReply struct {
+	ReqID    uint64
+	Status   string
+	Leader   NodeID
+	OldFrom  int64
+	OldTo    int64
+	NewFrom  int64
+	NewTo    int64
+	Balances []int64
+}

@@ -164,22 +164,24 @@ Here the stale reads from PostgreSQL's asynchronous standbys need no fault at al
 
 ## Consistency Models & Anomaly Detection
 
-`strife check` verifies any JSONL history against seven built-in models:
+`strife check` verifies any JSONL history against eight built-in models:
 
 ```sh
 strife check --history ops.jsonl --model kv --out report/
 strife check --history txn.jsonl --model txn --isolation snapshot-isolation
+strife check --history ledger.jsonl --model ledger --out report/
 ```
 
 | Model | Operations | Verification Engine & Complexity |
 | :--- | :--- | :--- |
-| `kv` | `read`, `write`, `cas` | Wing & Gong / Lowe linearizability search with bitset state memoization, per-key P-compositionality, symmetry reduction, and $O(N \log N)$ stale-read diagnosis (~95k–500k ops/s per core on a single key depending on concurrency; [measured](docs/BENCHMARKS.md#2-checker-throughput)). |
+| `kv` | `read`, `write`, `cas` | Wing & Gong / Lowe linearizability search with bitset state memoization, value-interval dead-gap pruning (`kvPruner`), per-key P-compositionality, symmetry reduction, and $O(N \log N)$ stale-read diagnosis (~18.7k–508k ops/s per core on a single key up to 50 concurrent processes; [measured](docs/BENCHMARKS.md#2-checker-throughput)). |
 | `set` | `add`, `read` | Grow-only set linearizability + missing-element counterexample witnesses. |
 | `queue` | `enqueue`, `dequeue` | FIFO queue linearizability; diagnoses phantom dequeues, FIFO order inversions, and premature empty returns. |
 | `counter` | `inc` / `add`, `read` | Shared integer counter linearizability; diagnoses lost increments and overstated reads. |
 | `idgen` | `generate` | Unique monotonic/non-colliding ID verification with duplicate witness extraction. |
 | `txn` | `txn` (`[r(k), w(k,v), ...]`) | Direct Serialization Graph (DSG) construction (`wr`, `ww`, `rw`, `so`, `ro` edges) + Tarjan SCC shortest-cycle extraction across 6 isolation levels. |
 | `append` | `txn` of `append(k, v)` / `r(k) → [v…]` | Elle-style list-append: version orders recovered from reads, `ww`/`wr`/`rw` and real-time edges, lost appends, incompatible orders, duplicates and internal-consistency checks (~40k–57k txns/s; 0 false positives and 99.81 % of invalid histories caught in a brute-force cross-check, [measured](docs/BENCHMARKS.md#3-checker-correctness)). |
+| `ledger` | `txn` of account transfers & balance audits | Double-entry financial ledger & conservation-of-money checker (`LEDGER-CONSERVATION` $\sum B_i = M_0$, `LEDGER-OVERDRAFT` $B_i < 0$ & concurrent `G2-item` write skew, `LEDGER-DOUBLE-SPEND` across `info` timeout retries, and `LEDGER-UNBALANCED` $\sum \Delta_k \ne 0$). |
 
 <details>
 <summary><strong>Transactional Isolation Levels & Adya Anomaly Classification (<code>--model txn</code>)</strong></summary>
@@ -388,9 +390,11 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 | System | Bug | Required faults | Violating seeds |
 | :--- | :--- | :--- | :--- |
 | `raft` | none | all 8 fault kinds | **0 / 200** |
+| `raft-ledger` | none (double-entry financial ledger over Raft) | all 8 fault kinds | **0 / 200** |
 | `raft-stale-reads` | deposed leader serves local reads | `partition` | **75 / 200** |
 | `raft-lease` | lease timed with the local wall clock | `clock-skew` + `partition` | **10 / 200** (0 without `clock-skew`) |
 | `raft-unsafe-fsync` | votes and entries acked before `fsync` | `kill` + `io-stall` | **7 / 200** (0 under `partition` alone) |
+| `raft-ledger-overdraft` | pre-replication balance check allows concurrent overdraft (`LEDGER-OVERDRAFT`) | `partition` + `latency` | **60 / 60** |
 
 **Live clusters in CI** ([`.github/workflows/live.yml`](.github/workflows/live.yml), every push). Correct configurations must pass and known-weak ones must be caught:
 
@@ -430,32 +434,34 @@ flowchart LR
 ```
 
 ```text
-cmd/strife        CLI: sim, campaign, shrink, check, plan, run, bench, workload, keygen, sign, verify, compliance, systems, version
-cmd/strife-agent  Per-node daemon: Linux AF_NETLINK netem, direct signals, cgroup v2, /probes telemetry, token auth
+cmd/strife        CLI: sim, campaign, shrink, check, plan, run, bench, workload, keygen, sign, verify, compliance, serve, systems, version
+cmd/strife-agent  Per-node daemon: Linux AF_NETLINK (netem + FIB blackhole rules), K8s pod/container cgroup v2 discovery, direct signals, /probes telemetry
 internal/rng      Pinned, forkable xoshiro256** PRNG seeded with SplitMix64
 internal/stats    Nearest-rank percentiles and latency summaries
 internal/secret   env:/file: secret references and redaction
 internal/jsonschema  JSON Schema generation, validation and compatibility checks for schemas/
 pkg/history       Jepsen-style operation histories, JSONL codec, SHA-256 hashing
-pkg/model         Sequential specifications: kv, set, queue, counter, idgen, txn, append
+pkg/model         Sequential & transactional specifications: kv, set, queue, counter, idgen, txn, append, ledger
 pkg/txn           Dependency-graph checkers: register txns and Elle-style list-append (G0, G1a/b/c, G-single, G2, G-realtime, lost appends)
-pkg/checker       Wing & Gong / Lowe linearizability solver, P-compositionality, witness diagnosis
+pkg/checker       Wing & Gong / Lowe linearizability solver, value-interval pruning (kvPruner), P-compositionality, witness diagnosis
 pkg/nemesis       Deterministic fault schedule generator & command lowering
 pkg/workload      Declarative workload compiler, presets, and fuel-metered WebAssembly 1.0 stack machine
 pkg/sim           Discrete-event simulation world (network, timers, disk flushes, local clocks)
-pkg/sim/raft      Reference Raft consensus implementation with configurable safety bugs
+pkg/sim/raft      Reference Raft consensus & double-entry ledger implementation with configurable safety bugs
 pkg/explore       Parallel seed exploration & bit-for-bit determinism verification
 pkg/campaign      Multi-seed campaign runner, baseline regression tracker, HTML heatmap dashboard
 pkg/shrink        1-minimal scenario & history delta debugging; live schedule shrinking with reproduction rates
 pkg/transport     Execution transports: docker exec, ssh, kubectl exec, strife-agent HTTP/Unix socket, dry-run
-pkg/agent         Agent HTTP server, Linux RTNETLINK encoder, cgroup v2 controller, apply-latency collector
+pkg/agent         Agent HTTP server, Linux RTNETLINK (netem + FIB rules), K8s /proc + cgroup v2 resolver, apply-latency collector
 pkg/probe         Server-side telemetry collector (fsync canary, Linux PSI, OOM, clock jumps) & correlator
 pkg/client        Zero-dependency clients: etcd v3, Redis/Valkey, PostgreSQL (SCRAM, TLS), Kafka, MySQL/TiDB (caching_sha2, TLS)
 pkg/runner        Live cluster test orchestrator, fault injector & per-run namespace isolation
 pkg/bench         Fault-injection latency benchmark (strife bench inject)
 pkg/report        Interactive HTML5/Canvas timeline studio, Markdown/JUnit exporters, fingerprints
 pkg/attest        in-toto v0.1 statements, Ed25519 signing/verification, release attestations
-pkg/compliance    Regulatory control evaluator (EU DORA, SOC 2, ISO 27001, OJK) with citations & HTML/MD/JSON dossiers
+pkg/compliance    Regulatory control evaluator (EU DORA, SOC 2, ISO 27001, OJK + double-entry ledger reconciliation) with citations & dossiers
+pkg/serve         Self-hosted continuous verification & run registry HTTP daemon (strife serve), REST API, auto-regression diffing, web UI
+deploy/kubernetes DaemonSet manifest (strife-agent-daemonset.yaml) with hostPID/hostNetwork and /sys/fs/cgroup mount
 schemas/          Versioned JSON Schemas for report.json, history.jsonl and dossier.json
 site/             Interactive product showcase & standalone HTML5 demos (timeline, campaign, dossier)
 ```
@@ -470,7 +476,7 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`) |
 | `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect no-regression`) |
 | `strife shrink [flags]` | Minimize a failing simulation (`--seed` / `--report`) or recorded trace (`--history FILE`) to 1-minimality, or a live schedule (`--live --config`) to a candidate reproducer |
-| `strife check [flags]` | Verify a recorded `history.jsonl` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`) and optional `--probes` |
+| `strife check [flags]` | Verify a recorded `history.jsonl` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`) and optional `--probes` |
 | `strife plan [flags]` | Print the seeded fault schedule and exact host/container commands without executing them |
 | `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`) |
 | `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent`, `--json`, `--markdown`) |
@@ -479,6 +485,7 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife sign [flags]` | Sign a `report.json` into an `in-toto` v0.1 attestation bundle, or release artifacts (`--release`) |
 | `strife verify [flags]` | Verify a signed `bundle.json` (and optional `history.jsonl`) or a release directory (`--release-dir`) against an Ed25519 public key |
 | `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk` |
+| `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--token`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 

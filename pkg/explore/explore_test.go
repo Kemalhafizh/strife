@@ -69,6 +69,25 @@ func TestCorrectRaftSurvivesFaults(t *testing.T) {
 	}
 }
 
+func TestCorrectRaftLedgerSurvivesFaults(t *testing.T) {
+	n := uint64(12)
+	if testing.Short() {
+		n = 4
+	}
+	var seeds []uint64
+	for s := uint64(1); s <= n; s++ {
+		seeds = append(seeds, s)
+	}
+	for _, s := range Explore(quick("raft-ledger", "all"), seeds, 0, nil) {
+		if s.Error != "" || s.Verdict != checker.Linearizable {
+			t.Errorf("seed %d: verdict %s (%s) %s", s.Seed, s.Verdict, s.Explanation, s.Error)
+		}
+		if s.Ops < 500 {
+			t.Errorf("seed %d: only %d ops, workload starved", s.Seed, s.Ops)
+		}
+	}
+}
+
 // Each buggy system must be caught somewhere in a small seed range. The
 // simulator is deterministic, so these are stable regression tests for the
 // engine's bug-finding power, not flaky probabilistic ones.

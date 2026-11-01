@@ -11,17 +11,27 @@ import (
 )
 
 // ProcessEngine manages process signals (SIGSTOP, SIGCONT, SIGKILL) with direct syscalls.
-type ProcessEngine struct{}
+type ProcessEngine struct {
+	K8s *K8sResolver
+}
 
 // NewProcessEngine creates a process signal manager.
 func NewProcessEngine() *ProcessEngine {
-	return &ProcessEngine{}
+	return &ProcessEngine{
+		K8s: NewK8sResolver(),
+	}
 }
 
 // FindPIDs finds all process IDs matching pattern, excluding strife-agent itself.
 func (p *ProcessEngine) FindPIDs(pattern string) ([]int, error) {
 	if pattern == "" {
 		return nil, fmt.Errorf("process: pattern cannot be empty")
+	}
+
+	if p.K8s != nil {
+		if _, isK8s := ParseK8sTarget(pattern); isK8s {
+			return p.K8s.ResolvePIDs(pattern)
+		}
 	}
 
 	myPID := os.Getpid()
