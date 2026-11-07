@@ -195,16 +195,17 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
         <th>Model</th>
         <th>Verdict</th>
         <th>Seeds / Ops</th>
+        <th>Availability / MTTR</th>
         <th>Baseline Delta</th>
         <th>Fingerprint</th>
-        <th>Attestation</th>
+        <th>Attestation / Dossier</th>
         <th>Timestamp</th>
       </tr>
     </thead>
     <tbody>`)
 
 	if len(runs) == 0 {
-		b.WriteString(`<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:2rem">No runs ingested yet. POST a report.json or campaign.json to <code>/api/v1/ingest</code>.</td></tr>`)
+		b.WriteString(`<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:2rem">No runs ingested yet. POST a report.json or campaign.json to <code>/api/v1/ingest</code>.</td></tr>`)
 	}
 	for _, e := range runs {
 		verdictClass := "badge-warn"
@@ -217,10 +218,15 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		if e.Kind == "campaign" {
 			deltaStr = fmt.Sprintf("+%d reg / +%d fix", e.Regressions, e.Fixes)
 		}
+		resStr := "-"
+		if e.OverallAvailability > 0 || e.MTTRP95Ms > 0 {
+			resStr = fmt.Sprintf("%.1f%% · p95 %dms", e.OverallAvailability*100, e.MTTRP95Ms)
+		}
 		attStr := "unsigned"
 		if e.Signed {
 			attStr = fmt.Sprintf("ed25519 (%s)", html.EscapeString(shortFP(e.KeyID)))
 		}
+		escID := html.EscapeString(e.ID)
 		fmt.Fprintf(&b, `<tr>
         <td class="mono"><a href="/api/v1/runs/%s">%s</a></td>
         <td class="mono">%s</td>
@@ -231,10 +237,11 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
         <td class="mono">%s</td>
         <td class="mono">%s</td>
         <td class="mono">%s</td>
+        <td class="mono">%s · <a href="/api/v1/runs/%s/dossier?format=html">dossier</a></td>
         <td class="mono">%s</td>
       </tr>`,
-			html.EscapeString(e.ID),
-			html.EscapeString(e.ID),
+			escID,
+			escID,
 			html.EscapeString(e.Kind),
 			html.EscapeString(e.Target),
 			html.EscapeString(e.Model),
@@ -242,9 +249,11 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 			html.EscapeString(string(e.Verdict)),
 			e.TotalSeeds,
 			e.Operations,
+			html.EscapeString(resStr),
 			html.EscapeString(deltaStr),
 			html.EscapeString(shortFP(e.Fingerprint)),
 			attStr,
+			escID,
 			html.EscapeString(e.Timestamp),
 		)
 	}

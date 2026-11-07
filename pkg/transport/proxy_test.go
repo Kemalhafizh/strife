@@ -139,3 +139,91 @@ func TestDoctorInspect(t *testing.T) {
 		t.Fatalf("expected 127.0.0.1:1 to be unreachable")
 	}
 }
+
+func TestProxyHalfDuplexResponseDrop(t *testing.T) {
+	ctx := context.Background()
+	appliedOnServer := make(chan string, 4)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer func() { _ = c.Close() }()
+				buf := make([]byte, 64)
+				for {
+					n, err := c.Read(buf)
+					if n > 0 {
+						appliedOnServer <- string(buf[:n])
+						_, _ = c.Write([]byte("COMMIT_OK"))
+					}
+					if err != nil {
+						return
+					}
+				}
+			}(c)
+		}
+	}()
+
+	p := NewProxy()
+	nodes := []Node{{Name: "n1", IP: "127.0.0.1"}}
+	wrapped, closeFn, err := p.WrapEndpoints(ctx, nodes, []string{ln.Addr().String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeFn()
+	proxyAddr := wrapped[0]
+
+	// Arm a single half-duplex response drop on n1: the client's COMMIT request
+	// reaches the upstream server and is applied, but the server's COMMIT_OK
+	// response is severed in transit.
+	p.DropResponseAfterRequest("n1", 1)
+
+	c1, err := net.DialTimeout("tcp", proxyAddr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c1.Close() }()
+	_ = c1.SetDeadline(time.Now().Add(time.Second))
+	if _, err := c1.Write([]byte("COMMIT tx-101")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	reply := make([]byte, 16)
+	if _, err := io.ReadFull(c1, reply[:9]); err == nil {
+		t.Fatalf("expected response to be dropped on client leg")
+	}
+
+	select {
+	case got := <-appliedOnServer:
+		if got != "COMMIT tx-101" {
+			t.Fatalf("upstream received %q, want COMMIT tx-101", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream server never received request before response drop")
+	}
+
+	// Next connection succeeds normally because drop count was 1.
+	c2, err := net.DialTimeout("tcp", proxyAddr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c2.Close() }()
+	_ = c2.SetDeadline(time.Now().Add(time.Second))
+	if _, err := c2.Write([]byte("COMMIT tx-102")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(c2, reply[:9]); err != nil {
+		t.Fatalf("expected second request to receive response: %v", err)
+	}
+	up, down := p.ForwardedBytes("n1")
+	if up == 0 || down == 0 {
+		t.Fatalf("expected positive forwarded byte counters, got up=%d down=%d", up, down)
+	}
+}

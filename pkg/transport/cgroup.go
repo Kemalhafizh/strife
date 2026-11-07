@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -34,7 +35,7 @@ func cgroupOfPID(procRoot, cgroupRoot string, pid int) (string, error) {
 	// hosts list one line per controller hierarchy.
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if p, ok := strings.CutPrefix(lines[0], "0::"); ok && len(lines) == 1 {
-		return filepath.Join(cgroupRoot, p), nil
+		return path.Join(cgroupRoot, p), nil
 	}
 	return "", fmt.Errorf("pid %d is not on a pure cgroup v2 hierarchy (freeze and io-stall need cgroup v2)", pid)
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -260,9 +261,22 @@ func TestKubernetesRunThroughKubectl(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "kubectl.log")
 	fake := filepath.Join(dir, "kubectl")
-	script := "#!/bin/sh\necho \"$*\" >> " + log + "\ncase \"$*\" in *'get pod'*) echo 10.244.0.$(echo \"$*\" | sed 's/.*etcd-\\([0-9]\\).*/\\1/');; esac\n"
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		fake = filepath.Join(dir, "kubectl.bat")
+		script := "@echo off\r\n" +
+			"echo %* >> \"" + log + "\"\r\n" +
+			"echo %* | findstr /C:\"get pod etcd-0\" >nul && echo 10.244.0.0\r\n" +
+			"echo %* | findstr /C:\"get pod etcd-1\" >nul && echo 10.244.0.1\r\n" +
+			"echo %* | findstr /C:\"get pod etcd-2\" >nul && echo 10.244.0.2\r\n" +
+			"exit /b 0\r\n"
+		if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		script := "#!/bin/sh\necho \"$*\" >> " + log + "\ncase \"$*\" in *'get pod'*) echo 10.244.0.$(echo \"$*\" | sed 's/.*etcd-\\([0-9]\\).*/\\1/');; esac\n"
+		if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cfg := testConfig()
 	cfg.Transport = transport.Config{Type: "kubernetes", Kubectl: fake, Namespace: "strife", Context: "kind-strife"}
@@ -284,7 +298,7 @@ func TestKubernetesRunThroughKubectl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := string(data)
+	got := strings.ReplaceAll(string(data), "\"", "")
 	for _, want := range []string{
 		"--context kind-strife --namespace strife get pod etcd-2 -o jsonpath={.status.podIP}",
 		"--context kind-strife --namespace strife exec etcd-0 --container etcd -- sh -c iptables -N STRIFE",
@@ -394,4 +408,44 @@ func (o *overdraftLedgerClient) Invoke(ctx context.Context, op history.Op) histo
 		}
 	}
 	return o.Client.Invoke(ctx, op)
+}
+
+func TestLiveSettlementWorkload(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workload = WorkloadConfig{
+		Model:       "settlement",
+		Keys:        2,
+		Values:      5,
+		Concurrency: 4,
+		ReadRatio:   0.25,
+		Think:       Duration(2 * time.Millisecond),
+	}
+	cfg.Defaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Model != "settlement" || res.Check.Verdict != checker.Linearizable {
+		t.Fatalf("atomic settlement store must pass: model=%s verdict=%s", res.Check.Model, res.Check.Verdict)
+	}
+	writes, audits, finalAudits := 0, 0, 0
+	for _, op := range res.History {
+		if op.Type != history.OK || op.Key != "settlement" {
+			continue
+		}
+		if len(op.Txn) == 2 && op.Txn[0].F == history.MicroRead && op.Txn[1].F == history.MicroRead {
+			audits++
+			if op.Process >= 1<<30 {
+				finalAudits++
+			}
+		} else if len(op.Txn) == 2 && op.Txn[0].F == history.MicroAppend && op.Txn[1].F == history.MicroAppend {
+			writes++
+		}
+	}
+	if writes == 0 || audits == 0 || finalAudits == 0 {
+		t.Fatalf("expected settlement writes (%d), audits (%d), and post-heal final audit (%d)", writes, audits, finalAudits)
+	}
 }

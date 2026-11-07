@@ -1625,18 +1625,22 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	token := fs.String("token", "", "optional Bearer token required for POST /api/v1/ingest")
 	keyPath := fs.String("key", "", "optional Ed25519 private key (.key) to sign ingested reports automatically")
 	signer := fs.String("signer", "strife-serve", "signer identity recorded in automatic in-toto attestations")
-	webhook := fs.String("webhook", "", "comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations and regressions")
+	webhook := fs.String("webhook", "", "comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations, regressions, and SLA breaches")
+	maxMTTR := fs.Duration("max-mttr", 0, "optional post-heal MTTR P95 threshold (e.g. 500ms) that triggers report.sla_breach webhook alerts")
+	minAvail := fs.Float64("min-availability", 0, "optional minimum availability ratio in [0,1] (e.g. 0.99) that triggers report.sla_breach webhook alerts")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
 
 	srv, err := serve.NewServer(serve.Config{
-		ListenAddr:     *listen,
-		StoreDir:       *storeDir,
-		Token:          *token,
-		SigningKeyPath: *keyPath,
-		Signer:         *signer,
-		Webhooks:       serve.ParseWebhookURLs(*webhook),
+		ListenAddr:      *listen,
+		StoreDir:        *storeDir,
+		Token:           *token,
+		SigningKeyPath:  *keyPath,
+		Signer:          *signer,
+		Webhooks:        serve.ParseWebhookURLs(*webhook),
+		MaxMTTR:         *maxMTTR,
+		MinAvailability: *minAvail,
 	})
 	if err != nil {
 		return exitError, err

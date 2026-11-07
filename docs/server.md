@@ -30,7 +30,9 @@ strife serve \
 | `--token` | *(empty)* | Optional Bearer token required for `POST /api/v1/ingest` (compared in constant time) |
 | `--key` | *(empty)* | Optional PKCS#8 Ed25519 private key (`.key`) used to sign every ingested `report.json` |
 | `--signer` | `strife-serve` | Signer identity recorded inside automatic `in-toto` attestations |
-| `--webhook` | *(empty)* | Comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations and regressions |
+| `--webhook` | *(empty)* | Comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations, regressions, and SLA breaches |
+| `--max-mttr` | `0s` | Optional post-heal MTTR P95 threshold (e.g. `500ms`) that triggers `report.sla_breach` webhook alerts |
+| `--min-availability` | `0` | Optional minimum availability ratio in `[0,1]` (e.g. `0.99`) that triggers `report.sla_breach` webhook alerts |
 
 ## On-Disk Store Layout
 
@@ -97,6 +99,18 @@ Returns the indexed `entry` metadata together with the stored raw JSON artifacts
 
 ```sh
 curl -fsSL http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4
+```
+
+### `GET /api/v1/runs/<id>/dossier`
+
+Evaluates and returns a regulatory compliance dossier (`dora`, `soc2`, `iso27001`, `bi-ojk`) for the stored run or campaign. If the run was signed with Ed25519 (`bundle.json`), the signature is verified automatically and recorded in the dossier.
+
+- `?frameworks=dora,bi-ojk` — filter evaluated frameworks (default `all`)
+- `?format=html` — render the self-contained print-ready HTML5 compliance dossier instead of JSON
+
+```sh
+curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?frameworks=dora,bi-ojk"
+curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?format=html" -o dossier.html
 ```
 
 ### `POST /api/v1/ingest`

@@ -208,15 +208,17 @@ Supported `--isolation` flags: `read-uncommitted`, `read-committed`, `repeatable
 `strife run` drives a real cluster from a JSON config: the seed fixes the fault schedule and every client's operation stream, the cluster decides the interleaving, and the recorded history is checked exactly like a simulated one.
 
 ```sh
-strife plan --config strife.json          # the exact commands, without touching anything
-strife run  --config strife.json          # run, check, and write report.html / report.json
-strife run  --config strife.json --faults none --expect linearizable   # fault-free baseline for CI
+strife doctor --config strife.json        # inspect host capabilities and probe cluster endpoints
+strife plan   --config strife.json        # the exact commands, without touching anything
+strife run    --config strife.json        # run, check, and write report.html / report.json
+strife run    --config strife.json --faults none --expect linearizable   # fault-free baseline for CI
 ```
 
 **Transports** (`transport.type`) decide how fault commands reach the nodes:
 
 | Transport | How | Host faults (`freeze`, `io-stall`) |
 | :--- | :--- | :--- |
+| `proxy` | Built-in user-space L4 TCP fault proxy across Linux, macOS, and Windows (no root or kernel modules required) | yes (via TCP stall) |
 | `docker` | `docker exec` per command; host commands on the Docker host (optionally `sudo -n`). `"cgroup": "auto"` and `"io_device": "auto"` are discovered at run time. | yes |
 | `ssh` | system `ssh` (keys, agents, jump hosts and `known_hosts` as configured), optional `sudo -n` | yes |
 | `kubernetes` | `kubectl exec` into pods; `"ip": "auto"` reads pod IPs at run time and `{ip}` endpoints expand per node ([example](examples/kubernetes)) | no: use the agent |
@@ -227,13 +229,13 @@ strife run  --config strife.json --faults none --expect linearizable   # fault-f
 
 | Target | Protocol and authentication | Workloads | Outcome classification |
 | :--- | :--- | :--- | :--- |
-| `etcd` | v3 JSON gateway | `kv` (read, write, compare-and-swap), `append`, `ledger` (optimistic transactions guarded by `mod_revision`) | refused or rejected → `fail`; timeout after sending → `info` |
-| `redis` / `valkey` | RESP2, `AUTH`, TLS | `kv` (atomic Lua CAS), `append`, `ledger` (Lua script per transaction) | `-READONLY` / `-ERR` → `fail`; I/O error after sending → `info` |
-| `postgres` | v3 protocol, SCRAM-SHA-256 / MD5, TLS (`require`, `verify-full`) | `kv`, `append`, `ledger` at any `txn_isolation` | `40001`, `40P01`, `25006`… → `fail`; connection lost after `COMMIT` → `info` |
-| `mysql` / `tidb` | `caching_sha2_password` (fast path, RSA or TLS full auth), `mysql_native_password`, TLS, `init_sql` | `kv`, `append`, `ledger` | deadlock / lock timeout / TiDB write conflict → `fail`; lost after `COMMIT` → `info` |
+| `etcd` | v3 JSON gateway | `kv` (read, write, compare-and-swap), `append`, `ledger` (optimistic transactions guarded by `mod_revision`), `settlement` | refused or rejected → `fail`; timeout after sending → `info` |
+| `redis` / `valkey` | RESP2, `AUTH`, TLS | `kv` (atomic Lua CAS), `append`, `ledger` (Lua script per transaction), `settlement` | `-READONLY` / `-ERR` → `fail`; I/O error after sending → `info` |
+| `postgres` | v3 protocol, SCRAM-SHA-256 / MD5, TLS (`require`, `verify-full`) | `kv`, `append`, `ledger`, `settlement` at any `txn_isolation` | `40001`, `40P01`, `25006`… → `fail`; connection lost after `COMMIT` → `info` |
+| `mysql` / `tidb` | `caching_sha2_password` (fast path, RSA or TLS full auth), `mysql_native_password`, TLS, `init_sql` | `kv`, `append`, `ledger`, `settlement` | deadlock / lock timeout / TiDB write conflict → `fail`; lost after `COMMIT` → `info` |
 | `kafka` | ApiVersions, Metadata v4, Produce v3 (`acks=all`), Fetch v4, RecordBatch v2 | `append` (each key a single-partition topic, read from offset 0) | rejected before append (not leader, not enough replicas…) → `fail`; request timeout or lost connection after sending → `info` |
 
-`workload.model` picks `kv` (linearizability), `append` (list-append transactions checked at `workload.isolation`, from read-uncommitted to strict-serializable), or `ledger` (double-entry financial transfers and multi-account balance audits checked for conservation of money, non-negativity, and isolation anomalies at `workload.isolation`). `db.txn_isolation` sets the level the database runs at, so you can, for example, run PostgreSQL at REPEATABLE READ and hold it to serializability.
+`workload.model` picks `kv` (linearizability), `append` (list-append transactions checked at `workload.isolation`, from read-uncommitted to strict-serializable), `ledger` (double-entry financial transfers and multi-account balance audits checked for conservation of money, non-negativity, and isolation anomalies at `workload.isolation`), or `settlement` (two-leg cross-system settlement and transactional-outbox reconciliation checked for `SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, and `SETTLEMENT-IDEMPOTENCY`). `db.txn_isolation` sets the level the database runs at, so you can, for example, run PostgreSQL at REPEATABLE READ and hold it to serializability. Both `strife check` and `strife shrink --history` accept native `.jsonl` and exported Jepsen `.edn` history files automatically.
 
 > [!NOTE]
 > Whenever a client records `info` (for example, a TCP connection reset after sending a `SET` or `COMMIT`), the operation may still take effect on the server at an arbitrary point in the future. Following Jepsen's process invariant, the worker closes the socket and increments its logical `process` ID (`process += concurrency`) before issuing another operation.

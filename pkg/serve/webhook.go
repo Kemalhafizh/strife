@@ -26,25 +26,27 @@ const (
 )
 
 // WebhookAlert is the structured event payload dispatched when an ingested
-// report or campaign contains a consistency violation or regression.
+// report or campaign contains a consistency violation, regression, or SLA breach.
 type WebhookAlert struct {
-	Event       string          `json:"event"`
-	RunID       string          `json:"id"`
-	Kind        string          `json:"kind"`
-	Target      string          `json:"target"`
-	Model       string          `json:"model"`
-	Verdict     checker.Verdict `json:"verdict"`
-	Seed        uint64          `json:"seed,omitempty"`
-	TotalSeeds  int             `json:"total_seeds"`
-	Violations  int             `json:"violations"`
-	Regressions int             `json:"regressions"`
-	Fingerprint string          `json:"fingerprint"`
-	Commit      string          `json:"commit,omitempty"`
-	Branch      string          `json:"branch,omitempty"`
-	Summary     string          `json:"summary"`
-	Text        string          `json:"text"`
-	Content     string          `json:"content"`
-	Timestamp   string          `json:"timestamp"`
+	Event               string          `json:"event"`
+	RunID               string          `json:"id"`
+	Kind                string          `json:"kind"`
+	Target              string          `json:"target"`
+	Model               string          `json:"model"`
+	Verdict             checker.Verdict `json:"verdict"`
+	Seed                uint64          `json:"seed,omitempty"`
+	TotalSeeds          int             `json:"total_seeds"`
+	Violations          int             `json:"violations"`
+	Regressions         int             `json:"regressions"`
+	OverallAvailability float64         `json:"overall_availability,omitempty"`
+	MTTRP95Ms           int64           `json:"mttr_p95_ms,omitempty"`
+	Fingerprint         string          `json:"fingerprint"`
+	Commit              string          `json:"commit,omitempty"`
+	Branch              string          `json:"branch,omitempty"`
+	Summary             string          `json:"summary"`
+	Text                string          `json:"text"`
+	Content             string          `json:"content"`
+	Timestamp           string          `json:"timestamp"`
 }
 
 // WebhookDelivery records the outcome of one webhook HTTP POST attempt.
@@ -97,7 +99,7 @@ func DetectWebhookFormat(rawURL string) WebhookFormat {
 	return WebhookGeneric
 }
 
-func buildAlert(res *IngestResult, rep *report.Report) (*WebhookAlert, bool) {
+func buildAlert(res *IngestResult, rep *report.Report, cfg Config) (*WebhookAlert, bool) {
 	if res == nil {
 		return nil, false
 	}
@@ -105,10 +107,18 @@ func buildAlert(res *IngestResult, rep *report.Report) (*WebhookAlert, bool) {
 	var event string
 	switch e.Kind {
 	case "report":
-		if e.Verdict != checker.Violation && e.Violations == 0 {
+		if e.Verdict == checker.Violation || e.Violations > 0 {
+			event = "report.violation"
+		} else if rep != nil && rep.Resilience != nil {
+			mttrBreach := cfg.MaxMTTR > 0 && rep.Resilience.MTTR.P95 > cfg.MaxMTTR
+			availBreach := cfg.MinAvailability > 0 && rep.Resilience.OverallAvailability < cfg.MinAvailability
+			if mttrBreach || availBreach {
+				event = "report.sla_breach"
+			}
+		}
+		if event == "" {
 			return nil, false
 		}
-		event = "report.violation"
 	case "campaign":
 		if res.Comparison != nil && (len(res.Comparison.Regressed) > 0 || len(res.Comparison.NewFailures) > 0) {
 			event = "campaign.regression"
@@ -121,35 +131,43 @@ func buildAlert(res *IngestResult, rep *report.Report) (*WebhookAlert, bool) {
 		return nil, false
 	}
 
-	summary := formatAlertSummary(event, e, res, rep)
+	summary := formatAlertSummary(event, e, res, rep, cfg)
 	return &WebhookAlert{
-		Event:       event,
-		RunID:       e.ID,
-		Kind:        e.Kind,
-		Target:      e.Target,
-		Model:       e.Model,
-		Verdict:     e.Verdict,
-		Seed:        e.Seed,
-		TotalSeeds:  e.TotalSeeds,
-		Violations:  e.Violations,
-		Regressions: e.Regressions,
-		Fingerprint: e.Fingerprint,
-		Commit:      e.Commit,
-		Branch:      e.Branch,
-		Summary:     summary,
-		Text:        summary,
-		Content:     summary,
-		Timestamp:   e.Timestamp,
+		Event:               event,
+		RunID:               e.ID,
+		Kind:                e.Kind,
+		Target:              e.Target,
+		Model:               e.Model,
+		Verdict:             e.Verdict,
+		Seed:                e.Seed,
+		TotalSeeds:          e.TotalSeeds,
+		Violations:          e.Violations,
+		Regressions:         e.Regressions,
+		OverallAvailability: e.OverallAvailability,
+		MTTRP95Ms:           e.MTTRP95Ms,
+		Fingerprint:         e.Fingerprint,
+		Commit:              e.Commit,
+		Branch:              e.Branch,
+		Summary:             summary,
+		Text:                summary,
+		Content:             summary,
+		Timestamp:           e.Timestamp,
 	}, true
 }
 
-func formatAlertSummary(event string, e RunEntry, res *IngestResult, rep *report.Report) string {
+func formatAlertSummary(event string, e RunEntry, res *IngestResult, rep *report.Report, cfg Config) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[STRIFE ALERT] %s on target %s (run %s, model %s): verdict=%s",
 		event, e.Target, e.ID, e.Model, strings.ToUpper(string(e.Verdict)))
 	if e.Kind == "report" {
 		fmt.Fprintf(&b, ", seed=%d", e.Seed)
-		if rep != nil {
+		if event == "report.sla_breach" && rep != nil && rep.Resilience != nil {
+			fmt.Fprintf(&b, " — SLA breach (availability=%.1f%%, MTTR p95=%dms; thresholds min_avail=%.1f%%, max_mttr=%dms)",
+				rep.Resilience.OverallAvailability*100,
+				rep.Resilience.MTTR.P95.Milliseconds(),
+				cfg.MinAvailability*100,
+				cfg.MaxMTTR.Milliseconds())
+		} else if rep != nil {
 			for _, f := range rep.Check.Failures() {
 				if f.Counterexample != nil {
 					fmt.Fprintf(&b, " — %s", f.Counterexample.Summary())
@@ -216,7 +234,7 @@ func (s *Server) notifyWebhooks(res *IngestResult, rep *report.Report) []Webhook
 	if len(s.cfg.Webhooks) == 0 {
 		return nil
 	}
-	alert, ok := buildAlert(res, rep)
+	alert, ok := buildAlert(res, rep, s.cfg)
 	if !ok {
 		return nil
 	}

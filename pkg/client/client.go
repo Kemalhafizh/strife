@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/kemalhafizh/strife/internal/secret"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -196,6 +197,12 @@ func isLedgerTxn(op history.Op) bool {
 	return false
 }
 
+// isSettlementTxn reports whether an FTxn operation belongs to the cross-system
+// settlement / transactional-outbox workload ("settlement").
+func isSettlementTxn(op history.Op) bool {
+	return op.Key == "settlement"
+}
+
 // parseTransferAccounts extracts the source account, destination account,
 // and positive transfer amount from a ledger transfer operation.
 func parseTransferAccounts(op history.Op) (fromKey, toKey string, amt int64, ok bool) {
@@ -267,12 +274,15 @@ func (c *memClient) Invoke(ctx context.Context, op history.Op) history.Op {
 		if isLedgerTxn(op) {
 			return c.ledgerTxn(op)
 		}
+		idemp := isSettlementTxn(op)
 		out.Txn = make([]history.MicroOp, len(op.Txn))
 		for i, m := range op.Txn {
 			out.Txn[i] = m
 			switch m.F {
 			case history.MicroAppend:
-				c.s.lists[m.Key] = append(c.s.lists[m.Key], *m.Value)
+				if !idemp || !slices.Contains(c.s.lists[m.Key], *m.Value) {
+					c.s.lists[m.Key] = append(c.s.lists[m.Key], *m.Value)
+				}
 			case history.MicroRead:
 				out.Txn[i].Values = append([]int64{}, c.s.lists[m.Key]...)
 			}

@@ -307,3 +307,138 @@ func TestServeWebhooksSlackDiscordAndGeneric(t *testing.T) {
 		t.Fatalf("expected report.violation in /api/v1/webhooks response, got %s", string(whBytes))
 	}
 }
+
+func TestServeComplianceDossierEndpointAndSLABreachWebhook(t *testing.T) {
+	tmp := t.TempDir()
+	privPath := filepath.Join(tmp, "auditor.key")
+	pubPath := filepath.Join(tmp, "auditor.pub")
+	pub, priv, err := attest.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := attest.SaveKeys(privPath, pubPath, priv, pub); err != nil {
+		t.Fatal(err)
+	}
+
+	var slaEvents []string
+	var mu sync.Mutex
+	hookLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		slaEvents = append(slaEvents, r.Header.Get("X-Strife-Event"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = hookSrv.Serve(hookLn) }()
+	defer func() {
+		_ = hookSrv.Shutdown(context.Background())
+		_ = hookLn.Close()
+	}()
+
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		StoreDir:        filepath.Join(tmp, "store"),
+		SigningKeyPath:  privPath,
+		Signer:          "sla-auditor",
+		Webhooks:        []string{"http://" + hookLn.Addr().String() + "/hook"},
+		MaxMTTR:         100 * time.Millisecond,
+		MinAvailability: 0.95,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	// Create a linearizable settlement report whose post-heal recovery took 400ms (> 100ms MaxMTTR).
+	txID := int64(101)
+	ops := []history.Op{
+		{
+			Index: 0, Process: 0, Type: history.Invoke, F: history.FTxn, Key: "settlement", Value: &txID, Time: int64(100 * time.Millisecond),
+			Txn: []history.MicroOp{{F: history.MicroAppend, Key: "ledger", Value: &txID}, {F: history.MicroAppend, Key: "broker", Value: &txID}},
+		},
+		{
+			Index: 1, Process: 0, Type: history.OK, F: history.FTxn, Key: "settlement", Value: &txID, Time: int64(1400 * time.Millisecond),
+			Txn: []history.MicroOp{{F: history.MicroAppend, Key: "ledger", Value: &txID}, {F: history.MicroAppend, Key: "broker", Value: &txID}},
+		},
+	}
+	sched := nemesis.Schedule{
+		Nodes:    3,
+		Duration: 2 * time.Second,
+		Faults: []nemesis.Fault{
+			{ID: 1, Kind: nemesis.Partition, Start: 200 * time.Millisecond, End: 1000 * time.Millisecond, Nodes: []int{0}},
+		},
+	}
+	rep, err := report.New(
+		report.KindSimulation,
+		"outbox-settlement",
+		1,
+		map[string]any{"nodes": 3},
+		sched,
+		ops,
+		checker.Report{Model: "settlement", Verdict: checker.Linearizable, Operations: 1, Checked: 1},
+		"trace-settlement-001",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repBytes, _ := json.Marshal(rep)
+	resp, err := http.Post(baseURL+"/api/v1/ingest", "application/json", bytes.NewReader(repBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, string(body))
+	}
+	var ing IngestResult
+	if err := json.Unmarshal(body, &ing); err != nil {
+		t.Fatal(err)
+	}
+	if ing.Entry.MTTRP95Ms < 350 {
+		t.Fatalf("expected MTTRP95Ms >= 350ms, got %d", ing.Entry.MTTRP95Ms)
+	}
+	mu.Lock()
+	gotEvents := append([]string(nil), slaEvents...)
+	mu.Unlock()
+	if len(gotEvents) != 1 || gotEvents[0] != "report.sla_breach" {
+		t.Fatalf("expected report.sla_breach webhook alert, got %v", gotEvents)
+	}
+
+	// Fetch JSON compliance dossier (/api/v1/runs/<id>/dossier).
+	dResp, err := http.Get(baseURL + "/api/v1/runs/" + ing.Entry.ID + "/dossier?frameworks=dora,bi-ojk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dBody, _ := io.ReadAll(dResp.Body)
+	dResp.Body.Close()
+	if dResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK from dossier endpoint, got %d: %s", dResp.StatusCode, string(dBody))
+	}
+	if !strings.Contains(string(dBody), `"attested": true`) || !strings.Contains(string(dBody), `"bi-ojk.rekonsiliasi-buku-besar"`) {
+		t.Fatalf("expected attested dossier with bi-ojk control, got %s", string(dBody))
+	}
+
+	// Fetch HTML compliance dossier (/api/v1/runs/<id>/dossier?format=html).
+	hResp, err := http.Get(baseURL + "/api/v1/runs/" + ing.Entry.ID + "/dossier?format=html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hBody, _ := io.ReadAll(hResp.Body)
+	hResp.Body.Close()
+	if hResp.StatusCode != http.StatusOK || !strings.Contains(string(hBody), "Strife Compliance Dossier") {
+		t.Fatalf("expected HTML compliance dossier, got status=%d", hResp.StatusCode)
+	}
+}

@@ -6,6 +6,59 @@ All notable changes to Strife. The format follows
 [`schemas/`](schemas/) are versioned contracts: within a major version they
 only gain optional fields.
 
+## [0.5.0] - 2026-11-07
+
+### Added
+- Live cluster settlement & transactional-outbox reconciliation (`workload.model:
+  "settlement"` in `strife run` with post-heal atomic `finalSettlementAudit`,
+  idempotent `MemoryStore` settlement appends, and
+  `examples/postgres/strife-settlement.json`).
+- Sound transactional history shrinking (`strife shrink --history` in
+  `pkg/shrink/history.go`): preserves producer-consumer micro-operation
+  integrity across `txn`, `append`, `ledger`, and `settlement` histories (JSONL
+  and Jepsen EDN) and reduces read-only audit transactions in the `pure-reads`
+  phase.
+- Half-duplex / post-request response-drop fault injection in `pkg/transport`
+  (`Proxy.DropResponseAfterRequest` and `Proxy.ForwardedBytes`) to deterministically
+  trigger indeterminate (`info`) client outcomes after an operation has already
+  been applied on the upstream server.
+- On-demand compliance dossier generation and SLA breach alerting in
+  `strife serve`:
+  - `GET /api/v1/runs/<id>/dossier` (supports `?format=html` and
+    `?frameworks=dora,soc2,iso27001,bi-ojk`) evaluates regulatory compliance
+    dossiers directly from stored registry runs and automatically verifies
+    stored Ed25519 `in-toto` signature bundles.
+  - `--max-mttr` and `--min-availability` flags on `strife serve` dispatch
+    `report.sla_breach` webhook alerts when post-heal recovery latency (MTTR P95)
+    or service availability violates SLA thresholds.
+  - `RunEntry` in `registry.jsonl` now indexes `overall_availability`,
+    `fault_window_availability`, `mttr_p50_ms`, `mttr_p95_ms`, and `mttr_max_ms`.
+- Coverage-guided fuzz target `FuzzReadEDN` in `pkg/history` and browser
+  WebAssembly Studio support for Jepsen `.edn` histories and the
+  `outbox-dual-write` preset.
+
+## [0.4.0] - 2026-11-07
+
+### Added
+- User-space L4 TCP fault-injection proxy (`transport.type: "proxy"` in
+  `pkg/transport/proxy.go`): injects `partition`, `latency`, `loss`, `kill`,
+  `pause`, `freeze`, and `io-stall` across Linux, macOS, and Windows without
+  root privileges, `iptables`, `tc netem`, or `cgroup v2`.
+- `strife doctor` CLI command (`pkg/transport/doctor.go`): inspects host OS,
+  root privileges, `cgroup v2`, local CLI tools (`docker`, `kubectl`, `ssh`,
+  `tc`, `iptables`, `proxy-l4`), and TCP reachability of cluster endpoints.
+- Quantitative resilience and post-heal recovery latency (`MTTR`) metrics in
+  `report.json`, `report.md`, and compliance dossiers (`overall_availability`,
+  `healthy_window_availability`, `fault_window_availability`, `mttr` P50/P95/Max,
+  and per-fault `recoveries`).
+- Cross-system settlement and transactional-outbox consistency model
+  (`--model settlement`, simulated `outbox-settlement` and `outbox-dual-write`):
+  proves `SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, and
+  `SETTLEMENT-IDEMPOTENCY`.
+- Native Jepsen `.edn` history parser (`pkg/history/edn.go`) with automatic
+  format detection in `history.Read` so `strife check` and `strife shrink`
+  accept exported Jepsen EDN logs directly.
+
 ## [0.3.0] - 2026-11-07
 
 ### Added

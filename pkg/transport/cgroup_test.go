@@ -3,6 +3,7 @@ package transport
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -42,6 +43,9 @@ func TestWholeDisk(t *testing.T) {
 	}
 	for link, target := range map[string]string{"8:0": disk, "8:1": filepath.Join(disk, "sda1")} {
 		if err := os.Symlink(target, filepath.Join(sys, "dev", "block", link)); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("symlinks require developer mode privilege on Windows: %v", err)
+			}
 			t.Fatal(err)
 		}
 	}

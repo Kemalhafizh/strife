@@ -36,15 +36,18 @@ type Proxy struct {
 }
 
 type proxyNode struct {
-	mu      sync.Mutex
-	cond    *sync.Cond
-	faults  map[int]nemesis.Fault
-	conns   map[net.Conn]struct{}
-	dropped bool
-	stalled bool
-	delay   time.Duration
-	jitter  time.Duration
-	loss    float64
+	mu            sync.Mutex
+	cond          *sync.Cond
+	faults        map[int]nemesis.Fault
+	conns         map[net.Conn]struct{}
+	dropped       bool
+	stalled       bool
+	delay         time.Duration
+	jitter        time.Duration
+	loss          float64
+	dropResponses int
+	bytesUp       int64
+	bytesDown     int64
 }
 
 func newProxyNode() *proxyNode {
@@ -111,7 +114,25 @@ func (pn *proxyNode) healFault(faultID int) {
 func (pn *proxyNode) reset() {
 	pn.mu.Lock()
 	clear(pn.faults)
+	pn.dropResponses = 0
 	pn.recomputeLocked()
+	pn.mu.Unlock()
+}
+
+func (pn *proxyNode) consumeResponseDrop() bool {
+	pn.mu.Lock()
+	defer pn.mu.Unlock()
+	if pn.dropResponses > 0 {
+		pn.dropResponses--
+		return true
+	}
+	return false
+}
+
+func (pn *proxyNode) addBytes(up, down int64) {
+	pn.mu.Lock()
+	pn.bytesUp += up
+	pn.bytesDown += down
 	pn.mu.Unlock()
 }
 
@@ -314,22 +335,27 @@ func (p *Proxy) handleConn(ctx context.Context, clientConn net.Conn, upstream st
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		p.pipe(ctx, upConn, clientConn, pn)
+		p.pipe(ctx, upConn, clientConn, pn, false)
 		_ = upConn.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		p.pipe(ctx, clientConn, upConn, pn)
+		p.pipe(ctx, clientConn, upConn, pn, true)
 		_ = clientConn.Close()
 	}()
 	wg.Wait()
 }
 
-func (p *Proxy) pipe(ctx context.Context, dst, src net.Conn, pn *proxyNode) {
+func (p *Proxy) pipe(ctx context.Context, dst, src net.Conn, pn *proxyNode, isResponse bool) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, rerr := src.Read(buf)
 		if n > 0 {
+			if isResponse && pn.consumeResponseDrop() {
+				_ = dst.Close()
+				_ = src.Close()
+				return
+			}
 			dropped, delay, loss := pn.waitReady()
 			if dropped || (loss > 0 && rand.Float64() < loss) {
 				_ = dst.Close()
@@ -345,6 +371,11 @@ func (p *Proxy) pipe(ctx context.Context, dst, src net.Conn, pn *proxyNode) {
 			}
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return
+			}
+			if isResponse {
+				pn.addBytes(0, int64(n))
+			} else {
+				pn.addBytes(int64(n), 0)
 			}
 		}
 		if rerr != nil {
@@ -425,3 +456,23 @@ func (p *Proxy) TeardownNode(_ context.Context, n Node) error {
 
 // LatencySummary implements FaultApplier.
 func (p *Proxy) LatencySummary() stats.Summary { return p.collector.Summary() }
+
+// DropResponseAfterRequest configures the proxy node identified by nodeKey to
+// sever the connection on the next count server responses after the client's
+// request has already been forwarded and executed upstream (half-duplex /
+// indeterminate commit fault injection).
+func (p *Proxy) DropResponseAfterRequest(nodeKey string, count int) {
+	pn := p.nodeFor(nodeKey)
+	pn.mu.Lock()
+	pn.dropResponses = count
+	pn.mu.Unlock()
+}
+
+// ForwardedBytes returns the cumulative upstream request bytes and downstream
+// response bytes forwarded through the proxy node identified by nodeKey.
+func (p *Proxy) ForwardedBytes(nodeKey string) (up, down int64) {
+	pn := p.nodeFor(nodeKey)
+	pn.mu.Lock()
+	defer pn.mu.Unlock()
+	return pn.bytesUp, pn.bytesDown
+}

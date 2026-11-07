@@ -15,18 +15,21 @@ import (
 
 	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/campaign"
+	"github.com/kemalhafizh/strife/pkg/compliance"
 	"github.com/kemalhafizh/strife/pkg/report"
 )
 
 // Config configures the strife serve HTTP daemon.
 type Config struct {
-	ListenAddr     string
-	StoreDir       string
-	Token          string
-	SigningKeyPath string
-	Signer         string
-	Webhooks       []string
-	WebhookTimeout time.Duration
+	ListenAddr      string
+	StoreDir        string
+	Token           string
+	SigningKeyPath  string
+	Signer          string
+	Webhooks        []string
+	WebhookTimeout  time.Duration
+	MaxMTTR         time.Duration
+	MinAvailability float64
 }
 
 // Server is the strife serve HTTP daemon and run registry.
@@ -138,7 +141,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runs := s.store.List("", "")
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"status":              "ok",
 		"version":             report.Version,
 		"uptime_seconds":      int64(time.Since(s.startTime).Seconds()),
@@ -147,7 +150,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"signing_active":      len(s.privKey) == ed25519.PrivateKeySize,
 		"key_id":              s.keyID,
 		"webhooks_configured": len(s.cfg.Webhooks),
-	})
+	}
+	if s.cfg.MaxMTTR > 0 {
+		resp["sla_max_mttr_ms"] = s.cfg.MaxMTTR.Milliseconds()
+	}
+	if s.cfg.MinAvailability > 0 {
+		resp["sla_min_availability"] = s.cfg.MinAvailability
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleWebhooks(w http.ResponseWriter, r *http.Request) {
@@ -193,12 +203,56 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		s.handleRuns(w, r)
 		return
 	}
+	if strings.HasSuffix(id, "/dossier") {
+		runID := strings.TrimSpace(strings.TrimSuffix(id, "/dossier"))
+		s.handleRunDossier(w, r, runID)
+		return
+	}
 	_, payload, err := s.store.Lookup(id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) handleRunDossier(w http.ResponseWriter, r *http.Request, id string) {
+	rep, camp, bundle, err := s.store.LoadDossierInputs(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	fws, err := compliance.ParseFrameworks(r.URL.Query().Get("frameworks"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	var ver *attest.VerificationResult
+	if bundle != nil && len(s.privKey) == ed25519.PrivateKeySize {
+		if pub, ok := s.privKey.Public().(ed25519.PublicKey); ok {
+			if v, verr := attest.Verify(bundle, pub); verr == nil && v.Valid {
+				ver = v
+			}
+		}
+	}
+	dossier, err := compliance.Evaluate(compliance.Options{
+		Report:       rep,
+		Campaign:     camp,
+		Verification: ver,
+		Frameworks:   fws,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "html" || (format == "" && strings.Contains(r.Header.Get("Accept"), "text/html")) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_ = compliance.HTML(w, dossier)
+		return
+	}
+	writeJSON(w, http.StatusOK, dossier)
 }
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {

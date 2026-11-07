@@ -134,13 +134,14 @@ func History(ctx context.Context, m model.Model, raw []history.Op, opts HistoryO
 	}
 
 	// Phase 3: Generic Sound Delta Debugging.
+	ref := buildSoundReference(violatingOps)
 	checksRemaining := opts.MaxChecks
 	fails := func(candidate []history.Operation) bool {
 		if ctx.Err() != nil || checksRemaining <= 0 {
 			return false
 		}
 		checksRemaining--
-		if !isSoundHistory(m, candidate) {
+		if !isSoundHistory(m, candidate, ref) {
 			return false
 		}
 		chk := checker.CheckOperations(m, candidate, checker.Options{
@@ -214,19 +215,107 @@ func History(ctx context.Context, m model.Model, raw []history.Op, opts HistoryO
 
 func isReadOnly(o history.Operation) bool {
 	f := o.Input.F
-	return f == history.FRead || f == "get"
+	if f == history.FRead || f == "get" {
+		return true
+	}
+	if f == history.FTxn {
+		txns := o.Input.Txn
+		if len(o.Output.Txn) > 0 {
+			txns = o.Output.Txn
+		}
+		if len(txns) == 0 {
+			return false
+		}
+		for _, m := range txns {
+			if m.F != history.MicroRead {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+type soundReference struct {
+	scalarWritten map[int64]bool
+	txnWritten    map[string]map[int64]bool
+	txnAppended   map[string]map[int64]bool
+}
+
+func buildSoundReference(ops []history.Operation) soundReference {
+	ref := soundReference{
+		scalarWritten: map[int64]bool{0: true},
+		txnWritten:    make(map[string]map[int64]bool),
+		txnAppended:   make(map[string]map[int64]bool),
+	}
+	recordWrite := func(k string, v int64) {
+		if ref.txnWritten[k] == nil {
+			ref.txnWritten[k] = make(map[int64]bool)
+		}
+		ref.txnWritten[k][v] = true
+	}
+	recordAppend := func(k string, v int64) {
+		if ref.txnAppended[k] == nil {
+			ref.txnAppended[k] = make(map[int64]bool)
+		}
+		ref.txnAppended[k][v] = true
+	}
+	for _, o := range ops {
+		f := o.Input.F
+		if f == history.FWrite || f == history.FCas || f == history.FAdd || f == history.FEnqueue {
+			if o.Input.Value != nil {
+				ref.scalarWritten[*o.Input.Value] = true
+			}
+		}
+		if f == history.FTxn {
+			for _, m := range o.Input.Txn {
+				if m.Value != nil {
+					switch m.F {
+					case history.MicroWrite:
+						recordWrite(m.Key, *m.Value)
+					case history.MicroAppend:
+						recordAppend(m.Key, *m.Value)
+					}
+				}
+			}
+			for _, m := range o.Output.Txn {
+				if m.Value != nil {
+					switch m.F {
+					case history.MicroWrite:
+						recordWrite(m.Key, *m.Value)
+					case history.MicroAppend:
+						recordAppend(m.Key, *m.Value)
+					}
+				}
+			}
+		}
+	}
+	return ref
 }
 
 // isSoundHistory ensures candidate does not contain reads observing values
-// that were never written by any preceding or concurrent operation.
-func isSoundHistory(m model.Model, ops []history.Operation) bool {
+// that were produced in the original history but dropped from the candidate.
+func isSoundHistory(_ model.Model, ops []history.Operation, ref soundReference) bool {
 	if len(ops) == 0 {
 		return false
 	}
 
-	// Track values written
-	written := make(map[int64]bool)
-	written[0] = true // initial register value
+	written := map[int64]bool{0: true}
+	txnWritten := make(map[string]map[int64]bool)
+	txnAppended := make(map[string]map[int64]bool)
+
+	addWrite := func(k string, v int64) {
+		if txnWritten[k] == nil {
+			txnWritten[k] = make(map[int64]bool)
+		}
+		txnWritten[k][v] = true
+	}
+	addAppend := func(k string, v int64) {
+		if txnAppended[k] == nil {
+			txnAppended[k] = make(map[int64]bool)
+		}
+		txnAppended[k][v] = true
+	}
 
 	for _, o := range ops {
 		f := o.Input.F
@@ -235,20 +324,59 @@ func isSoundHistory(m model.Model, ops []history.Operation) bool {
 				written[*o.Input.Value] = true
 			}
 		}
+		if f == history.FTxn {
+			for _, m := range o.Input.Txn {
+				if m.Value != nil {
+					switch m.F {
+					case history.MicroWrite:
+						addWrite(m.Key, *m.Value)
+					case history.MicroAppend:
+						addAppend(m.Key, *m.Value)
+					}
+				}
+			}
+			for _, m := range o.Output.Txn {
+				if m.Value != nil {
+					switch m.F {
+					case history.MicroWrite:
+						addWrite(m.Key, *m.Value)
+					case history.MicroAppend:
+						addAppend(m.Key, *m.Value)
+					}
+				}
+			}
+		}
 	}
 
 	for _, o := range ops {
-		if isReadOnly(o) && o.Status() == history.OK && o.Output.Value != nil {
+		if (o.Input.F == history.FRead || o.Input.F == "get") && o.Status() == history.OK && o.Output.Value != nil {
 			v := *o.Output.Value
-			if !written[v] {
-				// Observed a value never produced by any write in this sub-history
+			if ref.scalarWritten[v] && !written[v] {
 				return false
 			}
 		}
 		if o.Input.F == history.FDequeue && o.Status() == history.OK && o.Output.Value != nil {
 			v := *o.Output.Value
-			if !written[v] {
+			if ref.scalarWritten[v] && !written[v] {
 				return false
+			}
+		}
+		if o.Input.F == history.FTxn && o.Status() == history.OK {
+			for _, m := range o.Output.Txn {
+				if m.F != history.MicroRead {
+					continue
+				}
+				if m.Value != nil {
+					v := *m.Value
+					if ref.txnWritten[m.Key][v] && !txnWritten[m.Key][v] {
+						return false
+					}
+				}
+				for _, v := range m.Values {
+					if ref.txnAppended[m.Key][v] && !txnAppended[m.Key][v] {
+						return false
+					}
+				}
 			}
 		}
 	}

@@ -292,3 +292,27 @@ func TestSimulateAndCheckLedger(t *testing.T) {
 		t.Fatal("report.html missing for ledger simulation")
 	}
 }
+
+func TestSimulateSettlementAndCheckEDN(t *testing.T) {
+	got, err := Simulate(SimRequest{System: "outbox-dual-write", Faults: "partition,kill", Seed: 1, Report: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Verdict != "violation" || len(got.Failures) == 0 || !strings.Contains(got.Failures[0].Summary, "SETTLEMENT-ATOMICITY") {
+		t.Fatalf("got verdict=%s failures=%+v, want SETTLEMENT-ATOMICITY violation", got.Verdict, got.Failures)
+	}
+	edn := []byte(`{:type :invoke, :f :write, :key "k0", :value 1, :process 0, :time 10}
+{:type :ok, :f :write, :key "k0", :value 1, :process 0, :time 20}
+{:type :invoke, :f :write, :key "k0", :value 2, :process 0, :time 30}
+{:type :ok, :f :write, :key "k0", :value 2, :process 0, :time 40}
+{:type :invoke, :f :read, :key "k0", :process 1, :time 50}
+{:type :ok, :f :read, :key "k0", :value 1, :process 1, :time 60}
+`)
+	chk, err := Check(edn, CheckRequest{Name: "jepsen.edn", Model: "kv"})
+	if err != nil {
+		t.Fatalf("Check EDN: %v", err)
+	}
+	if chk.Verdict != "violation" {
+		t.Fatalf("expected violation on stale EDN history, got %s", chk.Verdict)
+	}
+}

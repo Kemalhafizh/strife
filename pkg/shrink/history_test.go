@@ -156,3 +156,60 @@ func TestHistoryShrinkNotViolating(t *testing.T) {
 		t.Fatalf("expected ErrNotViolating, got %v", err)
 	}
 }
+
+func TestHistoryShrinkSettlementAndTransactionalSoundness(t *testing.T) {
+	var ops []history.Op
+	tCursor := int64(0)
+	addSettlementWrite := func(proc int, txID int64) {
+		tCursor += 10
+		txn := []history.MicroOp{
+			{F: history.MicroAppend, Key: "ledger", Value: v(txID)},
+			{F: history.MicroAppend, Key: "broker", Value: v(txID)},
+		}
+		ops = append(ops, history.Op{Process: proc, Type: history.Invoke, F: history.FTxn, Key: "settlement", Value: v(txID), Txn: txn, Time: tCursor})
+		tCursor += 10
+		ops = append(ops, history.Op{Process: proc, Type: history.OK, F: history.FTxn, Key: "settlement", Value: v(txID), Txn: txn, Time: tCursor})
+	}
+	addSettlementAudit := func(proc int, ledgerVals, brokerVals []int64) {
+		tCursor += 10
+		invTxn := []history.MicroOp{
+			{F: history.MicroRead, Key: "ledger"},
+			{F: history.MicroRead, Key: "broker"},
+		}
+		outTxn := []history.MicroOp{
+			{F: history.MicroRead, Key: "ledger", Values: ledgerVals},
+			{F: history.MicroRead, Key: "broker", Values: brokerVals},
+		}
+		ops = append(ops, history.Op{Process: proc, Type: history.Invoke, F: history.FTxn, Key: "settlement", Txn: invTxn, Time: tCursor})
+		tCursor += 10
+		ops = append(ops, history.Op{Process: proc, Type: history.OK, F: history.FTxn, Key: "settlement", Txn: outTxn, Time: tCursor})
+	}
+
+	// Healthy writes and audits as noise
+	var committed []int64
+	for id := int64(1); id <= 15; id++ {
+		addSettlementWrite(0, id)
+		committed = append(committed, id)
+		addSettlementAudit(1, append([]int64(nil), committed...), append([]int64(nil), committed...))
+	}
+
+	// Settlement 16 commits, but the subsequent audit is missing 16 from broker (SETTLEMENT-ATOMICITY)
+	addSettlementWrite(0, 16)
+	committedWith16 := append(append([]int64(nil), committed...), 16)
+	addSettlementAudit(1, committedWith16, committed)
+
+	res, err := History(context.Background(), model.Settlement{}, ops, HistoryOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error shrinking settlement history: %v", err)
+	}
+	if res.Verdict != checker.Violation {
+		t.Fatalf("expected violation, got %s", res.Verdict)
+	}
+	if res.MinimalOps > 3 {
+		t.Fatalf("expected minimal settlement witness <= 3 ops, got %d", res.MinimalOps)
+	}
+	chk, err := checker.Check(model.Settlement{}, res.History, checker.Options{})
+	if err != nil || chk.Verdict != checker.Violation {
+		t.Fatalf("shrunk settlement history must still violate: %v (%s)", err, chk.Verdict)
+	}
+}

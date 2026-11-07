@@ -190,8 +190,10 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 			logf("healing before final reads: %v", errs)
 		}
 		hcancel()
-		if cfg.Workload.Model == "append" || cfg.Workload.Model == "settlement" {
+		if cfg.Workload.Model == "append" {
 			finalReads(ctx, cfg, factory, rec, logf)
+		} else if cfg.Workload.Model == "settlement" {
+			finalSettlementAudit(ctx, cfg, factory, rec, logf)
 		} else {
 			finalLedgerAudit(ctx, cfg, factory, rec, logf)
 		}
@@ -564,6 +566,51 @@ func finalLedgerAudit(ctx context.Context, cfg *Config, factory client.Factory, 
 		}
 	}
 	logf("final ledger audit: could not read all %d accounts", cfg.Workload.Keys)
+}
+
+// finalSettlementAudit runs one post-heal reconciliation read across both the
+// source ledger log and the destination clearing broker log so that any
+// dropped outbox message or orphan credit left by the run is observed.
+func finalSettlementAudit(ctx context.Context, cfg *Config, factory client.Factory, rec *history.Recorder, logf func(string, ...any)) {
+	select {
+	case <-time.After(time.Duration(cfg.Workload.Timeout)):
+	case <-ctx.Done():
+		return
+	}
+	micro := []history.MicroOp{
+		{F: history.MicroRead, Key: "ledger"},
+		{F: history.MicroRead, Key: "broker"},
+	}
+	process := 1 << 30
+	for attempt := 0; attempt < 3*len(cfg.Nodes) && ctx.Err() == nil; attempt++ {
+		node := attempt % len(cfg.Nodes)
+		c, err := factory(node)
+		if err != nil {
+			continue
+		}
+		op := rec.Record(history.Op{
+			Process: process,
+			Type:    history.Invoke,
+			F:       history.FTxn,
+			Key:     "settlement",
+			Txn:     append([]history.MicroOp(nil), micro...),
+		})
+		octx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Workload.Timeout))
+		out := c.Invoke(octx, op)
+		cancel()
+		_ = c.Close()
+		out.Process = process
+		if out.Node == "" {
+			out.Node = cfg.Nodes[node].Name
+		}
+		rec.Record(out)
+		process++
+		if out.Type == history.OK {
+			logf("final settlement audit: reconciled ledger and broker logs on %s", out.Node)
+			return
+		}
+	}
+	logf("final settlement audit: could not reconcile ledger and broker logs")
 }
 
 // finalReads reads every key the append workload touched, retrying on other

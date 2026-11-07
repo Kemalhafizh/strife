@@ -1,0 +1,36 @@
+{
+  "name": "postgres-settlement",
+  "seed": 1,
+  "duration": "30s",
+  "nodes": [
+    {"name": "pg1", "ip": "172.30.0.11"},
+    {"name": "pg2", "ip": "172.30.0.12"},
+    {"name": "pg3", "ip": "172.30.0.13"}
+  ],
+  "transport": {
+    "type": "proxy"
+  },
+  "db": {
+    "kind": "postgres",
+    "endpoints": ["172.30.0.11:5432"],
+    "user": "strife",
+    "password": "env:STRIFE_PG_PASSWORD",
+    "database": "strife",
+    "txn_isolation": "serializable"
+  },
+  "workload": {
+    "model": "settlement",
+    "keys": 2,
+    "values": 100,
+    "concurrency": 8,
+    "read_ratio": 0.25,
+    "think": "5ms",
+    "timeout": "1500ms",
+    "isolation": "strict-serializable"
+  },
+  "nemesis": {
+    "faults": ["partition", "latency", "loss", "kill"],
+    "interval": "4s",
+    "length": "2s"
+  }
+}

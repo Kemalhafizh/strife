@@ -24,27 +24,32 @@ import (
 
 // RunEntry is one indexed record in the persistent registry.jsonl log.
 type RunEntry struct {
-	ID          string          `json:"id"`
-	Kind        string          `json:"kind"` // "report" or "campaign"
-	RunKind     string          `json:"run_kind,omitempty"`
-	Target      string          `json:"target"`
-	Model       string          `json:"model"`
-	Seed        uint64          `json:"seed,omitempty"`
-	TotalSeeds  int             `json:"total_seeds"`
-	Passed      int             `json:"passed"`
-	Violations  int             `json:"violations"`
-	Operations  int             `json:"operations"`
-	Verdict     checker.Verdict `json:"verdict"`
-	Fingerprint string          `json:"fingerprint"`
-	Commit      string          `json:"commit,omitempty"`
-	Branch      string          `json:"branch,omitempty"`
-	Timestamp   string          `json:"timestamp"`
-	Signed      bool            `json:"signed"`
-	Signer      string          `json:"signer,omitempty"`
-	KeyID       string          `json:"key_id,omitempty"`
-	Regressions int             `json:"regressions"`
-	Fixes       int             `json:"fixes"`
-	TraceDrifts int             `json:"trace_drifts"`
+	ID                      string          `json:"id"`
+	Kind                    string          `json:"kind"` // "report" or "campaign"
+	RunKind                 string          `json:"run_kind,omitempty"`
+	Target                  string          `json:"target"`
+	Model                   string          `json:"model"`
+	Seed                    uint64          `json:"seed,omitempty"`
+	TotalSeeds              int             `json:"total_seeds"`
+	Passed                  int             `json:"passed"`
+	Violations              int             `json:"violations"`
+	Operations              int             `json:"operations"`
+	Verdict                 checker.Verdict `json:"verdict"`
+	Fingerprint             string          `json:"fingerprint"`
+	Commit                  string          `json:"commit,omitempty"`
+	Branch                  string          `json:"branch,omitempty"`
+	Timestamp               string          `json:"timestamp"`
+	Signed                  bool            `json:"signed"`
+	Signer                  string          `json:"signer,omitempty"`
+	KeyID                   string          `json:"key_id,omitempty"`
+	Regressions             int             `json:"regressions"`
+	Fixes                   int             `json:"fixes"`
+	TraceDrifts             int             `json:"trace_drifts"`
+	OverallAvailability     float64         `json:"overall_availability,omitempty"`
+	FaultWindowAvailability float64         `json:"fault_window_availability,omitempty"`
+	MTTRP50Ms               int64           `json:"mttr_p50_ms,omitempty"`
+	MTTRP95Ms               int64           `json:"mttr_p95_ms,omitempty"`
+	MTTRMaxMs               int64           `json:"mttr_max_ms,omitempty"`
 }
 
 // IngestResult is returned after a report or campaign is ingested into the Store.
@@ -226,6 +231,13 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 		Branch:      branch,
 		Timestamp:   now.Format(time.RFC3339),
 	}
+	if rep.Resilience != nil {
+		entry.OverallAvailability = rep.Resilience.OverallAvailability
+		entry.FaultWindowAvailability = rep.Resilience.FaultWindowAvailability
+		entry.MTTRP50Ms = rep.Resilience.MTTR.P50.Milliseconds()
+		entry.MTTRP95Ms = rep.Resilience.MTTR.P95.Milliseconds()
+		entry.MTTRMaxMs = rep.Resilience.MTTR.Max.Milliseconds()
+	}
 
 	var bundle *attest.Bundle
 	if len(priv) == ed25519.PrivateKeySize {
@@ -295,6 +307,8 @@ func (s *Store) IngestCampaign(m *campaign.Manifest) (*IngestResult, error) {
 	modelName := "kv"
 	if strings.Contains(m.System, "ledger") {
 		modelName = "ledger"
+	} else if strings.Contains(m.System, "outbox") || strings.Contains(m.System, "settlement") {
+		modelName = "settlement"
 	}
 
 	ts := m.Timestamp
@@ -364,6 +378,47 @@ func (s *Store) Targets() []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// LoadDossierInputs loads the stored report or campaign manifest and optional
+// attestation bundle for run ID id.
+func (s *Store) LoadDossierInputs(id string) (*report.Report, *campaign.Manifest, *attest.Bundle, error) {
+	s.mu.RLock()
+	e, ok := s.byID[id]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("run %q not found", id)
+	}
+	runDir := filepath.Join(s.dir, "runs", id)
+	var (
+		rep    *report.Report
+		camp   *campaign.Manifest
+		bundle *attest.Bundle
+	)
+	if e.Kind == "campaign" {
+		m, err := campaign.LoadManifest(filepath.Join(runDir, "campaign.json"))
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		camp = m
+	} else {
+		data, err := os.ReadFile(filepath.Join(runDir, "report.json"))
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		var r report.Report
+		if err := json.Unmarshal(data, &r); err != nil {
+			return nil, nil, nil, err
+		}
+		rep = &r
+	}
+	if bData, err := os.ReadFile(filepath.Join(runDir, "bundle.json")); err == nil {
+		var b attest.Bundle
+		if err := json.Unmarshal(bData, &b); err == nil {
+			bundle = &b
+		}
+	}
+	return rep, camp, bundle, nil
 }
 
 func shortFP(h string) string {
