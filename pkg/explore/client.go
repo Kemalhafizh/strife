@@ -110,6 +110,35 @@ func (c *client) next() {
 				},
 			}
 		}
+	} else if c.sys.Raft.Settlement {
+		c.step++
+		if c.rand.Float64() < 0.25 {
+			c.op = sim.KVOp{F: sim.FSettlementAudit, Key: "settlement"}
+			inv = history.Op{
+				Process: c.process,
+				Type:    history.Invoke,
+				F:       history.FTxn,
+				Key:     "settlement",
+				Txn: []history.MicroOp{
+					{F: history.MicroRead, Key: "ledger"},
+					{F: history.MicroRead, Key: "broker"},
+				},
+			}
+		} else {
+			txID := int64(c.idx+1)*1_000_000 + int64(c.step)
+			c.op = sim.KVOp{F: sim.FSettlementWrite, Key: "settlement", Value: txID}
+			inv = history.Op{
+				Process: c.process,
+				Type:    history.Invoke,
+				F:       history.FTxn,
+				Key:     "settlement",
+				Value:   history.Int(txID),
+				Txn: []history.MicroOp{
+					{F: history.MicroAppend, Key: "ledger", Value: history.Int(txID)},
+					{F: history.MicroAppend, Key: "broker", Value: history.Int(txID)},
+				},
+			}
+		}
 	} else {
 		key := fmt.Sprintf("k%d", c.rand.Intn(c.cfg.Keys))
 		inv = history.Op{Process: c.process, Type: history.Invoke, Key: key}
@@ -137,6 +166,8 @@ func (c *client) next() {
 			c.guess = c.home()
 			if c.sys.Raft.Ledger {
 				c.completeLedger(history.Info, sim.LedgerReply{})
+			} else if c.sys.Raft.Settlement {
+				c.completeSettlement(history.Info, sim.SettlementReply{})
 			} else {
 				c.complete(history.Info, sim.ClientReply{})
 			}
@@ -153,6 +184,30 @@ func (c *client) attempt() {
 }
 
 func (c *client) Receive(from sim.NodeID, msg any) {
+	if sr, ok := msg.(sim.SettlementReply); ok {
+		if !c.busy || sr.ReqID != c.reqID {
+			return
+		}
+		switch sr.Status {
+		case sim.StatusRedirect:
+			if sr.Leader >= 0 && sr.Leader != from {
+				c.guess = sr.Leader
+			} else {
+				c.guess = sim.NodeID((int(from) + 1) % c.cfg.Nodes)
+			}
+			gen := c.gen
+			c.w.After(c.id, 5*time.Millisecond, func() {
+				if c.busy && c.gen == gen {
+					c.attempt()
+				}
+			})
+		case sim.StatusOK:
+			c.completeSettlement(history.OK, sr)
+		case sim.StatusFail:
+			c.completeSettlement(history.Fail, sr)
+		}
+		return
+	}
 	if lr, ok := msg.(sim.LedgerReply); ok {
 		if !c.busy || lr.ReqID != c.reqID {
 			return
@@ -199,6 +254,41 @@ func (c *client) Receive(from sim.NodeID, msg any) {
 	case sim.StatusFail:
 		c.complete(history.Fail, m)
 	}
+}
+
+func (c *client) completeSettlement(t history.Type, sr sim.SettlementReply) {
+	out := history.Op{Process: c.process, Type: t, F: history.FTxn, Key: c.invoked.Key, Value: c.invoked.Value}
+	if t == history.OK {
+		switch c.op.F {
+		case sim.FSettlementWrite:
+			out.Txn = []history.MicroOp{
+				{F: history.MicroAppend, Key: "ledger", Value: history.Int(sr.TxID)},
+				{F: history.MicroAppend, Key: "broker", Value: history.Int(sr.TxID)},
+			}
+		case sim.FSettlementAudit:
+			out.Txn = []history.MicroOp{
+				{F: history.MicroRead, Key: "ledger", Values: append([]int64(nil), sr.Ledger...)},
+				{F: history.MicroRead, Key: "broker", Values: append([]int64(nil), sr.Broker...)},
+			}
+		}
+	}
+	if t == history.Info {
+		out.Error = "timeout"
+	}
+	if t != history.Info {
+		out.Node = fmt.Sprintf("n%d", sr.Leader)
+	}
+	c.rec.Record(out)
+	c.busy = false
+	c.gen++
+	if t == history.Info {
+		c.process += c.cfg.Clients
+	}
+	think := time.Duration(0)
+	if c.cfg.Think > 0 {
+		think = time.Duration(c.rand.Int64n(int64(c.cfg.Think)))
+	}
+	c.w.After(c.id, think, c.next)
 }
 
 func (c *client) completeLedger(t history.Type, lr sim.LedgerReply) {

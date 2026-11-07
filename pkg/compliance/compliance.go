@@ -117,6 +117,10 @@ type EvidenceSummary struct {
 	Nodes               int             `json:"nodes"`
 	FaultKindsExercised []nemesis.Kind  `json:"fault_kinds_exercised"`
 	FaultCount          int             `json:"fault_count"`
+	OverallAvailability float64         `json:"overall_availability,omitempty"`
+	MTTRP50             time.Duration   `json:"mttr_p50,omitempty"`
+	MTTRP95             time.Duration   `json:"mttr_p95,omitempty"`
+	MTTRMax             time.Duration   `json:"mttr_max,omitempty"`
 	ProbeEvents         int             `json:"probe_events,omitempty"`
 	Fingerprint         string          `json:"fingerprint"`
 	HistoryHash         string          `json:"history_hash,omitempty"`
@@ -276,6 +280,12 @@ func extractEvidence(rep *report.Report, camp *campaign.Manifest, ver *attest.Ve
 		} else if rep.Verdict == checker.Violation {
 			sum.SeedsViolating = 1
 		}
+		if rep.Resilience != nil {
+			sum.OverallAvailability = rep.Resilience.OverallAvailability
+			sum.MTTRP50 = rep.Resilience.MTTR.P50
+			sum.MTTRP95 = rep.Resilience.MTTR.P95
+			sum.MTTRMax = rep.Resilience.MTTR.Max
+		}
 		for _, f := range rep.Schedule.Faults {
 			faultSet[f.Kind] = true
 		}
@@ -287,6 +297,8 @@ func extractEvidence(rep *report.Report, camp *campaign.Manifest, ver *attest.Ve
 		modelName := "kv"
 		if strings.Contains(camp.System, "ledger") {
 			modelName = "ledger"
+		} else if strings.Contains(camp.System, "outbox") || strings.Contains(camp.System, "settlement") {
+			modelName = "settlement"
 		}
 		sum = EvidenceSummary{
 			Target:            camp.System,
@@ -499,17 +511,17 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"Tandatangani laporan dengan kunci privat Ed25519 ('strife sign') untuk memenuhi bukti non-repudiation auditor.",
 			),
 		}
-		if sum.Model == "ledger" {
+		if sum.Model == "ledger" || sum.Model == "settlement" {
 			out = append(out, evalControl(
 				FrameworkBIOJK,
 				"bi-ojk.rekonsiliasi-buku-besar",
-				"Rekonsiliasi Buku Besar Berpasangan & Konservasi Saldo (Double-Entry Ledger)",
-				"Seluruh mutasi rekening memenuhi keseimbangan jurnal berpasangan (debit = kredit), konservasi total dana (ΣB_i = M_0), bebas saldo negatif (overdraft write-skew), dan idempotensi retry.",
+				"Rekonsiliasi Buku Besar Berpasangan & Konservasi Saldo (Double-Entry Ledger / Settlement)",
+				"Seluruh mutasi rekening dan kliring memenuhi keseimbangan jurnal berpasangan (debit = kredit), atomisitas outbox/settlement, konservasi total dana (ΣB_i = M_0), bebas saldo negatif, dan idempotensi retry.",
 				isClean,
 				sum.TotalOperations > 0,
-				fmt.Sprintf("Pemeriksa buku besar berpasangan (model %q) memverifikasi %d transaksi/audit pada %q (%d pelanggaran konservasi/overdraft/double-spend).",
+				fmt.Sprintf("Pemeriksa buku besar / settlement (model %q) memverifikasi %d transaksi/audit pada %q (%d pelanggaran konservasi/settlement/idempotensi).",
 					sum.Model, sum.TotalOperations, sum.Target, sum.SeedsViolating),
-				"Pastikan tidak terdapat pelanggaran LEDGER-CONSERVATION, LEDGER-OVERDRAFT, LEDGER-DOUBLE-SPEND, maupun LEDGER-UNBALANCED.",
+				"Pastikan tidak terdapat pelanggaran LEDGER-CONSERVATION, LEDGER-OVERDRAFT, LEDGER-DOUBLE-SPEND, SETTLEMENT-ATOMICITY, SETTLEMENT-NO-ORPHAN-CREDIT, maupun SETTLEMENT-IDEMPOTENCY.",
 			))
 		}
 		return out
@@ -648,6 +660,13 @@ func Markdown(w io.Writer, d *Dossier) error {
 	fmt.Fprintf(&b, "| Cluster Nodes | %d |\n", d.Summary.Nodes)
 	fmt.Fprintf(&b, "| Seeds Tested | %d (%d linearizable, %d violating) |\n", d.Summary.SeedsTested, d.Summary.SeedsLinearizable, d.Summary.SeedsViolating)
 	fmt.Fprintf(&b, "| Client Operations | %d |\n", d.Summary.TotalOperations)
+	if d.Summary.OverallAvailability > 0 {
+		fmt.Fprintf(&b, "| Service Availability (Goodput) | %.1f%% |\n", 100*d.Summary.OverallAvailability)
+	}
+	if d.Summary.MTTRMax > 0 || d.Summary.MTTRP50 > 0 {
+		fmt.Fprintf(&b, "| Post-Fault Recovery Latency (MTTR) | p50 `%v` · p95 `%v` · max `%v` |\n",
+			d.Summary.MTTRP50.Round(time.Millisecond), d.Summary.MTTRP95.Round(time.Millisecond), d.Summary.MTTRMax.Round(time.Millisecond))
+	}
 	fmt.Fprintf(&b, "| Fault Classes Exercised | `%s` |\n", formatFaultList(d.Summary.FaultKindsExercised))
 	fmt.Fprintf(&b, "| Report / Campaign Fingerprint | `%s` |\n", d.Summary.Fingerprint)
 	if d.Summary.HistoryHash != "" {

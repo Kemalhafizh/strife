@@ -302,12 +302,19 @@ func WriteJSONL(w io.Writer, ops []Op) error {
 	return bw.Flush()
 }
 
-// ReadJSONL parses a history written by WriteJSONL. Indices are reassigned in
-// file order and the result is sorted by time (stable) to tolerate histories
-// merged from several clients.
+// ReadJSONL parses a history in either Strife's JSONL format or Jepsen's EDN
+// format (auto-detected). Indices are reassigned in file order and the result
+// is sorted by time (stable) to tolerate histories merged from several clients.
 func ReadJSONL(r io.Reader) ([]Op, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	if looksLikeEDN(string(raw)) {
+		return ReadEDN(strings.NewReader(string(raw)))
+	}
 	var ops []Op
-	sc := bufio.NewScanner(r)
+	sc := bufio.NewScanner(strings.NewReader(string(raw)))
 	sc.Buffer(make([]byte, 1<<20), 1<<26)
 	line := 0
 	for sc.Scan() {
@@ -330,6 +337,23 @@ func ReadJSONL(r io.Reader) ([]Op, error) {
 		ops[i].Index = i
 	}
 	return ops, nil
+}
+
+func looksLikeEDN(s string) bool {
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if strings.HasPrefix(t, ";") || strings.HasPrefix(t, "[") || strings.HasPrefix(t, "{:") {
+			return true
+		}
+		if strings.HasPrefix(t, "{") && strings.Contains(t, ":type") && !strings.Contains(t, `"type"`) {
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // Hash returns the SHA-256 of the canonical JSONL encoding of ops.

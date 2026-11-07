@@ -28,9 +28,12 @@ func (in *Injector) timeout() time.Duration {
 	return 30 * time.Second
 }
 
-// Method names how faults are delivered: the transport name, or
+// Method names how faults are delivered: the transport name, "proxy:l4", or
 // "agent:direct" when the transport applies structured faults itself.
 func (in *Injector) Method() string {
+	if in.Transport.Name() == "proxy" {
+		return "proxy:l4"
+	}
 	if _, ok := in.Transport.(transport.FaultApplier); ok {
 		return "agent:direct"
 	}
@@ -121,6 +124,9 @@ func (in *Injector) Teardown(ctx context.Context, kinds []nemesis.Kind) []string
 	if fa, ok := in.Transport.(transport.FaultApplier); ok {
 		for _, n := range in.Nodes {
 			_ = fa.TeardownNode(ctx, n)
+		}
+		if in.Transport.Name() == "proxy" {
+			return nil
 		}
 	}
 	return in.Exec(ctx, in.Env.Teardown(kinds))

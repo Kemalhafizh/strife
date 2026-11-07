@@ -466,6 +466,40 @@
       ],
       "type": "object"
     },
+    "report.FaultRecovery": {
+      "additionalProperties": false,
+      "properties": {
+        "fault_id": {
+          "type": "integer"
+        },
+        "healed_at": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "mttr": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "recovered_at": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "recovered_ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fault_id",
+        "healed_at",
+        "kind",
+        "mttr",
+        "recovered_ok"
+      ],
+      "type": "object"
+    },
     "report.Report": {
       "additionalProperties": false,
       "properties": {
@@ -534,6 +568,16 @@
         "reproduce": {
           "type": "string"
         },
+        "resilience": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/report.ResilienceMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "schedule": {
           "$ref": "#/$defs/nemesis.Schedule"
         },
@@ -580,6 +624,39 @@
         "tool",
         "verdict",
         "version"
+      ],
+      "type": "object"
+    },
+    "report.ResilienceMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "fault_window_availability": {
+          "type": "number"
+        },
+        "healthy_window_availability": {
+          "type": "number"
+        },
+        "mttr": {
+          "$ref": "#/$defs/stats.Summary"
+        },
+        "overall_availability": {
+          "type": "number"
+        },
+        "recoveries": {
+          "items": {
+            "$ref": "#/$defs/report.FaultRecovery"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "fault_window_availability",
+        "healthy_window_availability",
+        "mttr",
+        "overall_availability"
       ],
       "type": "object"
     },
@@ -648,6 +725,58 @@
         "original_schedule_hash",
         "runs",
         "steps"
+      ],
+      "type": "object"
+    },
+    "stats.Summary": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "max": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "mean": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "min": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "p50": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "p90": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "p95": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "p99": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "std_dev": {
+          "description": "nanoseconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "max",
+        "mean",
+        "min",
+        "p50",
+        "p90",
+        "p95",
+        "p99",
+        "std_dev"
       ],
       "type": "object"
     }

@@ -87,13 +87,15 @@ func ByName(name string) (Model, error) {
 		return Append{}, nil
 	case "ledger", "double-entry", "bank-ledger":
 		return Ledger{}, nil
+	case "settlement", "outbox", "clearing":
+		return Settlement{}, nil
 	}
 	return nil, fmt.Errorf("model: unknown model %q (want %s)", name, strings.Join(Names(), ", "))
 }
 
 // Names lists the built-in models.
 func Names() []string {
-	return []string{"kv", "set", "queue", "counter", "idgen", "txn", "append", "ledger"}
+	return []string{"kv", "set", "queue", "counter", "idgen", "txn", "append", "ledger", "settlement"}
 }
 
 func partitionByKey(ops []history.Operation) ([]string, [][]history.Operation) {

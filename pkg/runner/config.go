@@ -144,10 +144,10 @@ func (c *Config) Defaults() {
 	}
 	if w.ReadRatio == 0 && w.CasRatio == 0 {
 		w.ReadRatio, w.CasRatio = 0.5, 0.2
-		if w.Model == "append" || w.Model == "ledger" {
+		if w.Model == "append" || w.Model == "ledger" || w.Model == "settlement" {
 			w.CasRatio = 0
 		}
-		if w.Model == "ledger" {
+		if w.Model == "ledger" || w.Model == "settlement" {
 			w.ReadRatio = 0.25
 		}
 	}
@@ -207,8 +207,17 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("workload.isolation %q is not a known level", c.Workload.Isolation)
 		}
+	case "settlement":
+		if c.Workload.Plugin != "" {
+			return fmt.Errorf("workload.plugin generates kv operations; it cannot drive the settlement model")
+		}
+		switch txn.IsolationLevel(c.Workload.Isolation) {
+		case txn.LevelReadUncommitted, txn.LevelReadCommitted, txn.LevelSnapshotIsolation, txn.LevelRepeatableRead, txn.LevelSerializable, txn.LevelStrictSerializable:
+		default:
+			return fmt.Errorf("workload.isolation %q is not a known level", c.Workload.Isolation)
+		}
 	default:
-		return fmt.Errorf("workload.model %q not supported for live runs (kv, append, ledger)", c.Workload.Model)
+		return fmt.Errorf("workload.model %q not supported for live runs (kv, append, ledger, settlement)", c.Workload.Model)
 	}
 	if c.Workload.ReadRatio < 0 || c.Workload.CasRatio < 0 || c.Workload.ReadRatio+c.Workload.CasRatio > 1 {
 		return fmt.Errorf("workload.read_ratio + cas_ratio must be within [0, 1]")
@@ -222,9 +231,13 @@ func (c *Config) Validate() error {
 		}
 	}
 	k8s := c.Transport.Type == "kubernetes" || c.Transport.Type == "k8s"
+	proxyTr := c.Transport.Type == "proxy"
 	for _, k := range c.Nemesis.Faults {
 		if k == nemesis.ClockSkew && c.Transport.Type == "docker" {
 			return fmt.Errorf("clock-skew is refused with the docker transport: containers share the host clock, so it would skew the docker host itself")
+		}
+		if k == nemesis.ClockSkew && proxyTr {
+			return fmt.Errorf("clock-skew is refused with the proxy transport: user-space L4 proxy cannot alter node clocks")
 		}
 		if k8s {
 			switch k {
@@ -245,6 +258,14 @@ func (c *Config) Validate() error {
 	}
 	if _, err := nemesis.ParseKinds(joinKinds(c.Nemesis.Faults)); err != nil {
 		return err
+	}
+	if proxyTr {
+		for _, n := range c.Nodes {
+			if n.Name == "" || n.IP == "" {
+				return fmt.Errorf("every node needs a name and ip")
+			}
+		}
+		return nil
 	}
 	env := c.Env()
 	for i := range env.Nodes {
@@ -279,6 +300,8 @@ func (c *Config) Model() model.Model {
 		return model.Append{Level: c.Workload.Isolation}
 	case "ledger":
 		return model.Ledger{InitialBalance: model.DefaultLedgerInitialBalance, Level: c.Workload.Isolation}
+	case "settlement":
+		return model.Settlement{}
 	default:
 		return model.KV{}
 	}

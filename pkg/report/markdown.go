@@ -82,6 +82,14 @@ func Markdown(w io.Writer, r *Report) error {
 		fmt.Fprintf(&b, "**Fault timing** (%d transitions via %s, from the planned instant until every node confirmed): p50 %v · p95 %v · max %v\n\n",
 			t.Count, r.Applied[0].Method, stats.Round(t.P50), stats.Round(t.P95), stats.Round(t.Max))
 	}
+	if res := r.Resilience; res != nil {
+		fmt.Fprintf(&b, "**Availability (goodput):** overall %.1f%% · healthy windows %.1f%% · fault windows %.1f%%\n\n",
+			100*res.OverallAvailability, 100*res.HealthyWindowAvailability, 100*res.FaultWindowAvailability)
+		if res.MTTR.Count > 0 {
+			fmt.Fprintf(&b, "**Post-fault recovery latency (MTTR)** (%d healed faults): p50 %v · p95 %v · max %v\n\n",
+				res.MTTR.Count, stats.Round(res.MTTR.P50), stats.Round(res.MTTR.P95), stats.Round(res.MTTR.Max))
+		}
+	}
 	if len(r.Applied) > 0 {
 		var errs []string
 		for _, a := range r.Applied {

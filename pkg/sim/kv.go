@@ -55,3 +55,21 @@ type LedgerReply struct {
 	NewTo    int64
 	Balances []int64
 }
+
+// Settlement operations carried in KVOp.F when Raft is configured as a
+// cross-system transactional outbox / settlement pipeline.
+const (
+	FSettlementWrite = "settlement-write"
+	FSettlementAudit = "settlement-audit"
+)
+
+// SettlementReply answers a ClientRequest for a cross-system settlement
+// operation (FSettlementWrite or FSettlementAudit).
+type SettlementReply struct {
+	ReqID  uint64
+	Status string
+	Leader NodeID
+	TxID   int64
+	Ledger []int64
+	Broker []int64
+}

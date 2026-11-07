@@ -58,6 +58,14 @@ type Config struct {
 	// credit leg in phase 2, exposing torn intermediate balances to audits
 	// and losing money if the coordinator fails between phases.
 	TornCommit bool
+	// Settlement switches the state machine to a cross-system settlement and
+	// transactional-outbox pipeline with a source ledger log and a destination
+	// clearing broker log.
+	Settlement bool
+	// DualWriteBug models a service that commits the source ledger entry and
+	// acknowledges the client before asynchronously replicating the clearing
+	// broker message, risking dropped settlements on leader crash or partition.
+	DualWriteBug bool
 }
 
 // Defaults returns the timing parameters used by Strife's built-in systems.
@@ -146,12 +154,16 @@ type Node struct {
 	disk  durable
 	state durable
 
-	role    role
-	leader  sim.NodeID
-	commit  int
-	applied int
-	kv      map[string]int64
-	pending map[int]pending
+	role       role
+	leader     sim.NodeID
+	commit     int
+	applied    int
+	kv         map[string]int64
+	ledgerLog  []int64
+	brokerLog  []int64
+	ledgerSeen map[int64]bool
+	brokerSeen map[int64]bool
+	pending    map[int]pending
 
 	votes       []bool
 	next, match []int
@@ -183,6 +195,10 @@ func (n *Node) Start() {
 	n.leader = -1
 	n.commit, n.applied = 0, 0
 	n.kv = map[string]int64{}
+	n.ledgerLog = nil
+	n.brokerLog = nil
+	n.ledgerSeen = map[int64]bool{}
+	n.brokerSeen = map[int64]bool{}
 	n.pending = map[int]pending{}
 	n.hbGen++
 	n.bootAt = n.w.LocalNow(n.id)
@@ -399,6 +415,25 @@ func (n *Node) applyCommitted() {
 						continue
 					}
 				}
+				if n.cfg.Settlement && n.cfg.DualWriteBug && e.Op.F == sim.FSettlementWrite && e.Op.Old == 1 {
+					op2 := e.Op
+					op2.Old = 2
+					term := n.state.term
+					n.w.After(n.id, 20*time.Millisecond, func() {
+						if n.role != leader || n.state.term != term {
+							return
+						}
+						n.state.log = append(n.state.log, Entry{
+							Term:   n.state.term,
+							Op:     op2,
+							Client: -1,
+							ReqID:  p.reqID,
+						})
+						idx := n.lastIndex()
+						n.leaderAppended(idx)
+						n.broadcast()
+					})
+				}
 				n.send(p.client, reply)
 			}
 		}
@@ -485,6 +520,34 @@ func (n *Node) apply(e Entry) any {
 			lr.Balances[i] = n.acctBal(fmt.Sprintf("acct:%d", i))
 		}
 		return lr
+	case sim.FSettlementWrite:
+		sr := sim.SettlementReply{ReqID: e.ReqID, Status: sim.StatusOK, Leader: n.id, TxID: e.Op.Value}
+		txID := e.Op.Value
+		if n.cfg.DualWriteBug {
+			if e.Op.Old == 1 {
+				n.ledgerLog = append(n.ledgerLog, txID)
+			} else if e.Op.Old == 2 {
+				n.brokerLog = append(n.brokerLog, txID)
+			}
+			return sr
+		}
+		if !n.ledgerSeen[txID] {
+			n.ledgerSeen[txID] = true
+			n.ledgerLog = append(n.ledgerLog, txID)
+		}
+		if !n.brokerSeen[txID] {
+			n.brokerSeen[txID] = true
+			n.brokerLog = append(n.brokerLog, txID)
+		}
+		return sr
+	case sim.FSettlementAudit:
+		return sim.SettlementReply{
+			ReqID:  e.ReqID,
+			Status: sim.StatusOK,
+			Leader: n.id,
+			Ledger: append([]int64(nil), n.ledgerLog...),
+			Broker: append([]int64(nil), n.brokerLog...),
+		}
 	}
 	return r
 }
@@ -544,12 +607,17 @@ func (n *Node) onClient(from sim.NodeID, m sim.ClientRequest) {
 	if n.role != leader {
 		if n.cfg.Ledger {
 			n.send(from, sim.LedgerReply{ReqID: m.ReqID, Status: sim.StatusRedirect, Leader: n.leader})
+		} else if n.cfg.Settlement {
+			n.send(from, sim.SettlementReply{ReqID: m.ReqID, Status: sim.StatusRedirect, Leader: n.leader})
 		} else {
 			n.send(from, sim.ClientReply{ReqID: m.ReqID, Status: sim.StatusRedirect, Leader: n.leader})
 		}
 		return
 	}
 	if n.cfg.Ledger && n.cfg.TwoPhaseCommit && m.Op.F == sim.FLedgerTransfer {
+		m.Op.Old = 1
+	}
+	if n.cfg.Settlement && n.cfg.DualWriteBug && m.Op.F == sim.FSettlementWrite {
 		m.Op.Old = 1
 	}
 	if n.cfg.Ledger && n.cfg.OverdraftSkew && m.Op.F == sim.FLedgerTransfer {

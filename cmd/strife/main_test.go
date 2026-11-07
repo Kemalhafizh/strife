@@ -441,3 +441,39 @@ func TestWasmWorkloadCompileAndDeterminism(t *testing.T) {
 		t.Fatalf("sim with wasm workload failed (%d):\n%s", code, out)
 	}
 }
+
+func TestDoctorAndSettlementAndEDNCheck(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. strife doctor --json
+	code, out := runCLI(t, "doctor", "--json")
+	if code != exitOK || !strings.Contains(out, `"recommended_transport"`) {
+		t.Fatalf("doctor --json failed (%d):\n%s", code, out)
+	}
+
+	// 2. outbox-settlement passes and outbox-dual-write finds a violation
+	code, out = runCLI(t, "sim", "--system", "outbox-settlement", "--seed", "1", "--duration", "3s", "--out", "")
+	if code != exitOK || !strings.Contains(out, "verdict: LINEARIZABLE") {
+		t.Fatalf("outbox-settlement failed (%d):\n%s", code, out)
+	}
+
+	code, out = runCLI(t, "sim", "--system", "outbox-dual-write", "--seeds", "1..15", "--duration", "3s", "--expect", "violation", "--out", "")
+	if code != exitOK {
+		t.Fatalf("outbox-dual-write expected violation (%d):\n%s", code, out)
+	}
+
+	// 3. strife check on a Jepsen .edn history
+	ednFile := filepath.Join(dir, "history.edn")
+	ednData := `{:type :invoke, :f :write, :value [:k0 1], :time 100, :process 0}
+{:type :ok,     :f :write, :value [:k0 1], :time 200, :process 0}
+{:type :invoke, :f :read,  :value [:k0 nil], :time 300, :process 1}
+{:type :ok,     :f :read,  :value [:k0 1], :time 400, :process 1}
+`
+	if err := os.WriteFile(ednFile, []byte(ednData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCLI(t, "check", "--history", ednFile, "--model", "kv")
+	if code != exitOK || !strings.Contains(out, "verdict: LINEARIZABLE") {
+		t.Fatalf("check on EDN history failed (%d):\n%s", code, out)
+	}
+}

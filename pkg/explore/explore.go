@@ -37,13 +37,16 @@ func (s System) Model() model.Model {
 	if s.Raft.Ledger {
 		return model.Ledger{InitialBalance: raft.LedgerInitialBalance}
 	}
+	if s.Raft.Settlement {
+		return model.Settlement{}
+	}
 	return model.KV{}
 }
 
 // Systems lists the built-in simulated systems.
 func Systems() []System {
 	d := raft.Defaults()
-	stale, lease, unsafe, ledger, ledgerOverdraft, twoPC, twoPCTorn := d, d, d, d, d, d, d
+	stale, lease, unsafe, ledger, ledgerOverdraft, twoPC, twoPCTorn, outbox, dualWrite := d, d, d, d, d, d, d, d, d
 	stale.StaleReads = true
 	lease.LeaseReads = true
 	unsafe.UnsafeFsync = true
@@ -55,6 +58,9 @@ func Systems() []System {
 	twoPCTorn.Ledger = true
 	twoPCTorn.TwoPhaseCommit = true
 	twoPCTorn.TornCommit = true
+	outbox.Settlement = true
+	dualWrite.Settlement = true
+	dualWrite.DualWriteBug = true
 	return []System{
 		{Name: "raft", Description: "Correct Raft; reads go through the log.", Raft: d, Expect: checker.Linearizable},
 		{Name: "raft-stale-reads", Description: "Leader serves reads locally without confirming leadership.", Raft: stale, Expect: checker.Violation, Hint: "partition"},
@@ -64,6 +70,8 @@ func Systems() []System {
 		{Name: "raft-ledger-overdraft", Description: "Validates sender balance against local state before replication, allowing concurrent transfers to overdraft.", Raft: ledgerOverdraft, Expect: checker.Violation, Hint: "partition,latency"},
 		{Name: "2pc-ledger", Description: "Two-phase commit financial ledger; prepare and commit log entries preserve atomic balance conservation.", Raft: twoPC, Expect: checker.Linearizable},
 		{Name: "2pc-ledger-torn-commit", Description: "Non-atomic two-phase / Saga coordinator that commits the debit leg before replicating the credit leg.", Raft: twoPCTorn, Expect: checker.Violation, Hint: "partition,kill"},
+		{Name: "outbox-settlement", Description: "Transactional outbox settlement pipeline; ledger entry and clearing event commit atomically with idempotent deduplication.", Raft: outbox, Expect: checker.Linearizable},
+		{Name: "outbox-dual-write", Description: "Dual-write settlement service that commits the ledger entry before asynchronously publishing to the clearing broker.", Raft: dualWrite, Expect: checker.Violation, Hint: "partition,kill"},
 	}
 }
 

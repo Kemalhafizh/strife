@@ -66,31 +66,161 @@ func InjectionTiming(applied []Applied) stats.Summary {
 	return stats.Summarize(d)
 }
 
+// FaultRecovery records the measured recovery time after a single fault healed.
+type FaultRecovery struct {
+	FaultID     int           `json:"fault_id"`
+	Kind        nemesis.Kind  `json:"kind"`
+	HealedAt    time.Duration `json:"healed_at"`
+	Recovered   time.Duration `json:"recovered_at,omitempty"`
+	MTTR        time.Duration `json:"mttr"`
+	RecoveredOK bool          `json:"recovered_ok"`
+}
+
+// ResilienceMetrics quantifies service availability and post-fault recovery
+// latency (MTTR) from the recorded operation history and fault schedule.
+type ResilienceMetrics struct {
+	OverallAvailability       float64         `json:"overall_availability"`
+	HealthyWindowAvailability float64         `json:"healthy_window_availability"`
+	FaultWindowAvailability   float64         `json:"fault_window_availability"`
+	MTTR                      stats.Summary   `json:"mttr"`
+	Recoveries                []FaultRecovery `json:"recoveries,omitempty"`
+}
+
+// ComputeResilience calculates availability ratios (during vs outside fault
+// windows) and post-heal recovery latency (MTTR) from the schedule, applied
+// transitions, and recorded operation history.
+func ComputeResilience(sched nemesis.Schedule, applied []Applied, ops []history.Op) *ResilienceMetrics {
+	paired, err := history.Pair(ops)
+	if err != nil || len(paired) == 0 {
+		return nil
+	}
+	type window struct {
+		id    int
+		kind  nemesis.Kind
+		start time.Duration
+		end   time.Duration
+	}
+	windows := make([]window, 0, len(sched.Faults))
+	startOverride := make(map[int]time.Duration)
+	endOverride := make(map[int]time.Duration)
+	for _, a := range applied {
+		if len(a.Errors) == 0 && a.Landed > 0 {
+			if a.Start {
+				startOverride[a.FaultID] = a.Landed
+			} else {
+				endOverride[a.FaultID] = a.Landed
+			}
+		}
+	}
+	for _, f := range sched.Faults {
+		s, e := f.Start, f.End
+		if v, ok := startOverride[f.ID]; ok {
+			s = v
+		}
+		if v, ok := endOverride[f.ID]; ok {
+			e = v
+		}
+		windows = append(windows, window{id: f.ID, kind: f.Kind, start: s, end: e})
+	}
+
+	var totalOK, faultTotal, faultOK, healthyTotal, healthyOK int
+	for _, op := range paired {
+		callDur := time.Duration(op.Call)
+		inFault := false
+		for _, w := range windows {
+			if callDur >= w.start && callDur <= w.end {
+				inFault = true
+				break
+			}
+		}
+		isOK := op.Status() == history.OK
+		if isOK {
+			totalOK++
+		}
+		if inFault {
+			faultTotal++
+			if isOK {
+				faultOK++
+			}
+		} else {
+			healthyTotal++
+			if isOK {
+				healthyOK++
+			}
+		}
+	}
+
+	res := &ResilienceMetrics{
+		OverallAvailability: float64(totalOK) / float64(len(paired)),
+	}
+	if healthyTotal > 0 {
+		res.HealthyWindowAvailability = float64(healthyOK) / float64(healthyTotal)
+	} else {
+		res.HealthyWindowAvailability = res.OverallAvailability
+	}
+	if faultTotal > 0 {
+		res.FaultWindowAvailability = float64(faultOK) / float64(faultTotal)
+	}
+
+	var mttrs []time.Duration
+	for _, w := range windows {
+		fr := FaultRecovery{
+			FaultID:  w.id,
+			Kind:     w.kind,
+			HealedAt: w.end,
+		}
+		bestRet := int64(-1)
+		for _, op := range paired {
+			if op.Status() != history.OK || op.Return == history.Infinity {
+				continue
+			}
+			if time.Duration(op.Return) >= w.end {
+				if bestRet < 0 || op.Return < bestRet {
+					bestRet = op.Return
+				}
+			}
+		}
+		if bestRet >= 0 {
+			fr.Recovered = time.Duration(bestRet)
+			fr.MTTR = fr.Recovered - w.end
+			if fr.MTTR < 0 {
+				fr.MTTR = 0
+			}
+			fr.RecoveredOK = true
+			mttrs = append(mttrs, fr.MTTR)
+		}
+		res.Recoveries = append(res.Recoveries, fr)
+	}
+	res.MTTR = stats.Summarize(mttrs)
+	return res
+}
+
 // Report is the complete outcome of a run.
 type Report struct {
-	Tool         string           `json:"tool"`
-	Version      string           `json:"version"`
-	Kind         string           `json:"kind"`
-	Target       string           `json:"target"`
-	Seed         uint64           `json:"seed"`
-	Verdict      checker.Verdict  `json:"verdict"`
-	Fingerprint  string           `json:"fingerprint"`
-	ScheduleHash string           `json:"schedule_hash,omitempty"`
-	HistoryHash  string           `json:"history_hash"`
-	TraceHash    string           `json:"trace_hash,omitempty"`
-	Events       uint64           `json:"events,omitempty"`
-	Nodes        int              `json:"nodes,omitempty"`
-	Duration     time.Duration    `json:"duration,omitempty"`
-	Config       json.RawMessage  `json:"config,omitempty"`
-	Schedule     nemesis.Schedule `json:"schedule"`
-	Applied      []Applied        `json:"applied,omitempty"`
-	Probes       []probe.Event    `json:"probes,omitempty"`
-	Findings     []probe.Finding  `json:"findings,omitempty"`
-	Check        checker.Report   `json:"check"`
-	Reproduce    string           `json:"reproduce,omitempty"`
-	GeneratedAt  string           `json:"generated_at,omitempty"`
-	Shrink       *ShrinkInfo      `json:"shrink,omitempty"`
-	Notes        []string         `json:"notes,omitempty"`
+	Tool         string             `json:"tool"`
+	Version      string             `json:"version"`
+	Kind         string             `json:"kind"`
+	Target       string             `json:"target"`
+	Seed         uint64             `json:"seed"`
+	Verdict      checker.Verdict    `json:"verdict"`
+	Fingerprint  string             `json:"fingerprint"`
+	ScheduleHash string             `json:"schedule_hash,omitempty"`
+	HistoryHash  string             `json:"history_hash"`
+	TraceHash    string             `json:"trace_hash,omitempty"`
+	Events       uint64             `json:"events,omitempty"`
+	Nodes        int                `json:"nodes,omitempty"`
+	Duration     time.Duration      `json:"duration,omitempty"`
+	Config       json.RawMessage    `json:"config,omitempty"`
+	Schedule     nemesis.Schedule   `json:"schedule"`
+	Applied      []Applied          `json:"applied,omitempty"`
+	Resilience   *ResilienceMetrics `json:"resilience,omitempty"`
+	Probes       []probe.Event      `json:"probes,omitempty"`
+	Findings     []probe.Finding    `json:"findings,omitempty"`
+	Check        checker.Report     `json:"check"`
+	Reproduce    string             `json:"reproduce,omitempty"`
+	GeneratedAt  string             `json:"generated_at,omitempty"`
+	Shrink       *ShrinkInfo        `json:"shrink,omitempty"`
+	Notes        []string           `json:"notes,omitempty"`
 }
 
 // ShrinkInfo describes how a minimal scenario was derived from a failing one.
@@ -129,6 +259,7 @@ func New(kind, target string, seed uint64, config any, sched nemesis.Schedule, o
 		Duration:    sched.Duration,
 		Config:      cfg,
 		Schedule:    sched,
+		Resilience:  ComputeResilience(sched, nil, ops),
 		Check:       check,
 	}
 	if len(sched.Faults) > 0 || sched.Nodes > 0 {

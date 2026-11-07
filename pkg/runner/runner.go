@@ -77,6 +77,14 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 		var err error
 		dbc := cfg.DB.Config
 		dbc.Isolation = cfg.Workload.Isolation
+		if ew, ok := tr.(transport.EndpointWrapper); ok {
+			wrapped, closeProxy, err := ew.WrapEndpoints(ctx, cfg.Nodes, dbc.Endpoints)
+			if err != nil {
+				return nil, err
+			}
+			defer closeProxy()
+			dbc.Endpoints = wrapped
+		}
 		if factory, err = client.NewFactory(dbc, namespace); err != nil {
 			return nil, err
 		}
@@ -92,8 +100,10 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	inj := &Injector{Transport: tr, Nodes: cfg.Nodes, Env: env}
 
 	logf("setup: preparing %d nodes via %s", len(cfg.Nodes), tr.Name())
-	if errs := inj.Exec(ctx, env.Setup(cfg.Nemesis.Faults)); len(errs) > 0 && len(cfg.Nemesis.Faults) > 0 {
-		return nil, fmt.Errorf("setup failed: %v", errs)
+	if tr.Name() != "proxy" {
+		if errs := inj.Exec(ctx, env.Setup(cfg.Nemesis.Faults)); len(errs) > 0 && len(cfg.Nemesis.Faults) > 0 {
+			return nil, fmt.Errorf("setup failed: %v", errs)
+		}
 	}
 	// Whatever happens, leave the cluster healed.
 	defer func() {
@@ -171,7 +181,7 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	}
 	wg.Wait()
 	nemWG.Wait()
-	if cfg.Workload.Model == "append" || cfg.Workload.Model == "ledger" {
+	if cfg.Workload.Model == "append" || cfg.Workload.Model == "ledger" || cfg.Workload.Model == "settlement" {
 		// Heal, let the cluster settle, then read every key once more: an
 		// acknowledged append or balance discrepancy that no read ever saw
 		// is otherwise invisible.
@@ -180,7 +190,7 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 			logf("healing before final reads: %v", errs)
 		}
 		hcancel()
-		if cfg.Workload.Model == "append" {
+		if cfg.Workload.Model == "append" || cfg.Workload.Model == "settlement" {
 			finalReads(ctx, cfg, factory, rec, logf)
 		} else {
 			finalLedgerAudit(ctx, cfg, factory, rec, logf)
@@ -335,6 +345,10 @@ func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workl
 		if w.Model == "ledger" {
 			op = ledgerOp(r, w.Keys, w.Values, w.ReadRatio)
 			op.Process = process
+		} else if w.Model == "settlement" {
+			step++
+			op = settlementOp(r, slot, step, w.ReadRatio)
+			op.Process = process
 		} else if gen != nil {
 			op = gen.op(r, w.TxnLen, w.ReadRatio)
 			op.Process = process
@@ -477,6 +491,33 @@ func ledgerOp(r *rng.Rand, keys, values int, readRatio float64) history.Op {
 			{F: history.MicroWrite, Key: fk},
 			{F: history.MicroRead, Key: tk},
 			{F: history.MicroWrite, Key: tk},
+		},
+	}
+}
+
+// settlementOp generates either a cross-system reconciliation read of both the
+// source ledger and destination broker logs or a two-leg settlement append.
+func settlementOp(r *rng.Rand, worker, step int, readRatio float64) history.Op {
+	if r.Float64() < readRatio {
+		return history.Op{
+			Type: history.Invoke,
+			F:    history.FTxn,
+			Key:  "settlement",
+			Txn: []history.MicroOp{
+				{F: history.MicroRead, Key: "ledger"},
+				{F: history.MicroRead, Key: "broker"},
+			},
+		}
+	}
+	txID := int64(worker+1)*1_000_000_000 + int64(step)
+	return history.Op{
+		Type:  history.Invoke,
+		F:     history.FTxn,
+		Key:   "settlement",
+		Value: history.Int(txID),
+		Txn: []history.MicroOp{
+			{F: history.MicroAppend, Key: "ledger", Value: history.Int(txID)},
+			{F: history.MicroAppend, Key: "broker", Value: history.Int(txID)},
 		},
 	}
 }

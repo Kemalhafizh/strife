@@ -124,8 +124,23 @@
         "model": {
           "type": "string"
         },
+        "mttr_max": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "mttr_p50": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "mttr_p95": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
         "nodes": {
           "type": "integer"
+        },
+        "overall_availability": {
+          "type": "number"
         },
         "probe_events": {
           "type": "integer"

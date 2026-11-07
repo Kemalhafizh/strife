@@ -77,10 +77,12 @@ func New(c Config) (Transport, error) {
 		}
 		c.Token = token
 		return NewAgent(c), nil
+	case "proxy":
+		return NewProxy(), nil
 	case "dry-run", "dryrun", "":
 		return &DryRun{}, nil
 	}
-	return nil, fmt.Errorf("transport: unknown type %q (docker, ssh, agent, kubernetes, dry-run)", c.Type)
+	return nil, fmt.Errorf("transport: unknown type %q (docker, ssh, agent, kubernetes, proxy, dry-run)", c.Type)
 }
 
 // Quote single-quotes s for a POSIX shell.

@@ -60,6 +60,7 @@ Usage:
   strife verify     [flags]   verify a signed compliance bundle against a public key
   strife compliance [flags]   generate a regulatory compliance & resilience audit dossier
   strife serve      [flags]   run the continuous verification & run registry HTTP daemon
+  strife doctor     [flags]   inspect host capabilities, transports, and cluster reachability
   strife systems              list the built-in simulated systems
   strife version
 
@@ -105,6 +106,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdCompliance(rest, stdout, stderr)
 	case "serve", "server":
 		code, err = cmdServe(rest, stdout, stderr)
+	case "doctor":
+		code, err = cmdDoctor(rest, stdout, stderr)
 	case "systems":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "SYSTEM\tEXPECTED\tEXPOSED BY\tDESCRIPTION")
@@ -1129,6 +1132,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitError, err
 	}
 	rep.Applied = res.Applied
+	rep.Resilience = report.ComputeResilience(res.Schedule, res.Applied, res.History)
 	rep.Probes = res.Probes
 	rep.Findings = res.Findings
 	rep.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
@@ -1651,6 +1655,69 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	fmt.Fprintf(stdout, "strife serve listening on http://%s (store: %s)\n", *listen, *storeDir)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, flag.ErrHelp) && !strings.Contains(err.Error(), "Server closed") {
 		return exitError, err
+	}
+	return exitOK, nil
+}
+
+func cmdDoctor(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "optional live config (strife.json) to validate and probe endpoints")
+	asJSON := fs.Bool("json", false, "print diagnostics as JSON")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+
+	var endpoints []string
+	var cfg *runner.Config
+	if *cfgPath != "" {
+		var err error
+		cfg, err = runner.Load(*cfgPath)
+		if err != nil {
+			return exitUsage, err
+		}
+		endpoints = runner.ExpandEndpoints(cfg.DB.Config.Endpoints, cfg.Nodes)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rep := transport.Inspect(ctx, endpoints)
+
+	if *asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return exitOK, enc.Encode(rep)
+	}
+
+	fmt.Fprintf(stdout, "host:       %s/%s (root=%v, cgroup-v2=%v)\n", rep.OS, rep.Arch, rep.Root, rep.CgroupV2)
+	fmt.Fprintf(stdout, "transports: %s (recommended: %s)\n", strings.Join(rep.SupportedTransports, ", "), rep.RecommendedTransport)
+	fmt.Fprintf(stdout, "proxy-l4:   %s\n", strings.Join(rep.ProxyFaults, ", "))
+	if len(rep.KernelFaults) > 0 {
+		fmt.Fprintf(stdout, "kernel:     %s\n", strings.Join(rep.KernelFaults, ", "))
+	}
+	fmt.Fprintln(stdout, "\ncapabilities:")
+	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	for _, t := range rep.Tools {
+		mark := "✗"
+		if t.Available {
+			mark = "✓"
+		}
+		fmt.Fprintf(tw, "  %s %s\t%s\n", mark, t.Name, t.Detail)
+	}
+	tw.Flush()
+
+	if cfg != nil {
+		fmt.Fprintf(stdout, "\nconfig %q (%s, transport %q, %d nodes):\n", cfg.Name, *cfgPath, cfg.Transport.Type, len(cfg.Nodes))
+		for _, ep := range rep.Endpoints {
+			if ep.Reachable {
+				fmt.Fprintf(stdout, "  ✓ %s (%dms)\n", ep.Endpoint, ep.LatencyMs)
+			} else {
+				fmt.Fprintf(stdout, "  ✗ %s (%s)\n", ep.Endpoint, ep.Error)
+			}
+		}
+	}
+	for _, n := range rep.Notes {
+		fmt.Fprintf(stdout, "\nnote: %s\n", n)
 	}
 	return exitOK, nil
 }
