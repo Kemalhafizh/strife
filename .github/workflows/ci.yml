@@ -123,6 +123,7 @@ jobs:
         with:
           command: sim --system raft-stale-reads --faults partition --seed 2 --shrink
           junit: junit/stale-reads.xml
+          sarif: sarif/stale-reads.sarif.json
           artifact-name: strife-stale-reads
           fail: "false"
       - name: outputs and JUnit are what users rely on
@@ -132,9 +133,11 @@ jobs:
           BUG_OUTCOME: ${{ steps.bug.outputs.outcome }}
           BUG_CODE: ${{ steps.bug.outputs.exit-code }}
           BUG_JUNIT: ${{ steps.bug.outputs.junit }}
+          BUG_SARIF: ${{ steps.bug.outputs.sarif }}
         run: |
           test "$PASS_OUTCOME" = passed
           test "$BUG_OUTCOME" = violation
           test "$BUG_CODE" = 1
           python3 -c "import sys, xml.etree.ElementTree as ET; r = ET.parse(sys.argv[1]).getroot(); assert int(r.get('failures')) > 0; b = r.find('.//failure').text; assert 'Reproduce' in b and 'strife sim' in b, b" "$BUG_JUNIT"
+          test -f "$BUG_SARIF"
           test -f strife-out/raft-stale-reads-seed2-min/report.html

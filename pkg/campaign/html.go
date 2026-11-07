@@ -33,6 +33,8 @@ type htmlView struct {
 	VerdictLabel string
 	VerdictClass string
 	FaultsList   string
+	AvgAvailStr  string
+	MTTRP95Str   string
 	HasBaseline  bool
 	Regressed    int
 	Fixed        int
@@ -90,6 +92,12 @@ func WriteHTML(w io.Writer, m *Manifest) error {
 		VerdictClass: verdictClass,
 		FaultsList:   faultStr,
 		HasBaseline:  m.Comparison != nil,
+	}
+	if m.AvgAvailability > 0 {
+		v.AvgAvailStr = fmt.Sprintf("%.1f%%", m.AvgAvailability*100)
+	}
+	if m.MTTRP95Ms > 0 {
+		v.MTTRP95Str = fmt.Sprintf("%d ms", m.MTTRP95Ms)
 	}
 	if m.Comparison != nil {
 		v.Regressed = len(m.Comparison.Regressed)
@@ -297,6 +305,8 @@ var campaignTmpl = template.Must(template.New("campaign").Parse(`<!doctype html>
   {{end}}
   <div class="kpi"><div class="k">Simulated Events</div><div class="v mono">{{.M.TotalEvents}}</div></div>
   <div class="kpi"><div class="k">Client Operations</div><div class="v mono">{{.M.TotalOps}}</div></div>
+  {{if .AvgAvailStr}}<div class="kpi"><div class="k">Avg Availability</div><div class="v mono ok">{{.AvgAvailStr}}</div></div>{{end}}
+  {{if .MTTRP95Str}}<div class="kpi"><div class="k">P95 Recovery (MTTR)</div><div class="v mono">{{.MTTRP95Str}}</div></div>{{end}}
   <div class="kpi"><div class="k">Wall Duration</div><div class="v mono">{{.M.DurationMs}} ms</div></div>
 </div>
 

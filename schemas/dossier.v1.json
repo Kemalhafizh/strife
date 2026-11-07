@@ -121,6 +121,13 @@
         "key_id": {
           "type": "string"
         },
+        "max_mttr": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "min_availability": {
+          "type": "number"
+        },
         "model": {
           "type": "string"
         },
@@ -162,6 +169,12 @@
         },
         "signer": {
           "type": "string"
+        },
+        "sla_breach_reason": {
+          "type": "string"
+        },
+        "sla_breached": {
+          "type": "boolean"
         },
         "target": {
           "type": "string"

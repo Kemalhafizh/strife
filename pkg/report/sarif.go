@@ -75,6 +75,19 @@ type sarifLogicalLocation struct {
 }
 
 func classifySARIFRule(c Case) (id, name, desc string) {
+	switch c.Class {
+	case "dora", "soc2", "iso27001", "bi-ojk":
+		ctrlID := c.Class
+		title := c.Name
+		if rest := strings.TrimSpace(strings.TrimPrefix(c.Name, "["+strings.ToUpper(c.Class)+"]")); rest != c.Name {
+			if parts := strings.SplitN(rest, " — ", 2); len(parts) == 2 {
+				ctrlID = strings.TrimSpace(parts[0])
+				title = strings.TrimSpace(parts[1])
+			}
+		}
+		ruleID := "STRIFE-COMPLIANCE-" + strings.ToUpper(strings.NewReplacer(".", "-", "_", "-").Replace(ctrlID))
+		return ruleID, "ComplianceControlGap", title
+	}
 	combined := c.Message + "\n" + c.Detail
 	switch {
 	case strings.Contains(combined, "LEDGER-CONSERVATION"):

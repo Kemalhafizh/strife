@@ -349,21 +349,25 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 	}
 
 	entry := RunEntry{
-		ID:          id,
-		Tenant:      tName,
-		Kind:        "campaign",
-		RunKind:     "campaign",
-		Target:      m.System,
-		Model:       modelName,
-		TotalSeeds:  m.TotalSeeds,
-		Passed:      m.Passed,
-		Violations:  m.Violations,
-		Operations:  m.TotalOps,
-		Verdict:     m.Verdict(),
-		Fingerprint: m.Fingerprint,
-		Commit:      m.Commit,
-		Branch:      m.Branch,
-		Timestamp:   ts,
+		ID:                  id,
+		Tenant:              tName,
+		Kind:                "campaign",
+		RunKind:             "campaign",
+		Target:              m.System,
+		Model:               modelName,
+		TotalSeeds:          m.TotalSeeds,
+		Passed:              m.Passed,
+		Violations:          m.Violations,
+		Operations:          m.TotalOps,
+		Verdict:             m.Verdict(),
+		OverallAvailability: m.AvgAvailability,
+		MTTRP50Ms:           m.MTTRP50Ms,
+		MTTRP95Ms:           m.MTTRP95Ms,
+		MTTRMaxMs:           m.MTTRMaxMs,
+		Fingerprint:         m.Fingerprint,
+		Commit:              m.Commit,
+		Branch:              m.Branch,
+		Timestamp:           ts,
 	}
 	if comp != nil {
 		entry.Regressions = len(comp.Regressed)
@@ -407,6 +411,21 @@ func (s *Store) Targets() []string {
 	for _, e := range s.entries {
 		if e.Target != "" && !slices.Contains(out, e.Target) {
 			out = append(out, e.Target)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Tenants returns the sorted list of unique tenant identifiers in the store.
+func (s *Store) Tenants() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []string
+	for _, e := range s.entries {
+		t := normalizeTenant(e.Tenant)
+		if !slices.Contains(out, t) {
+			out = append(out, t)
 		}
 	}
 	slices.Sort(out)

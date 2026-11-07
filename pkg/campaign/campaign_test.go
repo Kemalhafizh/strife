@@ -118,6 +118,9 @@ func TestCampaignRunAndRegressionFlow(t *testing.T) {
 	if mPass.Passed != 5 || mPass.Violations != 0 {
 		t.Fatalf("expected 5 passed seeds, got %+v", mPass)
 	}
+	if mPass.AvgAvailability <= 0 {
+		t.Fatalf("expected positive AvgAvailability on campaign manifest, got %v", mPass.AvgAvailability)
+	}
 	if _, err := os.Stat(baselinePath); err != nil {
 		t.Fatalf("expected baseline file to exist: %v", err)
 	}
@@ -190,5 +193,34 @@ func TestCampaignRunAndRegressionFlow(t *testing.T) {
 	}
 	if !strings.Contains(sumBuf.String(), "regressed") {
 		t.Errorf("expected Markdown summary to mention regressed count")
+	}
+}
+
+func TestCampaignSettlementExplanation(t *testing.T) {
+	cfg := explore.DefaultConfig()
+	cfg.System = "outbox-dual-write"
+	cfg.Faults = []nemesis.Kind{nemesis.Kill}
+	cfg.Duration = 4 * time.Second
+
+	m, err := Run(context.Background(), Options{
+		BaseConfig: cfg,
+		Seeds:      []uint64{1, 2, 3},
+		Workers:    2,
+	})
+	if err != nil {
+		t.Fatalf("campaign Run failed: %v", err)
+	}
+	if m.Violations == 0 {
+		t.Fatalf("expected violation on outbox-dual-write campaign")
+	}
+	found := false
+	for _, s := range m.Seeds {
+		if strings.Contains(s.Explanation, "SETTLEMENT-ATOMICITY") || strings.Contains(s.Explanation, "SETTLEMENT-NO-ORPHAN-CREDIT") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected SETTLEMENT-* diagnosis in seed explanation, got %+v", m.Seeds)
 	}
 }

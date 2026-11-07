@@ -451,12 +451,12 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
 - **Kubernetes host-level cgroup v2 & Pod netns discovery** (`pkg/agent/k8s.go`, `deploy/kubernetes/strife-agent-daemonset.yaml`):
   resolves `pod:<ns>/<name>`, `k8s:<name>`, and `container:<id>` directly from `/proc` and `/sys/fs/cgroup`.
 - **Self-hosted continuous verification & run registry daemon** (`strife serve`, `pkg/serve`):
-  append-only run & campaign store, multi-tenant baseline isolation (`?tenant=`), REST API (`/api/v1/ingest`, `/api/v1/runs`, `/api/v1/runs/<id>/dossier`, `/api/v1/series`, `/api/v1/webhooks`), automatic seed-level baseline regression diffing, automatic Slack/Discord/JSON webhook alerting (`--webhook`, including `report.sla_breach` via `--max-mttr` and `--min-availability`), optional Ed25519 `in-toto` signing, and embedded web dashboard.
-- **User-space L4 TCP fault proxy & `strife doctor`** (`pkg/transport/proxy.go`, `pkg/transport/doctor.go`, v0.4.0 – v0.6.0):
+  append-only run & campaign store, multi-tenant baseline isolation (`?tenant=`), per-tenant Ed25519 signing keys (`--tenant-keys`) and public key discovery (`GET /api/v1/keys`), REST API (`/api/v1/ingest`, `/api/v1/runs`, `/api/v1/runs/<id>/dossier`, `/api/v1/series`, `/api/v1/webhooks`), automatic seed-level baseline regression diffing, automatic Slack/Discord/JSON webhook alerting (`--webhook`, including `report.sla_breach` via `--max-mttr` and `--min-availability`), and embedded multi-tenant web dashboard.
+- **User-space L4 TCP fault proxy & `strife doctor`** (`pkg/transport/proxy.go`, `pkg/transport/doctor.go`, v0.4.0 – v0.7.0):
   zero-privilege L4 fault injection (`partition`, `latency`, `loss`, `kill`, `pause`, `freeze`, `io-stall`, plus half-duplex response drops) across Linux, macOS, and Windows without root or kernel modules.
-- **Cross-system settlement & transactional-outbox verification** (`--model settlement`, `outbox-settlement`, `outbox-dual-write`, live `workload.model: "settlement"`, v0.4.0 – v0.6.0):
-  verifies `SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, and `SETTLEMENT-IDEMPOTENCY` across simulated and live clusters, bidirectional Jepsen `.edn` history import/export (`pkg/history/edn.go`, `--export-edn`), SARIF 2.1.0 output (`--sarif`), and quantitative post-heal MTTR & availability metrics (`pkg/report/report.go`, `report.html`).
-- Tagged `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, and `v0.6.0`.
+- **Cross-system settlement & transactional-outbox verification** (`--model settlement`, `outbox-settlement`, `outbox-dual-write`, live `workload.model: "settlement"`, v0.4.0 – v0.7.0):
+  verifies `SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, and `SETTLEMENT-IDEMPOTENCY` across simulated and live clusters, bidirectional Jepsen `.edn` history import/export (`pkg/history/edn.go`, `--export-edn`), SARIF 2.1.0 output (`--sarif` across all CI subcommands and `action.yml`), and quantitative post-heal MTTR & availability metrics (`pkg/report/report.go`, `pkg/campaign`, `pkg/compliance`).
+- Tagged `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, and `v0.7.0`.
 
 ## Phase 6: Commercial layer (next)
 

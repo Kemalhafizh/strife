@@ -29,6 +29,7 @@ strife serve \
 | `--store` | `strife-registry` | Directory for the append-only registry index and run artifacts |
 | `--token` | *(empty)* | Optional Bearer token required for `POST /api/v1/ingest` (compared in constant time) |
 | `--key` | *(empty)* | Optional PKCS#8 Ed25519 private key (`.key`) used to sign every ingested `report.json` |
+| `--tenant-keys` | *(empty)* | Optional comma-separated `tenant=path.key` pairs for per-tenant Ed25519 signing |
 | `--signer` | `strife-serve` | Signer identity recorded inside automatic `in-toto` attestations |
 | `--webhook` | *(empty)* | Comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations, regressions, and SLA breaches |
 | `--max-mttr` | `0s` | Optional post-heal MTTR P95 threshold (e.g. `500ms`) that triggers `report.sla_breach` webhook alerts |
@@ -72,6 +73,14 @@ curl -fsSL http://127.0.0.1:8080/api/v1/health
   "version": "0.3.0",
   "webhooks_configured": 2
 }
+```
+
+### `GET /api/v1/keys`
+
+Returns all active Ed25519 verification keys (`default` plus any per-tenant keys configured via `--tenant-keys`) in PKIX PEM format (`public_key_pem`, `key_id`, `tenant`, `signer`) so auditors and CI pipelines can verify `bundle.json` artifacts independently.
+
+```sh
+curl -fsSL http://127.0.0.1:8080/api/v1/keys
 ```
 
 ### `GET /api/v1/webhooks`

@@ -121,6 +121,10 @@ type EvidenceSummary struct {
 	MTTRP50             time.Duration   `json:"mttr_p50,omitempty"`
 	MTTRP95             time.Duration   `json:"mttr_p95,omitempty"`
 	MTTRMax             time.Duration   `json:"mttr_max,omitempty"`
+	MaxMTTR             time.Duration   `json:"max_mttr,omitempty"`
+	MinAvailability     float64         `json:"min_availability,omitempty"`
+	SLABreached         bool            `json:"sla_breached,omitempty"`
+	SLABreachReason     string          `json:"sla_breach_reason,omitempty"`
 	ProbeEvents         int             `json:"probe_events,omitempty"`
 	Fingerprint         string          `json:"fingerprint"`
 	HistoryHash         string          `json:"history_hash,omitempty"`
@@ -154,11 +158,13 @@ type Dossier struct {
 
 // Options configure how a Dossier is built.
 type Options struct {
-	Report       *report.Report
-	Campaign     *campaign.Manifest
-	Verification *attest.VerificationResult
-	Frameworks   []FrameworkID
-	Now          time.Time
+	Report          *report.Report
+	Campaign        *campaign.Manifest
+	Verification    *attest.VerificationResult
+	Frameworks      []FrameworkID
+	MaxMTTR         time.Duration
+	MinAvailability float64
+	Now             time.Time
 }
 
 // Evaluate builds a regulatory compliance Dossier from a Strife report or campaign.
@@ -208,6 +214,19 @@ func Evaluate(opts Options) (*Dossier, error) {
 	}
 
 	sum := extractEvidence(opts.Report, opts.Campaign, opts.Verification)
+	sum.MaxMTTR = opts.MaxMTTR
+	sum.MinAvailability = opts.MinAvailability
+	var breachReasons []string
+	if opts.MaxMTTR > 0 && sum.MTTRP95 > opts.MaxMTTR {
+		breachReasons = append(breachReasons, fmt.Sprintf("P95 MTTR %v exceeds SLA threshold %v", sum.MTTRP95.Round(time.Millisecond), opts.MaxMTTR))
+	}
+	if opts.MinAvailability > 0 && sum.OverallAvailability > 0 && sum.OverallAvailability < opts.MinAvailability {
+		breachReasons = append(breachReasons, fmt.Sprintf("availability %.1f%% is below minimum SLA %.1f%%", sum.OverallAvailability*100, opts.MinAvailability*100))
+	}
+	if len(breachReasons) > 0 {
+		sum.SLABreached = true
+		sum.SLABreachReason = strings.Join(breachReasons, "; ")
+	}
 	meth := buildMethodology(sum)
 
 	var controls []ControlResult
@@ -301,17 +320,21 @@ func extractEvidence(rep *report.Report, camp *campaign.Manifest, ver *attest.Ve
 			modelName = "settlement"
 		}
 		sum = EvidenceSummary{
-			Target:            camp.System,
-			RunKind:           "campaign",
-			Model:             modelName,
-			Verdict:           camp.Verdict(),
-			SeedsTested:       camp.TotalSeeds,
-			SeedsLinearizable: camp.Passed,
-			SeedsViolating:    camp.Violations,
-			TotalOperations:   camp.TotalOps,
-			Nodes:             camp.Config.Nodes,
-			FaultCount:        faultCount,
-			Fingerprint:       camp.Fingerprint,
+			Target:              camp.System,
+			RunKind:             "campaign",
+			Model:               modelName,
+			Verdict:             camp.Verdict(),
+			SeedsTested:         camp.TotalSeeds,
+			SeedsLinearizable:   camp.Passed,
+			SeedsViolating:      camp.Violations,
+			TotalOperations:     camp.TotalOps,
+			Nodes:               camp.Config.Nodes,
+			FaultCount:          faultCount,
+			OverallAvailability: camp.AvgAvailability,
+			MTTRP50:             time.Duration(camp.MTTRP50Ms) * time.Millisecond,
+			MTTRP95:             time.Duration(camp.MTTRP95Ms) * time.Millisecond,
+			MTTRMax:             time.Duration(camp.MTTRMaxMs) * time.Millisecond,
+			Fingerprint:         camp.Fingerprint,
 		}
 		for _, k := range camp.Faults {
 			faultSet[k] = true
@@ -358,6 +381,18 @@ func formatFaultList(kinds []nemesis.Kind) string {
 	return strings.Join(s, ", ")
 }
 
+func applySLAGate(cr ControlResult, sum EvidenceSummary) ControlResult {
+	if sum.OverallAvailability > 0 || sum.MTTRP95 > 0 {
+		cr.Evidence += fmt.Sprintf(" Empirical availability=%.1f%%, post-fault MTTR p95=%v (max=%v).",
+			sum.OverallAvailability*100, sum.MTTRP95.Round(time.Millisecond), sum.MTTRMax.Round(time.Millisecond))
+	}
+	if sum.SLABreached {
+		cr.Status = StatusFail
+		cr.Gap = "SLA threshold breached: " + sum.SLABreachReason
+	}
+	return cr
+}
+
 func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 	hasNetFault := hasAnyFault(sum.FaultKindsExercised, nemesis.Partition, nemesis.Latency, nemesis.Loss)
 	hasCrashFault := hasAnyFault(sum.FaultKindsExercised, nemesis.Kill, nemesis.Pause, nemesis.Freeze)
@@ -390,7 +425,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 					sum.Model, sum.TotalOperations, sum.SeedsTested, sum.SeedsLinearizable, sum.SeedsViolating, shortHash(sum.Fingerprint)),
 				"Run a non-empty client workload and resolve all consistency violations.",
 			),
-			evalControl(
+			applySLAGate(evalControl(
 				FrameworkDORA,
 				"dora.recovery",
 				"Crash Recovery & Storage Durability Verification",
@@ -400,7 +435,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				fmt.Sprintf("Storage/crash fault coverage: [%s] on %d-node cluster; verdict=%s.",
 					formatFaultList(sum.FaultKindsExercised), sum.Nodes, sum.Verdict),
 				"Include 'kill' and 'io-stall' in the fault schedule to verify WAL/fsync durability under sudden crashes.",
-			),
+			), sum),
 		}
 
 	case FrameworkSOC2:
@@ -416,7 +451,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 					sum.TotalOperations, sum.Model, sum.Verdict),
 				"Ensure all checked keys/transactions satisfy linearizability or target isolation without violations.",
 			),
-			evalControl(
+			applySLAGate(evalControl(
 				FrameworkSOC2,
 				"soc2.recovery",
 				"Availability & Environmental Disruption Recovery",
@@ -426,7 +461,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				fmt.Sprintf("Executed %d fault injection transition(s) across fault classes [%s] on %d nodes.",
 					sum.FaultCount, formatFaultList(sum.FaultKindsExercised), sum.Nodes),
 				"Enable active fault injection (--faults partition,kill,pause) rather than a fault-free baseline.",
-			),
+			), sum),
 			evalControl(
 				FrameworkSOC2,
 				"soc2.test-evidence",
@@ -441,7 +476,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 
 	case FrameworkISO27001:
 		return []ControlResult{
-			evalControl(
+			applySLAGate(evalControl(
 				FrameworkISO27001,
 				"iso27001.redundancy",
 				"Information Backup & Redundancy of Processing Facilities",
@@ -451,7 +486,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				fmt.Sprintf("Cluster of %d node(s) tested under [%s]; verdict=%s.",
 					sum.Nodes, formatFaultList(sum.FaultKindsExercised), sum.Verdict),
 				"Test on a multi-node cluster (>= 3 nodes) with partition or crash faults enabled.",
-			),
+			), sum),
 			evalControl(
 				FrameworkISO27001,
 				"iso27001.clock-sync",
@@ -478,7 +513,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 
 	case FrameworkBIOJK:
 		out := []ControlResult{
-			evalControl(
+			applySLAGate(evalControl(
 				FrameworkBIOJK,
 				"bi-ojk.pemulihan-bencana",
 				"Ketahanan Sistem & Uji Pemulihan Bencana (Failover / Split-Brain)",
@@ -488,7 +523,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				fmt.Sprintf("Target %q diuji pada %d node dengan injeksi gangguan [%s] (%d seed, %d operasi); hasil=%s.",
 					sum.Target, sum.Nodes, formatFaultList(sum.FaultKindsExercised), sum.SeedsTested, sum.TotalOperations, sum.Verdict),
 				"Sertakan kombinasi gangguan jaringan (partition) dan kegagalan proses (kill/pause) pada pengujian.",
-			),
+			), sum),
 			evalControl(
 				FrameworkBIOJK,
 				"bi-ojk.integritas-data",

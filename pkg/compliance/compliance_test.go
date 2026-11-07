@@ -253,3 +253,61 @@ func TestEvaluateLedgerModelIncludesBIOJKReconciliation(t *testing.T) {
 		t.Fatalf("expected passing bi-ojk.rekonsiliasi-buku-besar control, got %+v", dossier.Controls)
 	}
 }
+
+func TestEvaluateSLABreachAndSARIF(t *testing.T) {
+	v := int64(1)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: int64(100 * time.Millisecond)},
+		{Index: 1, Process: 0, Type: history.Fail, F: history.FWrite, Key: "k0", Value: &v, Time: int64(1500 * time.Millisecond), Error: "timeout"},
+		{Index: 2, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: int64(3100 * time.Millisecond)},
+		{Index: 3, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: int64(3400 * time.Millisecond)},
+	}
+	sched := nemesis.Schedule{
+		Nodes:    3,
+		Duration: 5 * time.Second,
+		Faults: []nemesis.Fault{
+			{ID: 1, Kind: nemesis.Partition, Nodes: []int{0}, Start: time.Second, End: 3 * time.Second},
+			{ID: 2, Kind: nemesis.Kill, Nodes: []int{1}, Start: time.Second, End: 3 * time.Second},
+		},
+	}
+	rep, err := report.New(
+		report.KindSimulation,
+		"raft",
+		11,
+		map[string]any{"nodes": 3},
+		sched,
+		ops,
+		checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 2, Checked: 1},
+		"trace-sla-11",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dossier, err := Evaluate(Options{
+		Report:          rep,
+		Frameworks:      []FrameworkID{FrameworkDORA, FrameworkBIOJK},
+		MaxMTTR:         100 * time.Millisecond,
+		MinAvailability: 0.90,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if !dossier.Summary.SLABreached {
+		t.Fatalf("expected SLABreached=true, got summary=%+v", dossier.Summary)
+	}
+	if dossier.Overall != StatusFail {
+		t.Fatalf("expected overall status FAIL on SLA breach, got %s", dossier.Overall)
+	}
+
+	var sarifBuf strings.Builder
+	suite := Suite(dossier, false)
+	if err := report.WriteSARIF(&sarifBuf, []report.Suite{suite}); err != nil {
+		t.Fatalf("WriteSARIF: %v", err)
+	}
+	for _, want := range []string{"STRIFE-COMPLIANCE-DORA-RECOVERY", "STRIFE-COMPLIANCE-BI-OJK-PEMULIHAN-BENCANA", "SLA threshold breached"} {
+		if !strings.Contains(sarifBuf.String(), want) {
+			t.Errorf("SARIF output missing %q:\n%s", want, sarifBuf.String())
+		}
+	}
+}

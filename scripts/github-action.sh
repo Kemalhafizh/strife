@@ -24,7 +24,11 @@ fi
 bin=${STRIFE_BIN:-strife}
 out=${STRIFE_OUT-strife-out}
 junit=${STRIFE_JUNIT-strife-junit.xml}
+sarif=${STRIFE_SARIF-}
 summary=${STRIFE_SUMMARY:-true}
+push_url=${STRIFE_PUSH-}
+push_token=${STRIFE_PUSH_TOKEN-}
+tenant=${STRIFE_TENANT-}
 
 read -r -a args <<<"$STRIFE_ARGS"
 sub=${args[0]}
@@ -40,6 +44,10 @@ sim | campaign | shrink | check | run | compliance)
     mkdir -p "$(dirname "$junit")"
     extra+=(--junit "$junit")
   fi
+  if [ -n "$sarif" ]; then
+    mkdir -p "$(dirname "$sarif")"
+    extra+=(--sarif "$sarif")
+  fi
   if [ "$summary" = true ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     extra+=(--summary "$GITHUB_STEP_SUMMARY")
   fi
@@ -48,6 +56,20 @@ sim | campaign | shrink | check | run | compliance)
       extra+=(--out "$out/check")
     else
       extra+=(--out "$out")
+    fi
+  fi
+  ;;
+esac
+
+case $sub in
+sim | campaign | run)
+  if [ -n "$push_url" ]; then
+    extra+=(--push "$push_url")
+    if [ -n "$push_token" ]; then
+      extra+=(--push-token "$push_token")
+    fi
+    if [ -n "$tenant" ]; then
+      extra+=(--tenant "$tenant")
     fi
   fi
   ;;
@@ -69,6 +91,7 @@ esac
   echo "exit-code=$code"
   echo "outcome=$outcome"
   echo "junit=$junit"
+  echo "sarif=$sarif"
   echo "report-dir=$out"
 } >>"${GITHUB_OUTPUT:-/dev/null}"
 

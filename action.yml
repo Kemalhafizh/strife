@@ -20,10 +20,26 @@ inputs:
     description: Path of the JUnit XML report ("" to disable).
     required: false
     default: strife-junit.xml
+  sarif:
+    description: Path of the SARIF 2.1.0 report ("" to disable).
+    required: false
+    default: ""
   summary:
     description: Append a Markdown digest to the job summary page.
     required: false
     default: "true"
+  push:
+    description: Optional strife serve registry URL to push the resulting report or campaign manifest to.
+    required: false
+    default: ""
+  push-token:
+    description: Optional Bearer token for pushing to the strife serve registry.
+    required: false
+    default: ""
+  tenant:
+    description: Tenant identifier recorded when pushing to a multi-tenant strife serve registry.
+    required: false
+    default: default
   upload:
     description: Upload the reports and the JUnit file as a workflow artifact.
     required: false
@@ -51,6 +67,9 @@ outputs:
   junit:
     description: Path of the JUnit XML report.
     value: ${{ steps.strife.outputs.junit }}
+  sarif:
+    description: Path of the SARIF 2.1.0 report (if enabled).
+    value: ${{ steps.strife.outputs.sarif }}
   report-dir:
     description: Directory holding the reports.
     value: ${{ steps.strife.outputs.report-dir }}
@@ -117,7 +136,11 @@ runs:
         STRIFE_ARGS: ${{ inputs.command }}
         STRIFE_OUT: ${{ inputs.out }}
         STRIFE_JUNIT: ${{ inputs.junit }}
+        STRIFE_SARIF: ${{ inputs.sarif }}
         STRIFE_SUMMARY: ${{ inputs.summary }}
+        STRIFE_PUSH: ${{ inputs.push }}
+        STRIFE_PUSH_TOKEN: ${{ inputs.push-token }}
+        STRIFE_TENANT: ${{ inputs.tenant }}
       run: STRIFE_BIN="$RUNNER_TEMP/strife-bin/strife" "$GITHUB_ACTION_PATH/scripts/github-action.sh"
 
     - name: Upload reports
@@ -128,6 +151,7 @@ runs:
         path: |
           ${{ inputs.out }}
           ${{ inputs.junit }}
+          ${{ inputs.sarif }}
         if-no-files-found: ignore
 
     - name: Verdict

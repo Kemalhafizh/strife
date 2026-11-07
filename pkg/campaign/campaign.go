@@ -31,6 +31,8 @@ type SeedRecord struct {
 	Reproduce     string          `json:"reproduce,omitempty"`
 	ReportPath    string          `json:"report_path,omitempty"`
 	Error         string          `json:"error,omitempty"`
+	Availability  float64         `json:"availability,omitempty"`
+	MTTRP95Ms     int64           `json:"mttr_p95_ms,omitempty"`
 	ElapsedMs     int64           `json:"elapsed_ms"`
 }
 
@@ -47,14 +49,18 @@ type Manifest struct {
 	Faults      []nemesis.Kind `json:"faults"`
 	Config      explore.Config `json:"config"`
 
-	TotalSeeds  int    `json:"total_seeds"`
-	Passed      int    `json:"passed"`
-	Violations  int    `json:"violations"`
-	Unknown     int    `json:"unknown"`
-	Errors      int    `json:"errors"`
-	TotalEvents uint64 `json:"total_events"`
-	TotalOps    int    `json:"total_ops"`
-	DurationMs  int64  `json:"duration_ms"`
+	TotalSeeds      int     `json:"total_seeds"`
+	Passed          int     `json:"passed"`
+	Violations      int     `json:"violations"`
+	Unknown         int     `json:"unknown"`
+	Errors          int     `json:"errors"`
+	TotalEvents     uint64  `json:"total_events"`
+	TotalOps        int     `json:"total_ops"`
+	AvgAvailability float64 `json:"avg_availability,omitempty"`
+	MTTRP50Ms       int64   `json:"mttr_p50_ms,omitempty"`
+	MTTRP95Ms       int64   `json:"mttr_p95_ms,omitempty"`
+	MTTRMaxMs       int64   `json:"mttr_max_ms,omitempty"`
+	DurationMs      int64   `json:"duration_ms"`
 
 	Seeds      []SeedRecord `json:"seeds"`
 	Comparison *Comparison  `json:"comparison,omitempty"`

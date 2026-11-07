@@ -5,12 +5,16 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,11 +31,20 @@ type Config struct {
 	StoreDir        string
 	Token           string
 	SigningKeyPath  string
+	TenantKeyPaths  map[string]string
 	Signer          string
 	Webhooks        []string
 	WebhookTimeout  time.Duration
 	MaxMTTR         time.Duration
 	MinAvailability float64
+}
+
+// PublicKeyInfo describes an active Ed25519 verification key exposed by the server.
+type PublicKeyInfo struct {
+	Tenant       string `json:"tenant"`
+	Signer       string `json:"signer"`
+	KeyID        string `json:"key_id"`
+	PublicKeyPEM string `json:"public_key_pem"`
 }
 
 // Server is the strife serve HTTP daemon and run registry.
@@ -40,6 +53,7 @@ type Server struct {
 	store      *Store
 	privKey    ed25519.PrivateKey
 	keyID      string
+	tenantKeys map[string]ed25519.PrivateKey
 	startTime  time.Time
 	httpSrv    *http.Server
 	webhookMu  sync.Mutex
@@ -80,18 +94,29 @@ func NewServer(cfg Config) (*Server, error) {
 			keyID = attest.KeyID(pub)
 		}
 	}
+	tenantKeys := make(map[string]ed25519.PrivateKey)
+	for rawTenant, path := range cfg.TenantKeyPaths {
+		t := normalizeTenant(rawTenant)
+		k, err := attest.LoadPrivateKey(strings.TrimSpace(path))
+		if err != nil {
+			return nil, fmt.Errorf("serve: load tenant %q signing key: %w", t, err)
+		}
+		tenantKeys[t] = k
+	}
 
 	s := &Server{
-		cfg:       cfg,
-		store:     st,
-		privKey:   priv,
-		keyID:     keyID,
-		startTime: time.Now().UTC(),
+		cfg:        cfg,
+		store:      st,
+		privKey:    priv,
+		keyID:      keyID,
+		tenantKeys: tenantKeys,
+		startTime:  time.Now().UTC(),
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleUI)
 	mux.HandleFunc("/api/v1/health", s.handleHealth)
+	mux.HandleFunc("/api/v1/keys", s.handleKeys)
 	mux.HandleFunc("/api/v1/runs", s.handleRuns)
 	mux.HandleFunc("/api/v1/runs/", s.handleRunByID)
 	mux.HandleFunc("/api/v1/series", s.handleSeries)
@@ -139,6 +164,63 @@ func (s *Server) checkAuth(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+func (s *Server) signingKeyForTenant(tenant string) (ed25519.PrivateKey, string) {
+	t := normalizeTenant(tenant)
+	if k, ok := s.tenantKeys[t]; ok && len(k) == ed25519.PrivateKeySize {
+		return k, fmt.Sprintf("%s:%s", s.cfg.Signer, t)
+	}
+	if len(s.privKey) == ed25519.PrivateKeySize {
+		return s.privKey, s.cfg.Signer
+	}
+	return nil, ""
+}
+
+func publicKeyPEM(pub ed25519.PublicKey) string {
+	b, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return ""
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: b}))
+}
+
+func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var keys []PublicKeyInfo
+	if len(s.privKey) == ed25519.PrivateKeySize {
+		if pub, ok := s.privKey.Public().(ed25519.PublicKey); ok {
+			keys = append(keys, PublicKeyInfo{
+				Tenant:       "default",
+				Signer:       s.cfg.Signer,
+				KeyID:        attest.KeyID(pub),
+				PublicKeyPEM: publicKeyPEM(pub),
+			})
+		}
+	}
+	var tenants []string
+	for t := range s.tenantKeys {
+		tenants = append(tenants, t)
+	}
+	slices.Sort(tenants)
+	for _, t := range tenants {
+		priv := s.tenantKeys[t]
+		if pub, ok := priv.Public().(ed25519.PublicKey); ok {
+			keys = append(keys, PublicKeyInfo{
+				Tenant:       t,
+				Signer:       fmt.Sprintf("%s:%s", s.cfg.Signer, t),
+				KeyID:        attest.KeyID(pub),
+				PublicKeyPEM: publicKeyPEM(pub),
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": len(keys),
+		"keys":  keys,
+	})
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -151,8 +233,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"uptime_seconds":      int64(time.Since(s.startTime).Seconds()),
 		"stored_runs":         len(runs),
 		"targets":             s.store.Targets(),
-		"signing_active":      len(s.privKey) == ed25519.PrivateKeySize,
+		"tenants":             s.store.Tenants(),
+		"signing_active":      len(s.privKey) == ed25519.PrivateKeySize || len(s.tenantKeys) > 0,
 		"key_id":              s.keyID,
+		"tenant_keys":         len(s.tenantKeys),
 		"webhooks_configured": len(s.cfg.Webhooks),
 	}
 	if s.cfg.MaxMTTR > 0 {
@@ -236,6 +320,11 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRunDossier(w http.ResponseWriter, r *http.Request, id string) {
+	entry, _, err := s.store.Lookup(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
 	rep, camp, bundle, err := s.store.LoadDossierInputs(id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -247,18 +336,42 @@ func (s *Server) handleRunDossier(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	var ver *attest.VerificationResult
-	if bundle != nil && len(s.privKey) == ed25519.PrivateKeySize {
-		if pub, ok := s.privKey.Public().(ed25519.PublicKey); ok {
-			if v, verr := attest.Verify(bundle, pub); verr == nil && v.Valid {
-				ver = v
+	if bundle != nil {
+		priv, _ := s.signingKeyForTenant(entry.Tenant)
+		if len(priv) == ed25519.PrivateKeySize {
+			if pub, ok := priv.Public().(ed25519.PublicKey); ok {
+				if v, verr := attest.Verify(bundle, pub); verr == nil && v.Valid {
+					ver = v
+				}
+			}
+		}
+		if ver == nil && len(s.privKey) == ed25519.PrivateKeySize {
+			if pub, ok := s.privKey.Public().(ed25519.PublicKey); ok {
+				if v, verr := attest.Verify(bundle, pub); verr == nil && v.Valid {
+					ver = v
+				}
 			}
 		}
 	}
+	maxMTTR := s.cfg.MaxMTTR
+	if q := strings.TrimSpace(r.URL.Query().Get("max_mttr")); q != "" {
+		if d, derr := time.ParseDuration(q); derr == nil {
+			maxMTTR = d
+		}
+	}
+	minAvail := s.cfg.MinAvailability
+	if q := strings.TrimSpace(r.URL.Query().Get("min_availability")); q != "" {
+		if v, ferr := strconv.ParseFloat(q, 64); ferr == nil {
+			minAvail = v
+		}
+	}
 	dossier, err := compliance.Evaluate(compliance.Options{
-		Report:       rep,
-		Campaign:     camp,
-		Verification: ver,
-		Frameworks:   fws,
+		Report:          rep,
+		Campaign:        camp,
+		Verification:    ver,
+		Frameworks:      fws,
+		MaxMTTR:         maxMTTR,
+		MinAvailability: minAvail,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -339,7 +452,8 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		}
 		res, err2 = s.store.IngestCampaign(env.Campaign, tenant)
 	} else {
-		res, err2 = s.store.IngestReport(env.Report, commit, branch, s.privKey, s.cfg.Signer, tenant)
+		priv, signer := s.signingKeyForTenant(tenant)
+		res, err2 = s.store.IngestReport(env.Report, commit, branch, priv, signer, tenant)
 	}
 	if err2 != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err2.Error()})

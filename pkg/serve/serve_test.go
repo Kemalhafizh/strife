@@ -509,3 +509,114 @@ func TestServeMultiTenantIsolationSeriesAndPush(t *testing.T) {
 		t.Fatalf("unexpected /api/v1/series response: %s", string(sBody))
 	}
 }
+
+func TestServePerTenantKeysAndUIDashboard(t *testing.T) {
+	tmp := t.TempDir()
+	pubA, privA, err := attest.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, privB, err := attest.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPathA := filepath.Join(tmp, "alpha.key")
+	pubPathA := filepath.Join(tmp, "alpha.pub")
+	keyPathB := filepath.Join(tmp, "beta.key")
+	pubPathB := filepath.Join(tmp, "beta.pub")
+	if err := attest.SaveKeys(keyPathA, pubPathA, privA, pubA); err != nil {
+		t.Fatal(err)
+	}
+	if err := attest.SaveKeys(keyPathB, pubPathB, privB, pubB); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(Config{
+		ListenAddr: ln.Addr().String(),
+		StoreDir:   filepath.Join(tmp, "registry"),
+		Signer:     "strife-serve",
+		TenantKeyPaths: map[string]string{
+			"bank-alpha":   keyPathA,
+			"fintech-beta": keyPathB,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	v := int64(42)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: 10},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: 20},
+	}
+	rep, err := report.New(
+		report.KindSimulation,
+		"raft-ledger",
+		7,
+		map[string]any{"nodes": 5},
+		nemesis.Schedule{Nodes: 5, Duration: 5 * time.Second},
+		ops,
+		checker.Report{Model: "ledger", Verdict: checker.Linearizable, Operations: 1, Checked: 1},
+		"trace-007",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resA, err := Push(context.Background(), baseURL, "", "bank-alpha", "c1", "main", rep)
+	if err != nil {
+		t.Fatalf("Push bank-alpha: %v", err)
+	}
+	resB, err := Push(context.Background(), baseURL, "", "fintech-beta", "c2", "main", rep)
+	if err != nil {
+		t.Fatalf("Push fintech-beta: %v", err)
+	}
+	if !resA.Entry.Signed || resA.Entry.KeyID != attest.KeyID(pubA) || resA.Entry.Signer != "strife-serve:bank-alpha" {
+		t.Fatalf("expected bank-alpha signature with key %s, got %+v", attest.KeyID(pubA), resA.Entry)
+	}
+	if !resB.Entry.Signed || resB.Entry.KeyID != attest.KeyID(pubB) || resB.Entry.Signer != "strife-serve:fintech-beta" {
+		t.Fatalf("expected fintech-beta signature with key %s, got %+v", attest.KeyID(pubB), resB.Entry)
+	}
+
+	// Verify GET /api/v1/keys exposes both tenant public keys
+	kResp, err := http.Get(baseURL + "/api/v1/keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kBody, _ := io.ReadAll(kResp.Body)
+	kResp.Body.Close()
+	if kResp.StatusCode != http.StatusOK || !strings.Contains(string(kBody), attest.KeyID(pubA)) || !strings.Contains(string(kBody), attest.KeyID(pubB)) {
+		t.Fatalf("unexpected /api/v1/keys response: %s", string(kBody))
+	}
+
+	// Verify GET /api/v1/runs/<id>/dossier validates the tenant signature automatically
+	dResp, err := http.Get(baseURL + "/api/v1/runs/" + resA.Entry.ID + "/dossier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dBody, _ := io.ReadAll(dResp.Body)
+	dResp.Body.Close()
+	if dResp.StatusCode != http.StatusOK || !strings.Contains(string(dBody), `"attested": true`) || !strings.Contains(string(dBody), `"signer": "strife-serve:bank-alpha"`) {
+		t.Fatalf("expected verified tenant attestation in dossier, got: %s", string(dBody))
+	}
+
+	// Verify GET /?tenant=bank-alpha renders the Time-Series SLA Overview and filters by tenant
+	uiResp, err := http.Get(baseURL + "/?tenant=bank-alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiBody, _ := io.ReadAll(uiResp.Body)
+	uiResp.Body.Close()
+	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiBody), "Target &amp; Tenant Time-Series SLA Overview") || !strings.Contains(string(uiBody), "bank-alpha") {
+		t.Fatalf("unexpected dashboard HTML: %s", string(uiBody))
+	}
+}

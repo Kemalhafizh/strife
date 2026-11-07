@@ -145,9 +145,17 @@ func Run(ctx context.Context, opts Options) (*Manifest, error) {
 					rec.HistoryHash = res.HistoryHash
 					rec.ScheduleHash = res.ScheduleHash
 					rec.ElapsedMs = res.Elapsed.Milliseconds()
+					if resil := report.ComputeResilience(res.Schedule, nil, res.History); resil != nil {
+						rec.Availability = resil.OverallAvailability
+						rec.MTTRP95Ms = resil.MTTR.P95.Milliseconds()
+					}
 
 					if res.Check.Verdict == checker.Violation {
-						_ = checker.AddWitnesses(model.KV{}, res.History, &res.Check, checker.WitnessOptions{})
+						mSpec := model.Model(model.KV{})
+						if sys, serr := explore.LookupSystem(cfg.System); serr == nil {
+							mSpec = sys.Model()
+						}
+						_ = checker.AddWitnesses(mSpec, res.History, &res.Check, checker.WitnessOptions{})
 						for _, k := range res.Check.Failures() {
 							if k.Counterexample != nil {
 								rec.Explanation = fmt.Sprintf("key %s: %s", k.Key, k.Counterexample.Summary())
@@ -212,7 +220,11 @@ func Run(ctx context.Context, opts Options) (*Manifest, error) {
 				shrunkCount++
 				if opts.OutDir != "" && sres.Final != nil {
 					minDir := filepath.Join(opts.OutDir, fmt.Sprintf("%s-seed%d-min", res.Config.System, res.Config.Seed))
-					_ = checker.AddWitnesses(model.KV{}, sres.Final.History, &sres.Final.Check, checker.WitnessOptions{})
+					mSpec := model.Model(model.KV{})
+					if sys, serr := explore.LookupSystem(sres.Minimal.System); serr == nil {
+						mSpec = sys.Model()
+					}
+					_ = checker.AddWitnesses(mSpec, sres.Final.History, &sres.Final.Check, checker.WitnessOptions{})
 					rep, err := report.New(report.KindSimulation, sres.Minimal.System, sres.Minimal.Seed, sres.Minimal, sres.Final.Schedule, sres.Final.History, sres.Final.Check, sres.Final.TraceHash)
 					if err == nil {
 						rep.Events = sres.Final.Events
@@ -253,12 +265,22 @@ func Run(ctx context.Context, opts Options) (*Manifest, error) {
 		Seeds:      records,
 	}
 
+	var sumAvail float64
+	var availCount int
+	var mttrSamples []int64
 	for _, r := range records {
 		m.TotalEvents += r.Events
 		m.TotalOps += r.Ops
 		if r.Error != "" {
 			m.Errors++
 			continue
+		}
+		if r.Availability > 0 || r.Ops > 0 {
+			sumAvail += r.Availability
+			availCount++
+		}
+		if r.MTTRP95Ms > 0 {
+			mttrSamples = append(mttrSamples, r.MTTRP95Ms)
 		}
 		switch r.Verdict {
 		case checker.Linearizable:
@@ -268,6 +290,15 @@ func Run(ctx context.Context, opts Options) (*Manifest, error) {
 		default:
 			m.Unknown++
 		}
+	}
+	if availCount > 0 {
+		m.AvgAvailability = sumAvail / float64(availCount)
+	}
+	if len(mttrSamples) > 0 {
+		sort.Slice(mttrSamples, func(i, j int) bool { return mttrSamples[i] < mttrSamples[j] })
+		m.MTTRP50Ms = mttrSamples[(len(mttrSamples)-1)*50/100]
+		m.MTTRP95Ms = mttrSamples[(len(mttrSamples)-1)*95/100]
+		m.MTTRMaxMs = mttrSamples[len(mttrSamples)-1]
 	}
 
 	m.Fingerprint = m.ComputeFingerprint()

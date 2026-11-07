@@ -1483,6 +1483,8 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 	frameworksStr := fs.String("frameworks", "all", "comma-separated frameworks: dora,soc2,iso27001,bi-ojk,all")
 	out := fs.String("out", "strife-compliance", "directory to write dossier.json, dossier.md, and dossier.html (\"\" to disable)")
 	strict := fs.Bool("strict", false, "exit with non-zero status if any control is PARTIAL (not just FAIL)")
+	maxMTTR := fs.Duration("max-mttr", 0, "optional SLA gate: fail recovery controls when P95 MTTR exceeds this duration")
+	minAvail := fs.Float64("min-availability", 0, "optional SLA gate: fail recovery controls when availability is below this ratio [0..1]")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -1529,10 +1531,12 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 
 	dossier, err := compliance.Evaluate(compliance.Options{
-		Report:       rep,
-		Campaign:     camp,
-		Verification: ver,
-		Frameworks:   fws,
+		Report:          rep,
+		Campaign:        camp,
+		Verification:    ver,
+		Frameworks:      fws,
+		MaxMTTR:         *maxMTTR,
+		MinAvailability: *minAvail,
 	})
 	if err != nil {
 		return exitError, err
@@ -1650,6 +1654,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	storeDir := fs.String("store", "strife-registry", "directory for persistent run registry and artifacts")
 	token := fs.String("token", "", "optional Bearer token required for POST /api/v1/ingest")
 	keyPath := fs.String("key", "", "optional Ed25519 private key (.key) to sign ingested reports automatically")
+	tenantKeysStr := fs.String("tenant-keys", "", "optional comma-separated tenant=path.key pairs for per-tenant Ed25519 signing")
 	signer := fs.String("signer", "strife-serve", "signer identity recorded in automatic in-toto attestations")
 	webhook := fs.String("webhook", "", "comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations, regressions, and SLA breaches")
 	maxMTTR := fs.Duration("max-mttr", 0, "optional post-heal MTTR P95 threshold (e.g. 500ms) that triggers report.sla_breach webhook alerts")
@@ -1658,11 +1663,25 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitUsage, err
 	}
 
+	tenantKeyPaths := make(map[string]string)
+	for _, item := range strings.Split(*tenantKeysStr, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		kv := strings.SplitN(item, "=", 2)
+		if len(kv) != 2 || strings.TrimSpace(kv[0]) == "" || strings.TrimSpace(kv[1]) == "" {
+			return exitUsage, fmt.Errorf("invalid --tenant-keys entry %q (expected tenant=path.key)", item)
+		}
+		tenantKeyPaths[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+	}
+
 	srv, err := serve.NewServer(serve.Config{
 		ListenAddr:      *listen,
 		StoreDir:        *storeDir,
 		Token:           *token,
 		SigningKeyPath:  *keyPath,
+		TenantKeyPaths:  tenantKeyPaths,
 		Signer:          *signer,
 		Webhooks:        serve.ParseWebhookURLs(*webhook),
 		MaxMTTR:         *maxMTTR,

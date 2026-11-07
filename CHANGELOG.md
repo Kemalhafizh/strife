@@ -6,6 +6,30 @@ All notable changes to Strife. The format follows
 [`schemas/`](schemas/) are versioned contracts: within a major version they
 only gain optional fields.
 
+## [0.7.0] - 2026-11-07
+
+### Added (0.7.0)
+
+- Per-tenant Ed25519 signing keys (`--tenant-keys`), public key discovery
+  (`GET /api/v1/keys`), and multi-tenant Time-Series SLA Overview dashboard in
+  `strife serve` (`pkg/serve`):
+  - `--tenant-keys tenantA=keyA.key,tenantB=keyB.key` signs ingested reports
+    with tenant-specific Ed25519 keys (`strife-serve:<tenant>`) and verifies
+    them automatically on `GET /api/v1/runs/<id>/dossier`.
+  - `GET /api/v1/keys` exposes active Ed25519 public verification keys in PKIX
+    PEM format (`public_key_pem`, `key_id`, `tenant`, `signer`).
+  - The embedded web dashboard (`GET /`) now renders a `Target & Tenant
+    Time-Series SLA Overview` table and supports `?tenant=` filtering.
+- Quantitative SLA/MTTR regulatory control gates (`--max-mttr`,
+  `--min-availability`) and SARIF 2.1.0 output (`STRIFE-COMPLIANCE-*`) in
+  `strife compliance` (`pkg/compliance`, `pkg/report/sarif.go`).
+- Campaign-level availability and post-fault recovery (`avg_availability`,
+  `mttr_p50_ms`, `mttr_p95_ms`, `mttr_max_ms`) aggregation and multi-model
+  violation diagnosis (`ledger`, `settlement`) in `strife campaign`
+  (`pkg/campaign`).
+- GitHub Action (`action.yml`, `scripts/github-action.sh`) support for
+  `sarif`, `push`, `push-token`, and `tenant` inputs and `sarif` output.
+
 ## [0.6.0] - 2026-11-07
 
 ### Added (0.6.0)

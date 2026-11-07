@@ -3,13 +3,15 @@
 Strife plugs into CI in two layers:
 
 1. **Report formats** that any CI system understands. They are available on
-   `sim`, `shrink`, `check` and `run`:
+   `sim`, `campaign`, `shrink`, `check`, `run` and `compliance`:
    - `--junit FILE` writes a JUnit XML report.
+   - `--sarif FILE` writes a SARIF 2.1.0 report for GitHub Code Scanning.
    - `--summary FILE` appends a Markdown digest.
 2. **A GitHub Action** (`action.yml` at the root of this repository) that
    builds Strife, runs it, and does the following:
    - publishes the digest on the job summary page,
-   - uploads the HTML/JSON reports and the JUnit file as an artifact,
+   - uploads the HTML/JSON reports, JUnit XML, and SARIF 2.1.0 files as an artifact,
+   - optionally pushes the run report or campaign manifest to a `strife serve` registry,
    - annotates the run,
    - fails the job when Strife finds a problem.
 
@@ -32,12 +34,16 @@ jobs:
 ### Inputs
 
 | Input | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `command` | (required) | The strife command line without the leading `strife`. It is split on whitespace and never evaluated by a shell, so quoting and globbing do not apply. |
 | `out` | `strife-out` | Report directory (`""` to disable). |
 | `junit` | `strife-junit.xml` | JUnit XML path (`""` to disable). |
+| `sarif` | `""` | SARIF 2.1.0 report path (`""` to disable). |
 | `summary` | `true` | Append a Markdown digest to the job summary. |
-| `upload` | `true` | Upload `out` and `junit` as an artifact. The upload also runs when Strife fails. |
+| `push` | `""` | Optional `strife serve` registry URL to push the resulting report or campaign manifest to. |
+| `push-token` | `""` | Optional Bearer token for pushing to the `strife serve` registry. |
+| `tenant` | `default` | Tenant identifier recorded when pushing to a multi-tenant `strife serve` registry. |
+| `upload` | `true` | Upload `out`, `junit` and `sarif` as an artifact. The upload also runs when Strife fails. |
 | `artifact-name` | `strife-reports` | Artifact name. It must be unique per workflow run when you use the action twice. |
 | `fail` | `true` | Fail the step when Strife exits non-zero. |
 | `go-version` | Strife's `go.mod` | Go version used to build Strife. |
@@ -45,10 +51,11 @@ jobs:
 ### Outputs
 
 | Output | Meaning |
-|---|---|
+| --- | --- |
 | `exit-code` | `0` passed, `1` violation, `2` usage error, `3` inconclusive, `4` error |
 | `outcome` | `passed`, `violation`, `inconclusive`, `usage-error` or `error` |
 | `junit` | Path of the JUnit file |
+| `sarif` | Path of the SARIF 2.1.0 file (if enabled) |
 | `report-dir` | Path of the report directory |
 
 ### Recipes
@@ -102,12 +109,25 @@ reporter action, for example:
     report_paths: strife-junit.xml
 ```
 
+**Publish SARIF 2.1.0 findings to GitHub Code Scanning:**
+
+```yaml
+- uses: kemalhafizh/strife@main
+  with:
+    command: sim --system outbox-settlement --seeds 1..100 --expect linearizable
+    sarif: strife.sarif.json
+- uses: github/codeql-action/upload-sarif@v3
+  if: always()
+  with:
+    sarif_file: strife.sarif.json
+```
+
 ## What the JUnit report contains
 
 The `testcase` elements depend on the command:
 
 | Command | `testcase` elements | Failure means |
-|---|---|---|
+| --- | --- | --- |
 | `sim --seed N`, `shrink`, `check` | one per key of the history | that key's history is not linearizable; the body holds the counterexample and the reproduction command |
 | `sim --seeds A..B` | one per seed | that seed violates; the body holds its explanation and reproduction command |
 | `sim --seeds A..B --expect violation` | one: `finds a violation` | no seed in the range violated (finding the bug *is* the test) |

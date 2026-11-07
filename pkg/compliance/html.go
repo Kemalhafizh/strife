@@ -130,7 +130,22 @@ footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--border);color
     <div class="s">`)
 	fmt.Fprintf(&b, "%d pass · %d partial · %d fail", passCount, partialCount, failCount)
 	b.WriteString(`</div>
-  </div>
+  </div>`)
+	if d.Summary.OverallAvailability > 0 || d.Summary.MTTRP95 > 0 {
+		b.WriteString(`
+  <div class="card">
+    <div class="k">Availability &amp; Post-Fault MTTR</div>
+    <div class="v">`)
+		fmt.Fprintf(&b, "%.1f%%", d.Summary.OverallAvailability*100)
+		b.WriteString(`</div>
+    <div class="s">`)
+		fmt.Fprintf(&b, "p95 MTTR: %s · max: %s",
+			html.EscapeString(d.Summary.MTTRP95.Round(1e6).String()),
+			html.EscapeString(d.Summary.MTTRMax.Round(1e6).String()))
+		b.WriteString(`</div>
+  </div>`)
+	}
+	b.WriteString(`
   <div class="card">
     <div class="k">Cryptographic Attestation</div>
     <div class="v">`)

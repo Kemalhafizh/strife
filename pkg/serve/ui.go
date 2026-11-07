@@ -21,8 +21,11 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetFilter := strings.TrimSpace(r.URL.Query().Get("target"))
-	runs := s.store.List(targetFilter, "")
+	tenantFilter := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	runs := s.store.List(targetFilter, "", tenantFilter)
 	targets := s.store.Targets()
+	tenants := s.store.Tenants()
+	series := s.store.Series(tenantFilter, targetFilter)
 
 	var totalRuns, passRuns, violationRuns, totalRegressions, signedCount int
 	for _, e := range runs {
@@ -184,12 +187,66 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		}
 		b.WriteString(`</div>`)
 	}
+	if len(tenants) > 0 {
+		b.WriteString(`<div class="filters"><span style="color:var(--muted);font-size:0.82rem">Filter tenant:</span><a class="pill" href="/">all</a>`)
+		for _, tn := range tenants {
+			esc := html.EscapeString(tn)
+			fmt.Fprintf(&b, `<a class="pill" href="/?tenant=%s">%s</a>`, esc, esc)
+		}
+		b.WriteString(`</div>`)
+	}
+
+	if len(series) > 0 {
+		b.WriteString(`
+  <h2 style="font-size:0.92rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin:1.25rem 0 0.65rem">Target &amp; Tenant Time-Series SLA Overview</h2>
+  <table style="margin-bottom:1.5rem">
+    <thead>
+      <tr>
+        <th>Tenant</th>
+        <th>Target</th>
+        <th>Model</th>
+        <th>Total Runs</th>
+        <th>Pass Rate</th>
+        <th>Avg Availability</th>
+        <th>Latest P95 MTTR</th>
+        <th>Max P95 MTTR</th>
+      </tr>
+    </thead>
+    <tbody>`)
+		for _, s := range series {
+			availStr := "-"
+			if s.AvgAvailability > 0 {
+				availStr = fmt.Sprintf("%.1f%%", s.AvgAvailability*100)
+			}
+			fmt.Fprintf(&b, `<tr>
+        <td class="mono">%s</td>
+        <td class="mono">%s</td>
+        <td class="mono">%s</td>
+        <td class="mono">%d (%d pass · %d fail · %d reg)</td>
+        <td class="mono">%.1f%%</td>
+        <td class="mono">%s</td>
+        <td class="mono">%d ms</td>
+        <td class="mono">%d ms</td>
+      </tr>`,
+				html.EscapeString(s.Tenant),
+				html.EscapeString(s.Target),
+				html.EscapeString(s.Model),
+				s.TotalRuns, s.PassedRuns, s.ViolatingRuns, s.TotalRegressions,
+				s.PassRate*100,
+				html.EscapeString(availStr),
+				s.LatestMTTRP95Ms,
+				s.MaxMTTRP95Ms,
+			)
+		}
+		b.WriteString(`</tbody></table>`)
+	}
 
 	b.WriteString(`
   <table>
     <thead>
       <tr>
         <th>Run ID</th>
+        <th>Tenant</th>
         <th>Kind</th>
         <th>Target</th>
         <th>Model</th>
@@ -205,7 +262,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
     <tbody>`)
 
 	if len(runs) == 0 {
-		b.WriteString(`<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:2rem">No runs ingested yet. POST a report.json or campaign.json to <code>/api/v1/ingest</code>.</td></tr>`)
+		b.WriteString(`<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:2rem">No runs ingested yet. POST a report.json or campaign.json to <code>/api/v1/ingest</code>.</td></tr>`)
 	}
 	for _, e := range runs {
 		verdictClass := "badge-warn"
@@ -232,6 +289,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
         <td class="mono">%s</td>
         <td class="mono">%s</td>
         <td class="mono">%s</td>
+        <td class="mono">%s</td>
         <td><span class="badge %s">%s</span></td>
         <td class="mono">%d seeds · %d ops</td>
         <td class="mono">%s</td>
@@ -242,6 +300,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
       </tr>`,
 			escID,
 			escID,
+			html.EscapeString(normalizeTenant(e.Tenant)),
 			html.EscapeString(e.Kind),
 			html.EscapeString(e.Target),
 			html.EscapeString(e.Model),
