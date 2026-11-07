@@ -64,9 +64,10 @@ late. Docker heal rows (omitted) are within 2 ms of the inject rows.
 - `strife-agent` lands pause and kill in ~1.4–1.6 ms at P50 and under 3 ms at
   the maximum: ~30× sooner than `docker exec`. Inside the agent the kernel
   work is 330–500 µs for signals and ~150–190 µs for netem changes.
-- Partitions through the agent are slower (4–7 ms) because the agent still runs
-  the `iptables` binary for them (fork, exec, ruleset reload); netem, signals
-  and cgroups are direct syscalls. Native netfilter is listed in the roadmap.
+- Partitions through the agent in run `39039844498` took 4–7 ms (falling back to
+  the `iptables` binary); `strife-agent` now injects partitions via native
+  `AF_NETLINK` FIB blackhole rules (`RTM_NEWRULE` / `FR_ACT_BLACKHOLE`) when the
+  kernel permits policy routing, with automatic fallback to `iptables`.
 - An earlier run on an AMD EPYC 7763 runner
   ([39038949984](https://github.com/Kemalhafizh/strife/actions/runs/39038949984))
   measured docker 51–76 ms and agent pause/kill 1.40–1.70 ms at P50: the
@@ -165,23 +166,27 @@ allocates by what actually arrives, not by lengths announced on the wire.
 
 ## 4. Bug detection in the simulator
 
-Each row sweeps 200 seeds of a 5-node cluster for 10 simulated seconds
-(`--seeds 1..200`). A system with a known bug is only ever reported as
-violating; correct Raft never is.
+Each row sweeps a 5-node cluster for 10 simulated seconds (`--seeds 1..200`, or
+`--seeds 1..60` for `raft-ledger-overdraft`). A system with a known bug is only
+ever reported as violating; correct Raft and the correct Raft ledger never are.
 
 ```sh
-strife sim --system raft-stale-reads  --faults partition           --seeds 1..200
-strife sim --system raft-lease        --faults clock-skew,partition --seeds 1..200
-strife sim --system raft-unsafe-fsync --faults kill,io-stall        --seeds 1..200
-strife sim --system raft --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
+strife sim --system raft-stale-reads      --faults partition           --seeds 1..200
+strife sim --system raft-lease            --faults clock-skew,partition --seeds 1..200
+strife sim --system raft-unsafe-fsync     --faults kill,io-stall        --seeds 1..200
+strife sim --system raft-ledger-overdraft --faults partition,latency    --seeds 1..60
+strife sim --system raft-ledger --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
+strife sim --system raft        --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
 ```
 
 | System | Bug | Faults | Violating seeds |
 |---|---|---|---|
 | `raft` | none | all eight kinds | **0 / 200** |
+| `raft-ledger` | none (double-entry financial ledger over Raft) | all eight kinds | **0 / 200** |
 | `raft-stale-reads` | deposed leader serves local reads | partition | 75 / 200 (37.5 %) |
 | `raft-lease` | lease timed with the wall clock | clock-skew, partition | 10 / 200 (5 %); 0 / 200 without clock-skew |
 | `raft-unsafe-fsync` | acks before `fsync` | kill, io-stall | 7 / 200 (3.5 %); 0 / 200 under partition alone |
+| `raft-ledger-overdraft` | pre-replication balance check allows concurrent overdraft (`LEDGER-OVERDRAFT`) | partition, latency | **60 / 60 (100 %)** |
 
 The sweeps take 17–34 s each on the 4-vCPU host above.
 

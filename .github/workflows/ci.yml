@@ -35,12 +35,16 @@ jobs:
       - run: go build -o strife ./cmd/strife
       - name: correct Raft survives 200 seeds, bit-for-bit deterministic
         run: ./strife sim --system raft --seeds 1..200 --determinism --expect linearizable --out ""
+      - name: double-entry Raft ledger survives 50 seeds, bit-for-bit deterministic
+        run: ./strife sim --system raft-ledger --seeds 1..50 --determinism --expect linearizable --out ""
       - name: stale reads are caught
         run: ./strife sim --system raft-stale-reads --faults partition --seeds 1..50 --expect violation --out ""
       - name: wall-clock leases are caught under clock skew
         run: ./strife sim --system raft-lease --faults clock-skew,partition --seeds 1..200 --expect violation --out ""
       - name: lying fsync is caught under crashes and I/O stalls
         run: ./strife sim --system raft-unsafe-fsync --faults kill,io-stall --seeds 1..200 --expect violation --out ""
+      - name: pre-replication ledger overdraft is caught
+        run: ./strife sim --system raft-ledger-overdraft --faults partition,latency --seeds 1..20 --expect violation --out ""
       - name: a violation shrinks to a minimal, replayable scenario
         run: |
           set +e

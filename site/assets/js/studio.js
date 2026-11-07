@@ -25,7 +25,7 @@
 
   function update() {
     checkBtn.disabled = busy || !file || !engine.version;
-    isolation.disabled = !["txn", "append"].includes(model.value);
+    isolation.disabled = !["txn", "append", "ledger"].includes(model.value);
   }
   model.addEventListener("change", update);
   update();

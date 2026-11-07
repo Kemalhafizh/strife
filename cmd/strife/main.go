@@ -103,7 +103,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdVerify(rest, stdout, stderr)
 	case "compliance":
 		code, err = cmdCompliance(rest, stdout, stderr)
-	case "serve":
+	case "serve", "server":
 		code, err = cmdServe(rest, stdout, stderr)
 	case "systems":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)

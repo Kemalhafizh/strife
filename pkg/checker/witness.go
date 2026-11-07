@@ -45,6 +45,17 @@ func AddWitnesses(m model.Model, ops []history.Op, rep *Report, o WitnessOptions
 	if rep.Verdict != Violation {
 		return nil
 	}
+	needs := false
+	for i := range rep.Keys {
+		kr := &rep.Keys[i]
+		if kr.Verdict == Violation && kr.Counterexample != nil && (kr.Counterexample.Diagnosis == "" || len(kr.Counterexample.Witness) == 0) {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return nil
+	}
 	paired, err := history.Pair(ops)
 	if err != nil {
 		return err
@@ -58,6 +69,9 @@ func AddWitnesses(m model.Model, ops []history.Op, rep *Report, o WitnessOptions
 	for i := range rep.Keys {
 		kr := &rep.Keys[i]
 		if kr.Verdict != Violation || kr.Counterexample == nil {
+			continue
+		}
+		if kr.Counterexample.Diagnosis != "" && len(kr.Counterexample.Witness) > 0 {
 			continue
 		}
 		wg.Add(1)

@@ -355,26 +355,28 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 	}
 
 	// 6. Infer RO (Real-Time Order) edges: t1.Return < t2.Call
-	for i := 0; i < len(txns); i++ {
-		t1 := txns[i]
-		if t1.Status != history.OK || t1.Return == history.Infinity {
-			continue
-		}
-		for j := 0; j < len(txns); j++ {
-			if i == j {
+	if realtime {
+		for i := 0; i < len(txns); i++ {
+			t1 := txns[i]
+			if t1.Status != history.OK || t1.Return == history.Infinity {
 				continue
 			}
-			t2 := txns[j]
-			if t2.Status != history.OK {
-				continue
-			}
-			if t1.Process != t2.Process && t1.Return < t2.Call {
-				g.AddEdge(Edge{
-					From: t1.ID,
-					To:   t2.ID,
-					Kind: EdgeRO,
-					Desc: fmt.Sprintf("T%d ──ro──> T%d", t1.ID, t2.ID),
-				})
+			for j := 0; j < len(txns); j++ {
+				if i == j {
+					continue
+				}
+				t2 := txns[j]
+				if t2.Status != history.OK {
+					continue
+				}
+				if t1.Process != t2.Process && t1.Return < t2.Call {
+					g.AddEdge(Edge{
+						From: t1.ID,
+						To:   t2.ID,
+						Kind: EdgeRO,
+						Desc: fmt.Sprintf("T%d ──ro──> T%d", t1.ID, t2.ID),
+					})
+				}
 			}
 		}
 	}

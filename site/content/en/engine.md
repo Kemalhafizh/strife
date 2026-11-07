@@ -16,11 +16,11 @@ translationKey: engine
 
 | Fault | Mechanism |
 | :--- | :--- |
-| `partition` | iptables `DROP` between two sides of the cluster |
+| `partition` | Kernel FIB blackhole policy routing rules over `AF_NETLINK` (`RTM_NEWRULE` / `FR_ACT_BLACKHOLE`), with automatic fallback to `iptables DROP` |
 | `latency`, `loss` | `tc netem` (through the agent: netlink packets directly) |
 | `kill` | `SIGKILL`, restarted when the fault ends |
 | `pause` | `SIGSTOP` / `SIGCONT` |
-| `freeze` | cgroup v2 freezer |
+| `freeze` | cgroup v2 freezer (including automatic Kubernetes pod/container discovery from `/proc` and `/sys/fs/cgroup`) |
 | `io-stall` | cgroup v2 `io.max` throttled to almost nothing, so `fsync` blocks |
 | `clock-skew` | clock rate and wall-clock jumps |
 
@@ -30,10 +30,11 @@ Through `strife-agent` the median delay of a pause is 1.36 ms, against 43.7 ms t
 
 | Model | What it proves |
 | :--- | :--- |
-| `kv` | Linearizability of read/write/CAS registers (Wing & Gong / Lowe search with memoisation, per-key P-compositionality) |
+| `kv` | Linearizability of read/write/CAS registers (Wing & Gong / Lowe search with bitset memoisation, value-interval dead-gap pruning `kvPruner`, and per-key P-compositionality) |
 | `set`, `queue`, `counter`, `idgen` | Linearizability of sets, FIFO queues, counters and unique-ID generators |
 | `txn` | Transaction isolation through a Direct Serialization Graph: Adya's G0, G1a, G1b, G1c, G2 and G-realtime across six isolation levels |
 | `append` | Elle-style list-append: G0–G2, G-single, G-realtime, lost appends, incompatible orders, duplicates and internal consistency |
+| `ledger` | Double-entry financial ledger: conservation of total money (`LEDGER-CONSERVATION`), overdraft & concurrent write-skew detection (`LEDGER-OVERDRAFT` / `G2-item`), retry idempotency (`LEDGER-DOUBLE-SPEND`), and balanced postings (`LEDGER-UNBALANCED`) |
 
 When the search budget runs out the verdict is **unknown**, never a pass. Checker speed and accuracy are measured in the [benchmarks](/docs/benchmarks#2-checker-throughput), limits included; each model is described in [Consistency Models](/docs/models).
 
@@ -45,9 +46,9 @@ Every protocol is implemented in the repository: etcd v3, Redis/Valkey (RESP2, A
 
 `strife shrink` uses delta debugging to reduce a violation to a **1-minimal** scenario: dropping any one remaining fault or operation makes the violation disappear. For real clusters the result is called a *candidate*, with its measured reproduction rate. See [Shrinking](/docs/shrinking).
 
-## Auditable artifacts
+## Auditable artifacts & run registry
 
-Every run writes `report.html` (an interactive timeline that works offline), `report.json`, `history.jsonl` and a replayable `schedule.json`. Real examples:
+Every run writes `report.html` (an interactive timeline that works offline), `report.json`, `history.jsonl` and a replayable `schedule.json`. To keep every CI run inside your own network, `strife serve` runs an HTTP daemon that verifies report fingerprints on arrival, diffs campaigns against the previous baseline, and optionally signs ingested reports with Ed25519 ([guide](/docs/run-registry) · [API reference](/docs/server)). Real examples:
 
 - [Timeline report](/demos/timeline.html): `raft-unsafe-fsync` seed 13, shrunk
 - [Regression campaign dashboard](/demos/campaign.html): 40 seeds

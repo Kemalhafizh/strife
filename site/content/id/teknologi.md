@@ -16,11 +16,11 @@ translationKey: engine
 
 | Gangguan | Mekanisme |
 | :--- | :--- |
-| `partition` | iptables `DROP` antara dua sisi cluster |
+| `partition` | Aturan routing blackhole FIB kernel lewat `AF_NETLINK` (`RTM_NEWRULE` / `FR_ACT_BLACKHOLE`), atau `iptables DROP` sebagai fallback |
 | `latency`, `loss` | `tc netem` (lewat agen: paket netlink langsung) |
 | `kill` | `SIGKILL`, lalu proses dinyalakan lagi saat gangguan berakhir |
 | `pause` | `SIGSTOP` / `SIGCONT` |
-| `freeze` | freezer cgroup v2 |
+| `freeze` | freezer cgroup v2 (termasuk resolusi otomatis pod/container Kubernetes dari `/proc` dan `/sys/fs/cgroup`) |
 | `io-stall` | `io.max` cgroup v2 diturunkan hingga hampir nol, sehingga `fsync` tertahan |
 | `clock-skew` | laju jam dan lompatan jam dinding |
 
@@ -30,10 +30,11 @@ Lewat `strife-agent`, median keterlambatan injeksi pause adalah 1,36 ms, dibandi
 
 | Model | Yang dibuktikan |
 | :--- | :--- |
-| `kv` | Linearizability register baca/tulis/CAS (pencarian Wing & Gong / Lowe dengan memoisasi, P-compositionality per kunci) |
+| `kv` | Linearizability register baca/tulis/CAS (pencarian Wing & Gong / Lowe dengan memoisasi bitset, pemangkasan interval nilai `kvPruner`, dan P-compositionality per kunci) |
 | `set`, `queue`, `counter`, `idgen` | Linearizability set, antrean FIFO, penghitung, dan pembangkit ID unik |
 | `txn` | Isolasi transaksi lewat Direct Serialization Graph: anomali Adya G0, G1a, G1b, G1c, G2, dan G-realtime pada enam level isolasi |
 | `append` | List-append bergaya Elle: G0–G2, G-single, G-realtime, append yang hilang, urutan yang tidak cocok, duplikat, dan konsistensi internal |
+| `ledger` | Buku besar keuangan berpasangan (double-entry): konservasi saldo total (`LEDGER-CONSERVATION`), deteksi saldo negatif/overdraft (`LEDGER-OVERDRAFT` & write skew `G2-item`), idempotensi retry (`LEDGER-DOUBLE-SPEND`), dan keseimbangan debit/kredit (`LEDGER-UNBALANCED`) |
 
 Bila anggaran pencarian habis, verdict-nya **tidak pasti**, tidak pernah lulus. Kecepatan dan ketepatan checker diukur di [benchmark](/docs/benchmarks#2-checker-throughput), termasuk batasnya. Detail setiap model ada di [Consistency Models](/docs/models).
 
@@ -45,9 +46,9 @@ Semua protokol diimplementasikan langsung di repositori: etcd v3, Redis/Valkey (
 
 `strife shrink` memakai delta debugging untuk memperkecil pelanggaran menjadi skenario **1-minimal**, artinya membuang satu gangguan atau operasi mana pun akan menghilangkan pelanggarannya. Untuk cluster sungguhan, hasilnya disebut *kandidat* lengkap dengan tingkat reproduksinya. Detailnya ada di [Shrinking](/docs/shrinking).
 
-## Artefak yang bisa diaudit
+## Artefak yang bisa diaudit & registri run
 
-Setiap run menghasilkan `report.html` (timeline interaktif yang bekerja tanpa jaringan), `report.json`, `history.jsonl`, dan `schedule.json` yang bisa diputar ulang. Contoh nyata:
+Setiap run menghasilkan `report.html` (timeline interaktif yang bekerja tanpa jaringan), `report.json`, `history.jsonl`, dan `schedule.json` yang bisa diputar ulang. Untuk menyimpan riwayat uji secara terpusat di jaringan Anda sendiri, `strife serve` menyediakan daemon HTTP yang memverifikasi fingerprint saat laporan tiba, membandingkan regresi kampanye terhadap baseline sebelumnya, dan menandatangani laporan secara otomatis dengan Ed25519 ([panduan](/docs/run-registry) · [referensi API](/docs/server)). Contoh nyata:
 
 - [Laporan timeline](/demos/timeline.html): `raft-unsafe-fsync` seed 13, setelah diperkecil
 - [Dasbor kampanye regresi](/demos/campaign.html): 40 seed

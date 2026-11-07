@@ -117,7 +117,8 @@ func Simulate(req SimRequest) (*SimResult, error) {
 	}
 	// The CLI adds witnesses before it writes a report; they turn the
 	// checker's explanation into a diagnosis such as "stale read: …".
-	_ = checker.AddWitnesses(model.KV{}, res.History, &res.Check, checker.WitnessOptions{})
+	sys, _ := explore.LookupSystem(cfg.System)
+	_ = checker.AddWitnesses(sys.Model(), res.History, &res.Check, checker.WitnessOptions{})
 	out := &SimResult{
 		System:       cfg.System,
 		Seed:         cfg.Seed,
@@ -340,6 +341,9 @@ func withIsolation(m model.Model, level string) model.Model {
 		t.Level = level
 		return t
 	case model.Append:
+		t.Level = level
+		return t
+	case model.Ledger:
 		t.Level = level
 		return t
 	}

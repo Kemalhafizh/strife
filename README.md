@@ -373,11 +373,34 @@ strife compliance --report strife-out/raft-seed7/report.json \
 | **EU DORA** (Regulation (EU) 2022/2554) | `dora` | `dora.resilience-testing` (Art. 24–25), `dora.data-integrity` (Art. 9(3)(b)–(c)), `dora.recovery` (Art. 11–12) |
 | **AICPA SOC 2** (Trust Services Criteria) | `soc2` | `soc2.processing-integrity` (PI1.3–PI1.4), `soc2.recovery` (A1.2–A1.3), `soc2.test-evidence` (CC4.1) |
 | **ISO/IEC 27001:2022** | `iso27001` | `iso27001.redundancy` (Annex A 8.13–8.14), `iso27001.clock-sync` (8.17), `iso27001.security-testing` (8.29) |
-| **OJK** (Indonesia) | `bi-ojk` | `bi-ojk.pemulihan-bencana`, `bi-ojk.integritas-data`, `bi-ojk.jejak-audit` (POJK No. 11/POJK.03/2022; SEOJK No. 29/SEOJK.03/2022) |
+| **OJK** (Indonesia) | `bi-ojk` | `bi-ojk.pemulihan-bencana`, `bi-ojk.integritas-data`, `bi-ojk.jejak-audit`, `bi-ojk.rekonsiliasi-buku-besar` (POJK No. 11/POJK.03/2022; SEOJK No. 29/SEOJK.03/2022; PBI No. 23/6/PBI/2021) |
 
 Control IDs are Strife's own labels for its technical checks, not identifiers issued by a regulator or standard body; every control in a dossier cites the provision it supports. A dossier is technical evidence for an auditor, not a certification or a legal opinion.
 
 Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` when fault coverage or cryptographic signing is incomplete, or `FAIL`). Every dossier includes an explicit **Methodology & Scope Boundaries** disclosure detailing what was tested, which fault classes were omitted, and the difference between deterministic simulation and live cluster execution.
+
+---
+
+## Run Registry (`strife serve`)
+
+`strife serve` ([`pkg/serve`](pkg/serve/server.go), full reference in [`docs/server.md`](docs/server.md)) runs a self-hosted HTTP daemon and embedded web dashboard that keeps every CI run and regression campaign inside your own network:
+
+- **Verified on arrival:** Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; tampered payloads are rejected.
+- **Automatic baseline regression diffing:** Ingested campaigns are automatically compared against the latest stored campaign for the same target system, recording `regressed`, `fixed`, and `trace_drift` seed transitions.
+- **Automatic Ed25519 `in-toto` signing:** When started with `--key <private.key>`, every ingested report is automatically signed into a verifiable `bundle.json`.
+
+```sh
+# Start the registry with Bearer token auth and automatic Ed25519 signing
+strife serve --listen 127.0.0.1:8080 --store ./strife-registry \
+  --token "$STRIFE_REGISTRY_TOKEN" --key audit-key.key --signer "ci-registry"
+
+# Push a report or campaign from CI
+curl -fsSL -X POST \
+  -H "Authorization: Bearer $STRIFE_REGISTRY_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary @strife-out/raft-seed7/report.json \
+  "http://127.0.0.1:8080/api/v1/ingest?commit=$(git rev-parse --short HEAD)&branch=main"
+```
 
 ---
 

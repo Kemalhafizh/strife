@@ -19,6 +19,9 @@ how it is graded, mirroring pkg/compliance.
   "bi-ojk.jejak-audit" (dict
     "id" (slice "Integritas bukti audit kriptografis (nir-penyangkalan)" "Artefak hasil uji memiliki jejak SHA-256 dan tanda tangan Ed25519 (in-toto v0.1) yang dapat diverifikasi ulang secara independen." "LULUS bila laporan ditandatangani dengan strife sign dan tanda tangannya terverifikasi. PARSIAL bila belum ditandatangani.")
     "en" (slice "Integrity of cryptographic audit evidence (non-repudiation)" "Test artifacts carry SHA-256 digests and an Ed25519 signature (in-toto v0.1) that anyone can re-verify independently." "PASS when the report was signed with strife sign and the signature verifies. PARTIAL when it is unsigned."))
+  "bi-ojk.rekonsiliasi-buku-besar" (dict
+    "id" (slice "Rekonsiliasi buku besar berpasangan & konservasi saldo" "Seluruh mutasi rekening memenuhi keseimbangan jurnal berpasangan (debit = kredit), konservasi total dana, bebas saldo negatif (overdraft write-skew), dan idempotensi retry." "LULUS bila pemeriksaan model ledger tidak menemukan pelanggaran konservasi, overdraft, double-spend, maupun jurnal tidak seimbang. GAGAL bila ada pelanggaran.")
+    "en" (slice "Double-entry ledger reconciliation & balance conservation" "Every account transfer preserves balanced double-entry postings (debit = credit), conservation of total money, non-negative balances (no overdraft write skew), and retry idempotency." "PASS when the ledger model check finds no conservation, overdraft, double-spend or unbalanced-posting violation. FAIL on any violation."))
 }}
 {{- $head := dict
   "id" (slice "Kontrol" "Yang diperiksa" "Penilaian" "Ketentuan yang didukung" "Kerangka")

@@ -51,6 +51,32 @@ with their default security, and Strife ships as signed releases.
 - Fuzzing of every parser of untrusted bytes; brute-force cross-checks of
   both transaction checkers, including a completeness measurement for
   list-append.
+- Double-entry financial ledger and conservation-of-money checker (`--model
+  ledger`, simulated systems `raft-ledger` and `raft-ledger-overdraft`):
+  proves `LEDGER-CONSERVATION` ($\sum B_i = M_0$), `LEDGER-OVERDRAFT` ($B_i <
+  0$ and concurrent `G2-item` write skew), `LEDGER-DOUBLE-SPEND` across
+  indeterminate `info` timeout retries, and `LEDGER-UNBALANCED` ($\sum
+  \Delta_k \ne 0$), integrated with the `bi-ojk.rekonsiliasi-buku-besar`
+  compliance control.
+- Value-interval pruning (`kvPruner`) in the Wing & Gong / Lowe
+  linearizability solver: propagates transitive effective `[effCall,
+  effReturn]` windows across sole-creator writes and CAS transitions, solving
+  10,000 single-key operations across 50 concurrent processes in 22,913 steps
+  (~534 ms).
+- Native Linux `AF_NETLINK` FIB policy routing partitioner (`RTM_NEWRULE` /
+  `RTM_DELRULE` with `FR_ACT_BLACKHOLE`) in `strife-agent`, with automatic
+  fallback to `iptables`.
+- Kubernetes host-level cgroup v2 and Pod `/proc/<pid>/ns/net` discovery in
+  `strife-agent` (`pod:<ns>/<name>`, `k8s:<name>`, `container:<id>`) and a
+  DaemonSet manifest (`deploy/kubernetes/strife-agent-daemonset.yaml`).
+- `strife serve` ([`docs/server.md`](docs/server.md)): self-hosted continuous
+  verification and run registry HTTP daemon with an append-only artifact
+  store, REST API (`/api/v1/ingest`, `/api/v1/runs`, `/api/v1/health`),
+  automatic seed-level baseline regression diffing, optional Ed25519
+  `in-toto` signing on ingest, and an embedded web UI.
+- Bilingual client website (`site/`, Indonesian and English) with in-browser
+  WebAssembly playground, history studio, and cryptographic attestation
+  verifier.
 
 ### Changed
 - Compliance control IDs are now Strife labels (`dora.data-integrity`,

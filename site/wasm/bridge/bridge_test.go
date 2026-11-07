@@ -275,7 +275,20 @@ func TestVerifyRelease(t *testing.T) {
 }
 
 func TestListings(t *testing.T) {
-	if len(Systems()) < 4 || len(FaultKinds()) != len(nemesis.AllKinds) || len(Models()) == 0 {
+	if len(Systems()) < 6 || len(FaultKinds()) != len(nemesis.AllKinds) || len(Models()) == 0 {
 		t.Fatalf("systems %d, faults %d, models %d", len(Systems()), len(FaultKinds()), len(Models()))
+	}
+}
+
+func TestSimulateAndCheckLedger(t *testing.T) {
+	got, err := Simulate(SimRequest{System: "raft-ledger-overdraft", Faults: "partition,latency", Seed: 1, Report: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Verdict != "violation" || len(got.Failures) == 0 || !strings.Contains(got.Failures[0].Summary, "LEDGER-OVERDRAFT") {
+		t.Fatalf("got verdict=%s failures=%+v, want LEDGER-OVERDRAFT violation", got.Verdict, got.Failures)
+	}
+	if !strings.Contains(got.ReportHTML, "<html") {
+		t.Fatal("report.html missing for ledger simulation")
 	}
 }
