@@ -136,13 +136,5 @@ jobs:
           test "$PASS_OUTCOME" = passed
           test "$BUG_OUTCOME" = violation
           test "$BUG_CODE" = 1
-          python3 - "$BUG_JUNIT" <<'PY'
-          import sys, xml.etree.ElementTree as ET
-          root = ET.parse(sys.argv[1]).getroot()
-          assert int(root.get("failures")) > 0, "violation missing from JUnit"
-          body = root.find(".//failure").text
-          assert "Reproduce:" in body and "strife sim" in body, body
-          print("JUnit ok:", root.get("tests"), "tests,", root.get("failures"), "failures")
-          PY
+          python3 -c "import sys, xml.etree.ElementTree as ET; r = ET.parse(sys.argv[1]).getroot(); assert int(r.get('failures')) > 0; b = r.find('.//failure').text; assert 'Reproduce' in b and 'strife sim' in b, b" "$BUG_JUNIT"
           test -f strife-out/raft-stale-reads-seed2-min/report.html
-
