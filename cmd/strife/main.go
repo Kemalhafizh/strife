@@ -1621,6 +1621,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	token := fs.String("token", "", "optional Bearer token required for POST /api/v1/ingest")
 	keyPath := fs.String("key", "", "optional Ed25519 private key (.key) to sign ingested reports automatically")
 	signer := fs.String("signer", "strife-serve", "signer identity recorded in automatic in-toto attestations")
+	webhook := fs.String("webhook", "", "comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations and regressions")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
@@ -1631,6 +1632,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 		Token:          *token,
 		SigningKeyPath: *keyPath,
 		Signer:         *signer,
+		Webhooks:       serve.ParseWebhookURLs(*webhook),
 	})
 	if err != nil {
 		return exitError, err

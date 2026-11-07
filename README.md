@@ -388,11 +388,13 @@ Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` wh
 - **Verified on arrival:** Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; tampered payloads are rejected.
 - **Automatic baseline regression diffing:** Ingested campaigns are automatically compared against the latest stored campaign for the same target system, recording `regressed`, `fixed`, and `trace_drift` seed transitions.
 - **Automatic Ed25519 `in-toto` signing:** When started with `--key <private.key>`, every ingested report is automatically signed into a verifiable `bundle.json`.
+- **Automatic webhook alerting:** When started with `--webhook <urls>`, `strife serve` dispatches Slack, Discord, or generic JSON alerts whenever an ingested report violates consistency or a campaign introduces seed regressions.
 
 ```sh
-# Start the registry with Bearer token auth and automatic Ed25519 signing
+# Start the registry with Bearer token auth, Ed25519 signing, and webhook alerts
 strife serve --listen 127.0.0.1:8080 --store ./strife-registry \
-  --token "$STRIFE_REGISTRY_TOKEN" --key audit-key.key --signer "ci-registry"
+  --token "$STRIFE_REGISTRY_TOKEN" --key audit-key.key --signer "ci-registry" \
+  --webhook "https://hooks.slack.com/services/T00/B00/X00"
 
 # Push a report or campaign from CI
 curl -fsSL -X POST \
@@ -414,10 +416,12 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 | :--- | :--- | :--- | :--- |
 | `raft` | none | all 8 fault kinds | **0 / 200** |
 | `raft-ledger` | none (double-entry financial ledger over Raft) | all 8 fault kinds | **0 / 200** |
+| `2pc-ledger` | none (two-phase prepare/commit financial ledger) | all 8 fault kinds | **0 / 200** |
 | `raft-stale-reads` | deposed leader serves local reads | `partition` | **75 / 200** |
 | `raft-lease` | lease timed with the local wall clock | `clock-skew` + `partition` | **10 / 200** (0 without `clock-skew`) |
 | `raft-unsafe-fsync` | votes and entries acked before `fsync` | `kill` + `io-stall` | **7 / 200** (0 under `partition` alone) |
 | `raft-ledger-overdraft` | pre-replication balance check allows concurrent overdraft (`LEDGER-OVERDRAFT`) | `partition` + `latency` | **60 / 60** |
+| `2pc-ledger-torn-commit` | non-atomic 2PC / Saga commits debit leg before credit leg (`LEDGER-CONSERVATION`) | `partition` + `kill` | **60 / 60** |
 
 **Live clusters in CI** ([`.github/workflows/live.yml`](.github/workflows/live.yml), every push). Correct configurations must pass and known-weak ones must be caught:
 

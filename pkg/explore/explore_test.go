@@ -88,6 +88,38 @@ func TestCorrectRaftLedgerSurvivesFaults(t *testing.T) {
 	}
 }
 
+func TestCorrect2PCLedgerSurvivesFaults(t *testing.T) {
+	n := uint64(12)
+	if testing.Short() {
+		n = 4
+	}
+	var seeds []uint64
+	for s := uint64(1); s <= n; s++ {
+		seeds = append(seeds, s)
+	}
+	for _, s := range Explore(quick("2pc-ledger", "all"), seeds, 0, nil) {
+		if s.Error != "" || s.Verdict != checker.Linearizable {
+			t.Errorf("seed %d: verdict %s (%s) %s", s.Seed, s.Verdict, s.Explanation, s.Error)
+		}
+		if s.Ops < 300 {
+			t.Errorf("seed %d: only %d ops, workload starved", s.Seed, s.Ops)
+		}
+	}
+}
+
+func Test2PCTornCommitDetected(t *testing.T) {
+	seeds := []uint64{1, 2, 3, 4}
+	found := 0
+	for _, s := range Explore(quick("2pc-ledger-torn-commit", "partition,kill"), seeds, 0, nil) {
+		if s.Verdict == checker.Violation {
+			found++
+		}
+	}
+	if found == 0 {
+		t.Fatalf("expected 2pc-ledger-torn-commit violation within seeds %v", seeds)
+	}
+}
+
 // Each buggy system must be caught somewhere in a small seed range. The
 // simulator is deterministic, so these are stable regression tests for the
 // engine's bug-finding power, not flaky probabilistic ones.

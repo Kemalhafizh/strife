@@ -50,6 +50,14 @@ type Config struct {
 	// when a transfer arrives (before replication) rather than re-checking at
 	// commit time, allowing concurrent transfers to overdraft an account.
 	OverdraftSkew bool
+	// TwoPhaseCommit coordinates ledger transfers across two replicated log
+	// phases (phase 1 prepare and phase 2 commit).
+	TwoPhaseCommit bool
+	// TornCommit models a non-atomic two-phase / Saga coordinator that applies
+	// the sender debit leg during phase 1 before replicating the receiver
+	// credit leg in phase 2, exposing torn intermediate balances to audits
+	// and losing money if the coordinator fails between phases.
+	TornCommit bool
 }
 
 // Defaults returns the timing parameters used by Strife's built-in systems.
@@ -67,6 +75,7 @@ type Entry struct {
 	Term   uint64
 	Noop   bool
 	Op     sim.KVOp
+	PreBal int64
 	Client sim.NodeID
 	ReqID  uint64
 }
@@ -360,6 +369,36 @@ func (n *Node) applyCommitted() {
 		if p, ok := n.pending[n.applied]; ok {
 			delete(n.pending, n.applied)
 			if n.role == leader && p.term == e.Term && p.client == e.Client && p.reqID == e.ReqID {
+				if n.cfg.TwoPhaseCommit && e.Op.F == sim.FLedgerTransfer && e.Op.Old == 1 {
+					if lr, ok := reply.(sim.LedgerReply); ok && lr.Status == sim.StatusOK {
+						op2 := e.Op
+						op2.Old = 2
+						preBal := lr.OldFrom
+						term := n.state.term
+						proposePhase2 := func() {
+							if n.role != leader || n.state.term != term {
+								return
+							}
+							n.state.log = append(n.state.log, Entry{
+								Term:   n.state.term,
+								Op:     op2,
+								PreBal: preBal,
+								Client: p.client,
+								ReqID:  p.reqID,
+							})
+							idx := n.lastIndex()
+							n.pending[idx] = pending{client: p.client, reqID: p.reqID, term: n.state.term}
+							n.leaderAppended(idx)
+							n.broadcast()
+						}
+						if n.cfg.TornCommit {
+							n.w.After(n.id, 20*time.Millisecond, proposePhase2)
+						} else {
+							proposePhase2()
+						}
+						continue
+					}
+				}
 				n.send(p.client, reply)
 			}
 		}
@@ -394,6 +433,30 @@ func (n *Node) apply(e Entry) any {
 		fromAcct, toAcct, ok := strings.Cut(e.Op.Key, "->")
 		if !ok || fromAcct == toAcct || e.Op.Value <= 0 {
 			lr.Status = sim.StatusFail
+			return lr
+		}
+		if n.cfg.TwoPhaseCommit && e.Op.Old == 1 {
+			fromBal := n.acctBal(fromAcct)
+			if fromBal < e.Op.Value {
+				lr.Status = sim.StatusFail
+				return lr
+			}
+			lr.OldFrom = fromBal
+			if n.cfg.TornCommit {
+				newFrom := fromBal - e.Op.Value
+				n.kv[fromAcct] = newFrom
+				lr.NewFrom = newFrom
+			}
+			return lr
+		}
+		if n.cfg.TwoPhaseCommit && n.cfg.TornCommit && e.Op.Old == 2 {
+			toBal := n.acctBal(toAcct)
+			newTo := toBal + e.Op.Value
+			n.kv[toAcct] = newTo
+			lr.OldFrom = e.PreBal
+			lr.NewFrom = e.PreBal - e.Op.Value
+			lr.OldTo = toBal
+			lr.NewTo = newTo
 			return lr
 		}
 		fromBal := n.acctBal(fromAcct)
@@ -485,6 +548,9 @@ func (n *Node) onClient(from sim.NodeID, m sim.ClientRequest) {
 			n.send(from, sim.ClientReply{ReqID: m.ReqID, Status: sim.StatusRedirect, Leader: n.leader})
 		}
 		return
+	}
+	if n.cfg.Ledger && n.cfg.TwoPhaseCommit && m.Op.F == sim.FLedgerTransfer {
+		m.Op.Old = 1
 	}
 	if n.cfg.Ledger && n.cfg.OverdraftSkew && m.Op.F == sim.FLedgerTransfer {
 		fromAcct, _, ok := strings.Cut(m.Op.Key, "->")

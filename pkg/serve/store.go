@@ -52,6 +52,7 @@ type IngestResult struct {
 	Entry      RunEntry             `json:"entry"`
 	Comparison *campaign.Comparison `json:"comparison,omitempty"`
 	Bundle     *attest.Bundle       `json:"bundle,omitempty"`
+	Webhooks   []WebhookDelivery    `json:"webhooks,omitempty"`
 }
 
 // Store manages the persistent run registry directory.

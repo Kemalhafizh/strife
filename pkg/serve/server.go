@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/attest"
@@ -24,16 +25,20 @@ type Config struct {
 	Token          string
 	SigningKeyPath string
 	Signer         string
+	Webhooks       []string
+	WebhookTimeout time.Duration
 }
 
 // Server is the strife serve HTTP daemon and run registry.
 type Server struct {
-	cfg       Config
-	store     *Store
-	privKey   ed25519.PrivateKey
-	keyID     string
-	startTime time.Time
-	httpSrv   *http.Server
+	cfg        Config
+	store      *Store
+	privKey    ed25519.PrivateKey
+	keyID      string
+	startTime  time.Time
+	httpSrv    *http.Server
+	webhookMu  sync.Mutex
+	deliveries []WebhookDelivery
 }
 
 // IngestPayload accepts either a wrapped ingest envelope, a raw report.Report,
@@ -84,6 +89,7 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/v1/runs", s.handleRuns)
 	mux.HandleFunc("/api/v1/runs/", s.handleRunByID)
 	mux.HandleFunc("/api/v1/ingest", s.handleIngest)
+	mux.HandleFunc("/api/v1/webhooks", s.handleWebhooks)
 
 	s.httpSrv = &http.Server{
 		Addr:         cfg.ListenAddr,
@@ -133,13 +139,32 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	runs := s.store.List("", "")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":         "ok",
-		"version":        report.Version,
-		"uptime_seconds": int64(time.Since(s.startTime).Seconds()),
-		"stored_runs":    len(runs),
-		"targets":        s.store.Targets(),
-		"signing_active": len(s.privKey) == ed25519.PrivateKeySize,
-		"key_id":         s.keyID,
+		"status":              "ok",
+		"version":             report.Version,
+		"uptime_seconds":      int64(time.Since(s.startTime).Seconds()),
+		"stored_runs":         len(runs),
+		"targets":             s.store.Targets(),
+		"signing_active":      len(s.privKey) == ed25519.PrivateKeySize,
+		"key_id":              s.keyID,
+		"webhooks_configured": len(s.cfg.Webhooks),
+	})
+}
+
+func (s *Server) handleWebhooks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	s.webhookMu.Lock()
+	recent := make([]WebhookDelivery, len(s.deliveries))
+	for i := range s.deliveries {
+		recent[i] = s.deliveries[len(s.deliveries)-1-i]
+	}
+	s.webhookMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"configured": len(s.cfg.Webhooks),
+		"total":      len(recent),
+		"deliveries": recent,
 	})
 }
 
@@ -243,6 +268,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err2.Error()})
 		return
 	}
+	res.Webhooks = s.notifyWebhooks(res, env.Report)
 	writeJSON(w, http.StatusCreated, res)
 }
 

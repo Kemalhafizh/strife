@@ -6,7 +6,36 @@ All notable changes to Strife. The format follows
 [`schemas/`](schemas/) are versioned contracts: within a major version they
 only gain optional fields.
 
-## [0.2.0] - Unreleased
+## [0.3.0] - 2026-11-07
+
+### Added
+- Live cluster double-entry ledger auditing (`workload.model: "ledger"` in
+  `strife run`): executes concurrent account-to-account transfers (`acct:i ->
+  acct:j`) and full-supply balance audits across PostgreSQL (`SELECT ... FOR
+  UPDATE` / configured `txn_isolation`), MySQL/TiDB, etcd v3 (`mod_revision`
+  optimistic transactions), and Redis/Valkey (atomic Lua scripts), followed by
+  a post-healing final balance audit (`examples/postgres/strife-ledger.json`).
+- Simulated two-phase commit ledger systems (`2pc-ledger` and
+  `2pc-ledger-torn-commit`): models multi-phase prepare/commit coordination and
+  catches non-atomic Saga / 2PC coordinator bugs where the debit leg commits
+  before the credit leg (`LEDGER-CONSERVATION` violations under `partition` and
+  `kill`).
+- Webhook alerting in `strife serve` (`--webhook <urls>` and `GET
+  /api/v1/webhooks`): automatically dispatches Slack, Discord, or generic JSON
+  notifications when an ingested report violates consistency
+  (`report.violation`) or an ingested campaign contains violations or seed
+  regressions (`campaign.regression` / `campaign.violation`).
+
+### Changed
+- Direct Serialization Graph (`pkg/txn`) construction now uses $O(1)$
+  per-vertex edge deduplication and interval-order transitive reduction for
+  real-time (`ro`) and write-write (`ww`) edges, accelerating large
+  strict-serializable ledger and transactional checks by ~10x.
+- `kvPruner` in `pkg/checker` keeps indeterminate (`info`) writes behind
+  definite (`ok`) candidates in the Wing & Gong / Lowe linearizability search
+  order so multi-client chaos histories resolve without exhausting step budgets.
+
+## [0.2.0]
 
 Phase 5 of the [roadmap](docs/ROADMAP.md): every published claim now has a
 job that reproduces it, the clients work against current database versions

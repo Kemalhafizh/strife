@@ -10,14 +10,15 @@ The daemon is built into the `strife` binary with zero external dependencies and
 # Listen on localhost with default store directory (./strife-registry)
 strife serve
 
-# Production / staging setup with Bearer token auth and automatic Ed25519 signing
+# Production / staging setup with Bearer token auth, automatic Ed25519 signing, and webhook alerts
 strife keygen --out registry-key
 strife serve \
   --listen 0.0.0.0:8080 \
   --store /var/lib/strife/registry \
   --token "$STRIFE_REGISTRY_TOKEN" \
   --key registry-key.key \
-  --signer "staging-run-registry"
+  --signer "staging-run-registry" \
+  --webhook "https://hooks.slack.com/services/T00/B00/X00,https://discord.com/api/webhooks/123/abc"
 ```
 
 ### Flags
@@ -29,6 +30,7 @@ strife serve \
 | `--token` | *(empty)* | Optional Bearer token required for `POST /api/v1/ingest` (compared in constant time) |
 | `--key` | *(empty)* | Optional PKCS#8 Ed25519 private key (`.key`) used to sign every ingested `report.json` |
 | `--signer` | `strife-serve` | Signer identity recorded inside automatic `in-toto` attestations |
+| `--webhook` | *(empty)* | Comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations and regressions |
 
 ## On-Disk Store Layout
 
@@ -65,8 +67,17 @@ curl -fsSL http://127.0.0.1:8080/api/v1/health
   "stored_runs": 14,
   "targets": ["etcd-cluster", "raft", "raft-ledger"],
   "uptime_seconds": 3620,
-  "version": "0.2.0"
+  "version": "0.3.0",
+  "webhooks_configured": 2
 }
+```
+
+### `GET /api/v1/webhooks`
+
+Returns the number of configured webhook endpoints and the recent delivery log (`run_id`, `event`, `format`, `url`, `status_code`, `success`, `duration_ms`).
+
+```sh
+curl -fsSL http://127.0.0.1:8080/api/v1/webhooks
 ```
 
 ### `GET /api/v1/runs`
@@ -110,6 +121,7 @@ The request body (up to 32 MiB) can be:
 - **Fingerprint integrity check:** `strife serve` recomputes `report.Fingerprint` or `campaign.ComputeFingerprint()`. If the payload carries a fingerprint that does not match its contents, ingestion is rejected with `400 Bad Request`.
 - **Automatic Ed25519 signing (reports):** When `--key` is configured, `strife serve` signs the verified report into an `in-toto` v0.1 attestation bundle (`bundle.json`), records `signed: true`, `signer`, and `key_id` in the registry entry, and returns the `bundle` in the `201 Created` response.
 - **Automatic baseline regression diffing (campaigns):** When a campaign is ingested for target system `S`, `strife serve` compares it against the most recent stored campaign for `S` using `campaign.Compare`, recording `regressions`, `fixes`, and `trace_drifts` on the registry entry and returning the full `comparison` object in the response.
+- **Automatic webhook alerting (`--webhook`):** When an ingested report has `verdict == "violation"` (`report.violation`) or an ingested campaign contains violations or seed regressions (`campaign.regression` / `campaign.violation`), `strife serve` automatically dispatches HTTP POST notifications to all configured webhook URLs. Format auto-detection supports Slack (`hooks.slack.com` or `?format=slack`), Discord (`discord.com/api/webhooks` or `?format=discord`), and generic JSON endpoints.
 
 ## Publishing from CI
 

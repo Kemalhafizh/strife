@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,5 +180,130 @@ func TestServeIngestReportCampaignAndPersistence(t *testing.T) {
 	}
 	if got := len(reloaded.List("", "")); got != 3 {
 		t.Fatalf("expected 3 persisted runs after reload, got %d", got)
+	}
+}
+
+func TestServeWebhooksSlackDiscordAndGeneric(t *testing.T) {
+	var mu sync.Mutex
+	var received []map[string]any
+	var formats []string
+	var events []string
+	hookLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookMux := http.NewServeMux()
+	hookMux.HandleFunc("/hook", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		mu.Lock()
+		received = append(received, m)
+		formats = append(formats, r.URL.Query().Get("format"))
+		events = append(events, r.Header.Get("X-Strife-Event"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	hookSrv := &http.Server{Handler: hookMux}
+	go func() { _ = hookSrv.Serve(hookLn) }()
+	defer func() {
+		_ = hookSrv.Shutdown(context.Background())
+		_ = hookLn.Close()
+	}()
+
+	hookBase := "http://" + hookLn.Addr().String() + "/hook"
+	webhooks := ParseWebhookURLs(hookBase + ", " + hookBase + "?format=slack, " + hookBase + "?format=discord")
+
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   t.TempDir(),
+		Webhooks:   webhooks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	// 1. Linearizable report must NOT trigger webhooks.
+	v := int64(10)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: 10},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: 20},
+	}
+	cleanRep, err := report.New(
+		report.KindSimulation,
+		"raft",
+		1,
+		map[string]any{"nodes": 5},
+		nemesis.Schedule{Nodes: 5, Duration: 5 * time.Second},
+		ops,
+		checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 1, Checked: 1},
+		"trace-clean",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanBytes, _ := json.Marshal(cleanRep)
+	resp, err := http.Post(baseURL+"/api/v1/ingest", "application/json", bytes.NewReader(cleanBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(received) != 0 {
+		t.Fatalf("expected 0 webhook deliveries for linearizable report, got %d", len(received))
+	}
+
+	// 2. Violating report MUST trigger all 3 webhooks (generic, slack, discord).
+	badRep, err := report.New(
+		report.KindSimulation,
+		"2pc-ledger-torn-commit",
+		27,
+		map[string]any{"nodes": 5},
+		nemesis.Schedule{Nodes: 5, Duration: 5 * time.Second},
+		ops,
+		checker.Report{Model: "ledger", Verdict: checker.Violation, Operations: 1, Checked: 1},
+		"trace-bad",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badBytes, _ := json.Marshal(badRep)
+	resp2, err := http.Post(baseURL+"/api/v1/ingest?commit=deadbeef&branch=main", "application/json", bytes.NewReader(badBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	var res2 IngestResult
+	if err := json.Unmarshal(body2, &res2); err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.Webhooks) != 3 {
+		t.Fatalf("expected 3 webhook deliveries in IngestResult, got %d", len(res2.Webhooks))
+	}
+	for _, d := range res2.Webhooks {
+		if !d.Success || d.Event != "report.violation" {
+			t.Fatalf("unexpected delivery status: %+v", d)
+		}
+	}
+
+	// Verify GET /api/v1/webhooks history endpoint.
+	whResp, err := http.Get(baseURL + "/api/v1/webhooks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	whBytes, _ := io.ReadAll(whResp.Body)
+	whResp.Body.Close()
+	if !strings.Contains(string(whBytes), "report.violation") {
+		t.Fatalf("expected report.violation in /api/v1/webhooks response, got %s", string(whBytes))
 	}
 }
