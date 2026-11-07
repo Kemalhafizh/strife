@@ -52,7 +52,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           notes=$(awk -v v="${GITHUB_REF_NAME#v}" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md)
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Strife $GITHUB_REF_NAME" --notes "${notes:-See CHANGELOG.md}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "Strife $GITHUB_REF_NAME" --notes "${notes:-See CHANGELOG.md}"
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --title "Strife $GITHUB_REF_NAME" --notes "${notes:-See CHANGELOG.md}"
+          fi
 
   images:
     runs-on: ubuntu-24.04
