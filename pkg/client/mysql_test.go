@@ -282,3 +282,89 @@ func TestMySQLClassification(t *testing.T) {
 		m.Close()
 	}
 }
+
+func TestMySQLLedgerTransactions(t *testing.T) {
+	balances := map[string]string{}
+	more := uint16(2 | moreResults)
+	m := myClient(startMyFake(t, &myFake{auth: "native", answer: func(q string) [][]byte {
+		switch {
+		case strings.Contains(q, "SELECT v FROM") && !strings.HasSuffix(q, "; COMMIT"):
+			// Step 1: SET, START, SELECT acct:0, SELECT acct:1
+			var p [][]byte
+			p = append(p, myOK(more), myOK(more))
+			if v, ok := balances["acct:0"]; ok {
+				p = append(p, myRows(more, str(v))...)
+			} else {
+				p = append(p, myRows(more)...)
+			}
+			if v, ok := balances["acct:1"]; ok {
+				p = append(p, myRows(2, str(v))...)
+			} else {
+				p = append(p, myRows(2)...)
+			}
+			return p
+		case strings.HasPrefix(q, "INSERT INTO"):
+			// Step 2: INSERT acct:0, INSERT acct:1, COMMIT
+			balances["acct:0"] = "600"
+			balances["acct:1"] = "1400"
+			return [][]byte{myOK(more), myOK(more), myOK(2)}
+		case strings.Contains(q, "SELECT v FROM") && strings.HasSuffix(q, "; COMMIT"):
+			// Audit: SET, START, SELECT acct:0, SELECT acct:1, SELECT acct:2, COMMIT
+			var p [][]byte
+			p = append(p, myOK(more), myOK(more))
+			for _, acct := range []string{"acct:0", "acct:1", "acct:2"} {
+				if v, ok := balances[acct]; ok {
+					p = append(p, myRows(more, str(v))...)
+				} else {
+					p = append(p, myRows(more)...)
+				}
+			}
+			return append(p, myOK(2))
+		}
+		return nil
+	}}))
+	m.opt.Isolation = "SERIALIZABLE"
+	defer m.Close()
+
+	transfer := history.Op{
+		F:     history.FTxn,
+		Key:   "acct:0->acct:1",
+		Value: history.Int(400),
+		Txn: []history.MicroOp{
+			{F: history.MicroRead, Key: "acct:0"},
+			{F: history.MicroWrite, Key: "acct:0"},
+			{F: history.MicroRead, Key: "acct:1"},
+			{F: history.MicroWrite, Key: "acct:1"},
+		},
+	}
+	out := m.Invoke(context.Background(), transfer)
+	if out.Type != history.OK || len(out.Txn) != 4 {
+		t.Fatalf("transfer ok: %+v", out)
+	}
+	if *out.Txn[0].Value != 1000 || *out.Txn[1].Value != 600 || *out.Txn[2].Value != 1000 || *out.Txn[3].Value != 1400 {
+		t.Fatalf("unexpected transfer micro-ops: %+v", out.Txn)
+	}
+
+	overdraft := transfer
+	overdraft.Value = history.Int(800)
+	if out := m.Invoke(context.Background(), overdraft); out.Type != history.Fail {
+		t.Fatalf("overdraft must fail, got %+v", out)
+	}
+
+	audit := history.Op{
+		F:   history.FTxn,
+		Key: "audit",
+		Txn: []history.MicroOp{
+			{F: history.MicroRead, Key: "acct:0"},
+			{F: history.MicroRead, Key: "acct:1"},
+			{F: history.MicroRead, Key: "acct:2"},
+		},
+	}
+	out = m.Invoke(context.Background(), audit)
+	if out.Type != history.OK || len(out.Txn) != 3 {
+		t.Fatalf("audit: %+v", out)
+	}
+	if *out.Txn[0].Value != 600 || *out.Txn[1].Value != 1400 || *out.Txn[2].Value != 1000 {
+		t.Fatalf("unexpected audit balances: %+v", out.Txn)
+	}
+}

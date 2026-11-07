@@ -11,6 +11,7 @@ cd examples/postgres
 docker compose up -d --build
 
 strife run --config strife.json            # primary, SERIALIZABLE, kill -9 + pause
+strife run --config strife-ledger.json     # primary, SERIALIZABLE double-entry ledger audit
 strife run --config strife-snapshot.json   # primary, REPEATABLE READ
 strife run --config strife-replicas.json   # reads spread across the standbys
 

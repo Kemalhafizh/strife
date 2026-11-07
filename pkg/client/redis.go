@@ -283,9 +283,108 @@ func (r *Redis) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 		}
 		return history.Op{}, &sentError{fmt.Errorf("redis: cas script replied %v", v)}
 	case history.FTxn:
+		if isLedgerTxn(op) {
+			return r.ledgerTxn(ctx, op)
+		}
 		return r.txn(ctx, op)
 	}
 	return history.Op{}, &redisError{"unsupported op " + op.F}
+}
+
+const ledgerAuditScript = `local out = {}
+for i = 1, #KEYS do
+  local v = redis.call('GET', KEYS[i])
+  if not v then
+    out[i] = ARGV[1]
+  else
+    out[i] = v
+  end
+end
+return out`
+
+const ledgerTransferScript = `local def = tonumber(ARGV[1])
+local amt = tonumber(ARGV[2])
+local from = tonumber(redis.call('GET', KEYS[1])) or def
+local to = tonumber(redis.call('GET', KEYS[2])) or def
+if from < amt then
+  return {0}
+end
+local nfrom = from - amt
+local nto = to + amt
+redis.call('SET', KEYS[1], tostring(nfrom))
+redis.call('SET', KEYS[2], tostring(nto))
+return {1, tostring(from), tostring(nfrom), tostring(to), tostring(nto)}`
+
+func (r *Redis) ledgerTxn(ctx context.Context, op history.Op) (history.Op, error) {
+	defStr := strconv.FormatInt(DefaultLedgerInitialBalance, 10)
+	if readOnly(op) {
+		args := []string{"EVAL", ledgerAuditScript, strconv.Itoa(len(op.Txn))}
+		for _, m := range op.Txn {
+			args = append(args, r.prefix+m.Key)
+		}
+		args = append(args, defStr)
+		v, err := r.do(ctx, args...)
+		if err != nil {
+			return history.Op{}, err
+		}
+		reads, ok := v.([]any)
+		if !ok || len(reads) != len(op.Txn) {
+			return history.Op{}, &sentError{fmt.Errorf("redis: ledger audit script replied %v", v)}
+		}
+		out := complete(op, history.OK)
+		out.Txn = make([]history.MicroOp, len(op.Txn))
+		for i, m := range op.Txn {
+			s, _ := reads[i].(string)
+			n, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				return history.Op{}, &sentError{fmt.Errorf("redis: ledger balance %q: %w", s, err)}
+			}
+			out.Txn[i] = history.MicroOp{F: history.MicroRead, Key: m.Key, Value: history.Int(n)}
+		}
+		return out, nil
+	}
+
+	fromKey, toKey, amt, ok := parseTransferAccounts(op)
+	if !ok || fromKey == toKey {
+		return complete(op, history.Fail), nil
+	}
+	v, err := r.do(
+		ctx,
+		"EVAL", ledgerTransferScript, "2",
+		r.prefix+fromKey, r.prefix+toKey,
+		defStr, strconv.FormatInt(amt, 10),
+	)
+	if err != nil {
+		return history.Op{}, err
+	}
+	arr, ok := v.([]any)
+	if !ok || len(arr) == 0 {
+		return history.Op{}, &sentError{fmt.Errorf("redis: ledger transfer script replied %v", v)}
+	}
+	status, _ := arr[0].(int64)
+	if status == 0 {
+		return complete(op, history.Fail), nil
+	}
+	if status != 1 || len(arr) != 5 {
+		return history.Op{}, &sentError{fmt.Errorf("redis: ledger transfer script replied %v", v)}
+	}
+	var nums [4]int64
+	for i := 0; i < 4; i++ {
+		s, _ := arr[i+1].(string)
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return history.Op{}, &sentError{fmt.Errorf("redis: ledger transfer value %q: %w", s, err)}
+		}
+		nums[i] = n
+	}
+	out := complete(op, history.OK)
+	out.Txn = []history.MicroOp{
+		{F: history.MicroRead, Key: fromKey, Value: history.Int(nums[0])},
+		{F: history.MicroWrite, Key: fromKey, Value: history.Int(nums[1])},
+		{F: history.MicroRead, Key: toKey, Value: history.Int(nums[2])},
+		{F: history.MicroWrite, Key: toKey, Value: history.Int(nums[3])},
+	}
+	return out, nil
 }
 
 // appendScript runs a list-append transaction atomically: KEYS[i] with

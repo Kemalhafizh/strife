@@ -231,3 +231,45 @@ func TestRealRedis(t *testing.T) {
 		}
 	}
 }
+
+func TestRedisLedgerTransactions(t *testing.T) {
+	addr, _ := fakeServer(t,
+		"*5\r\n:1\r\n$4\r\n1000\r\n$3\r\n600\r\n$4\r\n1000\r\n$4\r\n1400\r\n",
+		"*1\r\n:0\r\n",
+		"*3\r\n$3\r\n600\r\n$4\r\n1400\r\n$4\r\n1000\r\n",
+	)
+	r := NewRedis(addr, "p:")
+	defer r.Close()
+
+	transfer := history.Op{
+		F:     history.FTxn,
+		Key:   "acct:0->acct:1",
+		Value: history.Int(400),
+		Txn: []history.MicroOp{
+			{F: history.MicroRead, Key: "acct:0"},
+			{F: history.MicroWrite, Key: "acct:0"},
+			{F: history.MicroRead, Key: "acct:1"},
+			{F: history.MicroWrite, Key: "acct:1"},
+		},
+	}
+	out := r.Invoke(context.Background(), transfer)
+	if out.Type != history.OK || len(out.Txn) != 4 || *out.Txn[1].Value != 600 || *out.Txn[3].Value != 1400 {
+		t.Fatalf("transfer ok: %+v", out)
+	}
+	if out := r.Invoke(context.Background(), transfer); out.Type != history.Fail {
+		t.Fatalf("insufficient funds transfer must fail: %+v", out)
+	}
+	audit := history.Op{
+		F:   history.FTxn,
+		Key: "audit",
+		Txn: []history.MicroOp{
+			{F: history.MicroRead, Key: "acct:0"},
+			{F: history.MicroRead, Key: "acct:1"},
+			{F: history.MicroRead, Key: "acct:2"},
+		},
+	}
+	out = r.Invoke(context.Background(), audit)
+	if out.Type != history.OK || len(out.Txn) != 3 || *out.Txn[0].Value != 600 || *out.Txn[1].Value != 1400 || *out.Txn[2].Value != 1000 {
+		t.Fatalf("audit: %+v", out)
+	}
+}

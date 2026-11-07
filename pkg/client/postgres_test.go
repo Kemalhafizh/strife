@@ -246,6 +246,105 @@ func TestPostgresClassification(t *testing.T) {
 	}
 }
 
+func TestPostgresLedgerTransactions(t *testing.T) {
+	balances := map[string]string{}
+	var queries []string
+	addr := fakePG(t, "trust", func(q string) []byte {
+		queries = append(queries, q)
+		switch {
+		case strings.Contains(q, "SELECT v FROM") && !strings.Contains(q, "COMMIT;"):
+			// Step 1 of a ledger transfer: BEGIN + two SELECTs (stays in 'T').
+			var b []byte
+			b = append(b, pgTag("BEGIN")...)
+			for _, acct := range []string{"acct:0", "acct:1"} {
+				if v, ok := balances[acct]; ok {
+					b = append(b, pgRow(v)...)
+					b = append(b, pgTag("SELECT 1")...)
+				} else {
+					b = append(b, pgTag("SELECT 0")...)
+				}
+			}
+			return append(b, pgReady('T')...)
+		case strings.HasPrefix(q, "INSERT INTO"):
+			// Step 2 of a ledger transfer: two upserts + COMMIT.
+			balances["acct:0"] = "600"
+			balances["acct:1"] = "1400"
+			var b []byte
+			b = append(b, pgTag("INSERT 0 1")...)
+			b = append(b, pgTag("INSERT 0 1")...)
+			b = append(b, pgTag("COMMIT")...)
+			return append(b, pgReady('I')...)
+		case strings.Contains(q, "SELECT v FROM") && strings.Contains(q, "COMMIT;"):
+			// Audit transaction: BEGIN + three SELECTs + COMMIT.
+			var b []byte
+			b = append(b, pgTag("BEGIN")...)
+			for _, acct := range []string{"acct:0", "acct:1", "acct:2"} {
+				if v, ok := balances[acct]; ok {
+					b = append(b, pgRow(v)...)
+					b = append(b, pgTag("SELECT 1")...)
+				} else {
+					b = append(b, pgTag("SELECT 0")...)
+				}
+			}
+			b = append(b, pgTag("COMMIT")...)
+			return append(b, pgReady('I')...)
+		}
+		return nil
+	})
+	pg := pgClient(addr)
+	pg.opt.Isolation = "SERIALIZABLE"
+	defer pg.Close()
+
+	// 1. Transfer 400 from acct:0 (1000) to acct:1 (1000) -> 600, 1400.
+	transfer := history.Op{
+		F:     history.FTxn,
+		Key:   "acct:0->acct:1",
+		Value: history.Int(400),
+		Txn: []history.MicroOp{
+			{F: history.MicroRead, Key: "acct:0"},
+			{F: history.MicroWrite, Key: "acct:0"},
+			{F: history.MicroRead, Key: "acct:1"},
+			{F: history.MicroWrite, Key: "acct:1"},
+		},
+	}
+	out := pg.Invoke(context.Background(), transfer)
+	if out.Type != history.OK || len(out.Txn) != 4 {
+		t.Fatalf("transfer ok: %+v", out)
+	}
+	if *out.Txn[0].Value != 1000 || *out.Txn[1].Value != 600 || *out.Txn[2].Value != 1000 || *out.Txn[3].Value != 1400 {
+		t.Fatalf("unexpected transfer micro-ops: %+v", out.Txn)
+	}
+
+	// 2. Attempt to transfer 800 from acct:0 (now 600) -> Fail + ROLLBACK without INSERT.
+	overdraft := transfer
+	overdraft.Value = history.Int(800)
+	out = pg.Invoke(context.Background(), overdraft)
+	if out.Type != history.OK && out.Type != history.Fail {
+		t.Fatalf("unexpected overdraft type: %+v", out)
+	}
+	if out.Type != history.Fail {
+		t.Fatalf("overdraft must fail, got %+v", out)
+	}
+
+	// 3. Multi-account audit across acct:0, acct:1, acct:2 (unseeded -> 1000).
+	audit := history.Op{
+		F:   history.FTxn,
+		Key: "audit",
+		Txn: []history.MicroOp{
+			{F: history.MicroRead, Key: "acct:0"},
+			{F: history.MicroRead, Key: "acct:1"},
+			{F: history.MicroRead, Key: "acct:2"},
+		},
+	}
+	out = pg.Invoke(context.Background(), audit)
+	if out.Type != history.OK || len(out.Txn) != 3 {
+		t.Fatalf("audit: %+v", out)
+	}
+	if *out.Txn[0].Value != 600 || *out.Txn[1].Value != 1400 || *out.Txn[2].Value != 1000 {
+		t.Fatalf("unexpected audit balances: %+v", out.Txn)
+	}
+}
+
 func md5sum(b []byte) string {
 	h := md5.Sum(b) //nolint:gosec
 	return hex.EncodeToString(h[:])

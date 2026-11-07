@@ -42,12 +42,20 @@ func (e Edge) String() string {
 	return fmt.Sprintf("T%d ──%s──> T%d", e.From, e.Kind, e.To)
 }
 
+type edgeKey struct {
+	from int
+	to   int
+	kind EdgeKind
+	key  string
+}
+
 // Graph is the Direct Serialization Graph (DSG) over transactions.
 type Graph struct {
 	Txns  map[int]Txn    // Txn ID -> Txn
 	Nodes []int          // sorted list of Txn IDs
 	Adj   map[int][]Edge // outgoing edges per Txn ID
 	Edges []Edge         // all edges in the graph
+	seen  map[edgeKey]bool
 }
 
 // NewGraph initializes an empty DSG.
@@ -55,6 +63,7 @@ func NewGraph() *Graph {
 	return &Graph{
 		Txns: make(map[int]Txn),
 		Adj:  make(map[int][]Edge),
+		seen: make(map[edgeKey]bool),
 	}
 }
 
@@ -72,12 +81,17 @@ func (g *Graph) AddEdge(e Edge) {
 		// Self-loops within the same transaction are internal
 		return
 	}
-	// Check for duplicate edge
-	for _, existing := range g.Adj[e.From] {
-		if existing.To == e.To && existing.Kind == e.Kind && existing.Key == e.Key {
-			return
+	if g.seen == nil {
+		g.seen = make(map[edgeKey]bool)
+		for _, existing := range g.Edges {
+			g.seen[edgeKey{existing.From, existing.To, existing.Kind, existing.Key}] = true
 		}
 	}
+	k := edgeKey{e.From, e.To, e.Kind, e.Key}
+	if g.seen[k] {
+		return
+	}
+	g.seen[k] = true
 	g.Adj[e.From] = append(g.Adj[e.From], e)
 	g.Edges = append(g.Edges, e)
 }
@@ -180,7 +194,6 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 						Kind:  EdgeWR,
 						Key:   k,
 						Value: op.Value,
-						Desc:  fmt.Sprintf("T%d ──wr(%s=%d)──> T%d", writerID, k, v, reader.ID),
 					})
 				}
 			}
@@ -210,7 +223,6 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 				To:   w2,
 				Kind: EdgeWW,
 				Key:  key,
-				Desc: fmt.Sprintf("T%d ──ww(%s)──> T%d", w1, key, w2),
 			})
 		}
 	}
@@ -243,17 +255,28 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 			break
 		}
 		for i := 0; i < len(entries); i++ {
+			w1 := entries[i].txnID
+			t1 := g.Txns[w1]
+			if t1.Return == history.Infinity {
+				continue
+			}
+			needFullWW := !ambiguous[k][entries[i].val]
+			minRet := int64(history.Infinity)
+			if !needFullWW {
+				for j := 0; j < len(entries); j++ {
+					t2 := g.Txns[entries[j].txnID]
+					if t1.Return < t2.Call && t2.Return < minRet {
+						minRet = t2.Return
+					}
+				}
+			}
 			for j := 0; j < len(entries); j++ {
 				if i == j {
 					continue
 				}
-				w1 := entries[i].txnID
 				w2 := entries[j].txnID
-				t1 := g.Txns[w1]
 				t2 := g.Txns[w2]
-
-				// If w1 completed before w2 began, w1 is earlier version
-				if t1.Return != history.Infinity && t1.Return < t2.Call {
+				if t1.Return < t2.Call && (needFullWW || t2.Call <= minRet) {
 					recordWW(k, w1, w2)
 				}
 			}
@@ -267,8 +290,11 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 			break
 		}
 		for v1, w1 := range vMap {
+			if ambiguous[k][v1] {
+				continue
+			}
 			for v2, w2 := range vMap {
-				if w1 == w2 || v1 == v2 || ambiguous[k][v1] || ambiguous[k][v2] {
+				if w1 == w2 || v1 == v2 || ambiguous[k][v2] {
 					continue
 				}
 				// Find readers of v1 and v2
@@ -315,7 +341,6 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 							To:   w.txnID,
 							Kind: EdgeRW,
 							Key:  k,
-							Desc: fmt.Sprintf("T%d ──rw(%s)──> T%d", reader.ID, k, w.txnID),
 						})
 					}
 				}
@@ -334,7 +359,6 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 								To:   w2,
 								Kind: EdgeRW,
 								Key:  k,
-								Desc: fmt.Sprintf("T%d ──rw(%s)──> T%d", reader.ID, k, w2),
 							})
 						}
 					}
@@ -364,17 +388,26 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 				From: t1.ID,
 				To:   t2.ID,
 				Kind: EdgeSO,
-				Desc: fmt.Sprintf("T%d ──so──> T%d", t1.ID, t2.ID),
 			})
 		}
 	}
 
-	// 6. Infer RO (Real-Time Order) edges: t1.Return < t2.Call
+	// 6. Infer RO (Real-Time Order) edges: t1.Return < t2.Call.
+	// By interval-order transitivity, if t1.Return < t_mid.Call <= t_mid.Return < t2.Call,
+	// then t1 -> t_mid -> t2 already orders t1 before t2, so only immediate
+	// real-time successors (t2.Call <= minReturn) need direct edges.
 	if realtime {
 		for i := 0; i < len(txns); i++ {
 			t1 := txns[i]
 			if t1.Status != history.OK || t1.Return == history.Infinity {
 				continue
+			}
+			minRet := int64(history.Infinity)
+			for j := 0; j < len(txns); j++ {
+				t2 := txns[j]
+				if t2.Status == history.OK && t1.Process != t2.Process && t1.Return < t2.Call && t2.Return < minRet {
+					minRet = t2.Return
+				}
 			}
 			for j := 0; j < len(txns); j++ {
 				if i == j {
@@ -384,12 +417,11 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 				if t2.Status != history.OK {
 					continue
 				}
-				if t1.Process != t2.Process && t1.Return < t2.Call {
+				if t1.Process != t2.Process && t1.Return < t2.Call && t2.Call <= minRet {
 					g.AddEdge(Edge{
 						From: t1.ID,
 						To:   t2.ID,
 						Kind: EdgeRO,
-						Desc: fmt.Sprintf("T%d ──ro──> T%d", t1.ID, t2.ID),
 					})
 				}
 			}

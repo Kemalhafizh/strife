@@ -144,8 +144,11 @@ func (c *Config) Defaults() {
 	}
 	if w.ReadRatio == 0 && w.CasRatio == 0 {
 		w.ReadRatio, w.CasRatio = 0.5, 0.2
-		if w.Model == "append" {
+		if w.Model == "append" || w.Model == "ledger" {
 			w.CasRatio = 0
+		}
+		if w.Model == "ledger" {
+			w.ReadRatio = 0.25
 		}
 	}
 	if w.TxnLen == 0 {
@@ -192,8 +195,20 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("workload.isolation %q is not a known level", c.Workload.Isolation)
 		}
+	case "ledger":
+		if c.Workload.Plugin != "" {
+			return fmt.Errorf("workload.plugin generates kv operations; it cannot drive the ledger model")
+		}
+		if c.Workload.Keys < 2 {
+			return fmt.Errorf("workload.keys must be at least 2 for the ledger model")
+		}
+		switch txn.IsolationLevel(c.Workload.Isolation) {
+		case txn.LevelReadUncommitted, txn.LevelReadCommitted, txn.LevelSnapshotIsolation, txn.LevelRepeatableRead, txn.LevelSerializable, txn.LevelStrictSerializable:
+		default:
+			return fmt.Errorf("workload.isolation %q is not a known level", c.Workload.Isolation)
+		}
 	default:
-		return fmt.Errorf("workload.model %q not supported for live runs (kv, append)", c.Workload.Model)
+		return fmt.Errorf("workload.model %q not supported for live runs (kv, append, ledger)", c.Workload.Model)
 	}
 	if c.Workload.ReadRatio < 0 || c.Workload.CasRatio < 0 || c.Workload.ReadRatio+c.Workload.CasRatio > 1 {
 		return fmt.Errorf("workload.read_ratio + cas_ratio must be within [0, 1]")
@@ -259,10 +274,14 @@ func (c *Config) Redacted() *Config {
 
 // Model returns the consistency model the recorded history is checked with.
 func (c *Config) Model() model.Model {
-	if c.Workload.Model == "append" {
+	switch c.Workload.Model {
+	case "append":
 		return model.Append{Level: c.Workload.Isolation}
+	case "ledger":
+		return model.Ledger{InitialBalance: model.DefaultLedgerInitialBalance, Level: c.Workload.Isolation}
+	default:
+		return model.KV{}
 	}
-	return model.KV{}
 }
 
 // Env converts the config into the nemesis command environment.

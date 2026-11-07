@@ -519,9 +519,118 @@ func (p *Postgres) invoke(ctx context.Context, op history.Op) (history.Op, error
 		}
 		return complete(op, history.OK), nil
 	case history.FTxn:
+		if isLedgerTxn(op) {
+			return p.ledgerTxn(ctx, op, kv)
+		}
 		return p.txn(ctx, op, lists)
 	}
 	return history.Op{}, &notSent{fmt.Errorf("postgres: unsupported operation %q", op.F)}
+}
+
+// ledgerTxn executes either a multi-account ledger balance audit or a
+// two-account double-entry transfer (read both accounts, check non-negativity,
+// write updated balances, and commit).
+func (p *Postgres) ledgerTxn(ctx context.Context, op history.Op, kv string) (history.Op, error) {
+	if readOnly(op) {
+		var b strings.Builder
+		fmt.Fprintf(&b, "BEGIN ISOLATION LEVEL %s;", p.opt.Isolation)
+		for _, m := range op.Txn {
+			fmt.Fprintf(&b, " SELECT v FROM %s WHERE k = '%s';", kv, escapeSQL(m.Key))
+		}
+		b.WriteString(" COMMIT;")
+		res, err := p.exec(ctx, b.String())
+		if err != nil {
+			return history.Op{}, err
+		}
+		if len(res) != len(op.Txn)+2 || res[len(res)-1].tag != "COMMIT" {
+			return history.Op{}, &postgresError{code: "40000", msg: fmt.Sprintf("transaction did not commit (%d results, last %q)", len(res), res[len(res)-1].tag)}
+		}
+		out := complete(op, history.OK)
+		out.Txn = make([]history.MicroOp, len(op.Txn))
+		for i, m := range op.Txn {
+			bal, err := parseLedgerBalance(res[i+1])
+			if err != nil {
+				return history.Op{}, &postgresError{code: "XX000", msg: err.Error()}
+			}
+			out.Txn[i] = history.MicroOp{F: history.MicroRead, Key: m.Key, Value: history.Int(bal)}
+		}
+		return out, nil
+	}
+
+	fromKey, toKey, amt, ok := parseTransferAccounts(op)
+	if !ok || fromKey == toKey {
+		return complete(op, history.Fail), nil
+	}
+	fk, tk := escapeSQL(fromKey), escapeSQL(toKey)
+	readSQL := fmt.Sprintf("BEGIN ISOLATION LEVEL %s; SELECT v FROM %s WHERE k = '%s'; SELECT v FROM %s WHERE k = '%s';", p.opt.Isolation, kv, fk, kv, tk)
+	res, err := p.exec(ctx, readSQL)
+	if err != nil {
+		p.rollbackOpen()
+		return history.Op{}, &notSent{err}
+	}
+	if len(res) != 3 {
+		p.rollbackOpen()
+		return history.Op{}, &notSent{fmt.Errorf("postgres: %d results for 3 ledger read statements", len(res))}
+	}
+	oldFrom, err := parseLedgerBalance(res[1])
+	if err != nil {
+		p.rollbackOpen()
+		return history.Op{}, &notSent{err}
+	}
+	oldTo, err := parseLedgerBalance(res[2])
+	if err != nil {
+		p.rollbackOpen()
+		return history.Op{}, &notSent{err}
+	}
+	if oldFrom < amt {
+		p.rollbackOpen()
+		return complete(op, history.Fail), nil
+	}
+
+	newFrom := oldFrom - amt
+	newTo := oldTo + amt
+	writeSQL := fmt.Sprintf(
+		"INSERT INTO %s (k, v) VALUES ('%s', %d) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v; "+
+			"INSERT INTO %s (k, v) VALUES ('%s', %d) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v; "+
+			"COMMIT;",
+		kv, fk, newFrom, kv, tk, newTo,
+	)
+	wres, err := p.exec(ctx, writeSQL)
+	if err != nil {
+		p.rollbackOpen()
+		return history.Op{}, err
+	}
+	if len(wres) != 3 || wres[len(wres)-1].tag != "COMMIT" {
+		p.rollbackOpen()
+		return history.Op{}, &postgresError{code: "40000", msg: fmt.Sprintf("transaction did not commit (%d results, last %q)", len(wres), wres[len(wres)-1].tag)}
+	}
+	out := complete(op, history.OK)
+	out.Txn = []history.MicroOp{
+		{F: history.MicroRead, Key: fromKey, Value: history.Int(oldFrom)},
+		{F: history.MicroWrite, Key: fromKey, Value: history.Int(newFrom)},
+		{F: history.MicroRead, Key: toKey, Value: history.Int(oldTo)},
+		{F: history.MicroWrite, Key: toKey, Value: history.Int(newTo)},
+	}
+	return out, nil
+}
+
+func (p *Postgres) rollbackOpen() {
+	if p.conn != nil {
+		if _, err := p.execRaw("ROLLBACK"); err != nil {
+			p.drop()
+		}
+	}
+}
+
+func parseLedgerBalance(r stmtResult) (int64, error) {
+	if len(r.rows) == 1 && len(r.rows[0]) >= 1 && r.rows[0][0] != nil {
+		n, err := strconv.ParseInt(*r.rows[0][0], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("non-integer ledger balance %q: %w", *r.rows[0][0], err)
+		}
+		return n, nil
+	}
+	return DefaultLedgerInitialBalance, nil
 }
 
 // txn runs a list-append transaction as a single simple query, so that a

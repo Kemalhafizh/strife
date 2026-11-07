@@ -295,3 +295,103 @@ func TestKubernetesRunThroughKubectl(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveLedgerWorkload(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workload = WorkloadConfig{
+		Model:       "ledger",
+		Keys:        4,
+		Values:      3,
+		Concurrency: 6,
+		Think:       Duration(2 * time.Millisecond),
+		Isolation:   "strict-serializable",
+	}
+	cfg.Defaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Model != "ledger" || res.Check.Verdict != checker.Linearizable {
+		t.Fatalf("strictly serializable ledger store must pass: model=%s verdict=%s", res.Check.Model, res.Check.Verdict)
+	}
+	transfers, audits, finalAudits := 0, 0, 0
+	for _, op := range res.History {
+		if op.Type != history.OK {
+			continue
+		}
+		if op.Key == "audit" {
+			audits++
+			if op.Process >= 1<<30 {
+				finalAudits++
+			}
+			var sum int64
+			for _, m := range op.Txn {
+				if m.Value != nil {
+					sum += *m.Value
+				}
+			}
+			if sum != 4000 {
+				t.Fatalf("audit conservation violated: sum=%d, want 4000", sum)
+			}
+		} else if strings.Contains(op.Key, "->") {
+			transfers++
+		}
+	}
+	if transfers == 0 || audits == 0 || finalAudits == 0 {
+		t.Fatalf("expected transfers (%d), audits (%d), and post-heal final audit (%d)", transfers, audits, finalAudits)
+	}
+}
+
+func TestLedgerCatchesOverdraftAndConservationViolation(t *testing.T) {
+	cfg := testConfig()
+	cfg.Workload = WorkloadConfig{
+		Model:       "ledger",
+		Keys:        3,
+		Values:      3,
+		Concurrency: 4,
+		Think:       Duration(2 * time.Millisecond),
+		Isolation:   "serializable",
+	}
+	cfg.Defaults()
+	store := client.NewMemoryStore()
+	varcorrupted := &atomic.Int32{}
+	faulty := func(i int) (client.Client, error) {
+		return &overdraftLedgerClient{Client: store.Client(), n: varcorrupted}, nil
+	}
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Clients: faulty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Verdict != checker.Violation {
+		t.Fatalf("expected violation on overdraft/conservation anomaly, got %s", res.Check.Verdict)
+	}
+}
+
+type overdraftLedgerClient struct {
+	client.Client
+	n *atomic.Int32
+}
+
+func (o *overdraftLedgerClient) Invoke(ctx context.Context, op history.Op) history.Op {
+	if op.F == history.FTxn && strings.Contains(op.Key, "->") && len(op.Txn) == 4 && o.n.CompareAndSwap(0, 1) {
+		// Simulate a weak-isolation write-skew overdraft and unrecorded debit.
+		fk, tk := op.Txn[0].Key, op.Txn[2].Key
+		return history.Op{
+			Process: op.Process,
+			Type:    history.OK,
+			F:       history.FTxn,
+			Key:     op.Key,
+			Value:   op.Value,
+			Txn: []history.MicroOp{
+				{F: history.MicroRead, Key: fk, Value: history.Int(200)},
+				{F: history.MicroWrite, Key: fk, Value: history.Int(-200)},
+				{F: history.MicroRead, Key: tk, Value: history.Int(1000)},
+				{F: history.MicroWrite, Key: tk, Value: history.Int(1600)},
+			},
+		}
+	}
+	return o.Client.Invoke(ctx, op)
+}

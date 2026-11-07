@@ -155,6 +155,10 @@ func Classify(op history.Op, err error) history.Type {
 	if readOnly(op) {
 		return history.Fail
 	}
+	var ns *notSent
+	if errors.As(err, &ns) {
+		return history.Fail
+	}
 	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) {
 		return history.Fail
 	}
@@ -171,6 +175,44 @@ func complete(op history.Op, t history.Type) history.Op {
 		out.Value = nil
 	}
 	return out
+}
+
+// DefaultLedgerInitialBalance is the opening balance assumed for any
+// ledger account key that has not been written yet.
+const DefaultLedgerInitialBalance int64 = 1000
+
+// isLedgerTxn reports whether an FTxn operation belongs to the double-entry
+// ledger workload ("audit" or "acct:i->acct:j" transfer) rather than the
+// list-append workload.
+func isLedgerTxn(op history.Op) bool {
+	if op.Key == "audit" || strings.Contains(op.Key, "->") {
+		return true
+	}
+	for _, m := range op.Txn {
+		if m.F == history.MicroWrite {
+			return true
+		}
+	}
+	return false
+}
+
+// parseTransferAccounts extracts the source account, destination account,
+// and positive transfer amount from a ledger transfer operation.
+func parseTransferAccounts(op history.Op) (fromKey, toKey string, amt int64, ok bool) {
+	if op.Value == nil || *op.Value <= 0 {
+		return "", "", 0, false
+	}
+	amt = *op.Value
+	if len(op.Txn) == 4 &&
+		op.Txn[0].F == history.MicroRead && op.Txn[1].F == history.MicroWrite &&
+		op.Txn[2].F == history.MicroRead && op.Txn[3].F == history.MicroWrite &&
+		op.Txn[0].Key == op.Txn[1].Key && op.Txn[2].Key == op.Txn[3].Key {
+		return op.Txn[0].Key, op.Txn[2].Key, amt, op.Txn[0].Key != "" && op.Txn[2].Key != ""
+	}
+	if from, to, found := strings.Cut(op.Key, "->"); found && from != "" && to != "" {
+		return from, to, amt, true
+	}
+	return "", "", 0, false
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +264,9 @@ func (c *memClient) Invoke(ctx context.Context, op history.Op) history.Op {
 		}
 	case history.FTxn:
 		// Strictly serializable: the whole transaction runs under the lock.
+		if isLedgerTxn(op) {
+			return c.ledgerTxn(op)
+		}
 		out.Txn = make([]history.MicroOp, len(op.Txn))
 		for i, m := range op.Txn {
 			out.Txn[i] = m
@@ -235,6 +280,48 @@ func (c *memClient) Invoke(ctx context.Context, op history.Op) history.Op {
 	default:
 		out.Type = history.Fail
 		out.Error = "unsupported op " + op.F
+	}
+	return out
+}
+
+func (c *memClient) ledgerTxn(op history.Op) history.Op {
+	if readOnly(op) {
+		out := complete(op, history.OK)
+		out.Txn = make([]history.MicroOp, len(op.Txn))
+		for i, m := range op.Txn {
+			bal, ok := c.s.data[m.Key]
+			if !ok {
+				bal = DefaultLedgerInitialBalance
+			}
+			out.Txn[i] = history.MicroOp{F: history.MicroRead, Key: m.Key, Value: history.Int(bal)}
+		}
+		return out
+	}
+	fromKey, toKey, amt, ok := parseTransferAccounts(op)
+	if !ok || fromKey == toKey {
+		return complete(op, history.Fail)
+	}
+	oldFrom, ok := c.s.data[fromKey]
+	if !ok {
+		oldFrom = DefaultLedgerInitialBalance
+	}
+	oldTo, ok := c.s.data[toKey]
+	if !ok {
+		oldTo = DefaultLedgerInitialBalance
+	}
+	if oldFrom < amt {
+		return complete(op, history.Fail)
+	}
+	newFrom := oldFrom - amt
+	newTo := oldTo + amt
+	c.s.data[fromKey] = newFrom
+	c.s.data[toKey] = newTo
+	out := complete(op, history.OK)
+	out.Txn = []history.MicroOp{
+		{F: history.MicroRead, Key: fromKey, Value: history.Int(oldFrom)},
+		{F: history.MicroWrite, Key: fromKey, Value: history.Int(newFrom)},
+		{F: history.MicroRead, Key: toKey, Value: history.Int(oldTo)},
+		{F: history.MicroWrite, Key: toKey, Value: history.Int(newTo)},
 	}
 	return out
 }

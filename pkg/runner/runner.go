@@ -171,15 +171,20 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	}
 	wg.Wait()
 	nemWG.Wait()
-	if cfg.Workload.Model == "append" {
+	if cfg.Workload.Model == "append" || cfg.Workload.Model == "ledger" {
 		// Heal, let the cluster settle, then read every key once more: an
-		// acknowledged append that no read ever saw is otherwise invisible.
+		// acknowledged append or balance discrepancy that no read ever saw
+		// is otherwise invisible.
 		hctx, hcancel := context.WithTimeout(ctx, time.Minute)
 		if errs := inj.Teardown(hctx, cfg.Nemesis.Faults); len(errs) > 0 {
 			logf("healing before final reads: %v", errs)
 		}
 		hcancel()
-		finalReads(ctx, cfg, factory, rec, logf)
+		if cfg.Workload.Model == "append" {
+			finalReads(ctx, cfg, factory, rec, logf)
+		} else {
+			finalLedgerAudit(ctx, cfg, factory, rec, logf)
+		}
 	}
 
 	if t := report.InjectionTiming(applied); t.Count > 0 {
@@ -327,7 +332,10 @@ func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workl
 	}
 	for time.Now().Before(until) && ctx.Err() == nil {
 		var op history.Op
-		if gen != nil {
+		if w.Model == "ledger" {
+			op = ledgerOp(r, w.Keys, w.Values, w.ReadRatio)
+			op.Process = process
+		} else if gen != nil {
 			op = gen.op(r, w.TxnLen, w.ReadRatio)
 			op.Process = process
 		} else if plug != nil {
@@ -442,6 +450,79 @@ func (g *appendGen) op(r *rng.Rand, txnLen int, readRatio float64) history.Op {
 		g.keys.writes[slot].Add(1)
 	}
 	return history.Op{Type: history.Invoke, F: history.FTxn, Txn: micro}
+}
+
+// ledgerOp generates either a full-account balance audit or a double-entry
+// transfer between two distinct accounts.
+func ledgerOp(r *rng.Rand, keys, values int, readRatio float64) history.Op {
+	if r.Float64() < readRatio {
+		micro := make([]history.MicroOp, keys)
+		for i := 0; i < keys; i++ {
+			micro[i] = history.MicroOp{F: history.MicroRead, Key: fmt.Sprintf("acct:%d", i)}
+		}
+		return history.Op{Type: history.Invoke, F: history.FTxn, Key: "audit", Txn: micro}
+	}
+	from := r.Intn(keys)
+	to := (from + 1 + r.Intn(keys-1)) % keys
+	amt := (1 + r.Int64n(int64(max(1, values)))) * 200
+	fk := fmt.Sprintf("acct:%d", from)
+	tk := fmt.Sprintf("acct:%d", to)
+	return history.Op{
+		Type:  history.Invoke,
+		F:     history.FTxn,
+		Key:   fk + "->" + tk,
+		Value: history.Int(amt),
+		Txn: []history.MicroOp{
+			{F: history.MicroRead, Key: fk},
+			{F: history.MicroWrite, Key: fk},
+			{F: history.MicroRead, Key: tk},
+			{F: history.MicroWrite, Key: tk},
+		},
+	}
+}
+
+// finalLedgerAudit runs one post-heal balance audit across all ledger
+// accounts so that any conservation discrepancy left by the run is observed.
+func finalLedgerAudit(ctx context.Context, cfg *Config, factory client.Factory, rec *history.Recorder, logf func(string, ...any)) {
+	select {
+	case <-time.After(time.Duration(cfg.Workload.Timeout)):
+	case <-ctx.Done():
+		return
+	}
+	micro := make([]history.MicroOp, cfg.Workload.Keys)
+	for i := 0; i < cfg.Workload.Keys; i++ {
+		micro[i] = history.MicroOp{F: history.MicroRead, Key: fmt.Sprintf("acct:%d", i)}
+	}
+	process := 1 << 30
+	for attempt := 0; attempt < 3*len(cfg.Nodes) && ctx.Err() == nil; attempt++ {
+		node := attempt % len(cfg.Nodes)
+		c, err := factory(node)
+		if err != nil {
+			continue
+		}
+		op := rec.Record(history.Op{
+			Process: process,
+			Type:    history.Invoke,
+			F:       history.FTxn,
+			Key:     "audit",
+			Txn:     append([]history.MicroOp(nil), micro...),
+		})
+		octx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Workload.Timeout))
+		out := c.Invoke(octx, op)
+		cancel()
+		_ = c.Close()
+		out.Process = process
+		if out.Node == "" {
+			out.Node = cfg.Nodes[node].Name
+		}
+		rec.Record(out)
+		process++
+		if out.Type == history.OK {
+			logf("final ledger audit: read %d accounts on %s", cfg.Workload.Keys, out.Node)
+			return
+		}
+	}
+	logf("final ledger audit: could not read all %d accounts", cfg.Workload.Keys)
 }
 
 // finalReads reads every key the append workload touched, retrying on other

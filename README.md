@@ -227,13 +227,13 @@ strife run  --config strife.json --faults none --expect linearizable   # fault-f
 
 | Target | Protocol and authentication | Workloads | Outcome classification |
 | :--- | :--- | :--- | :--- |
-| `etcd` | v3 JSON gateway | `kv` (read, write, compare-and-swap), `append` (optimistic transactions guarded by `mod_revision`) | refused or rejected → `fail`; timeout after sending → `info` |
-| `redis` / `valkey` | RESP2, `AUTH`, TLS | `kv` (atomic Lua CAS), `append` (Lua script per transaction) | `-READONLY` / `-ERR` → `fail`; I/O error after sending → `info` |
-| `postgres` | v3 protocol, SCRAM-SHA-256 / MD5, TLS (`require`, `verify-full`) | `kv`, `append` at any `txn_isolation` | `40001`, `40P01`, `25006`… → `fail`; connection lost after `COMMIT` → `info` |
-| `mysql` / `tidb` | `caching_sha2_password` (fast path, RSA or TLS full auth), `mysql_native_password`, TLS, `init_sql` | `kv`, `append` | deadlock / lock timeout / TiDB write conflict → `fail`; lost after `COMMIT` → `info` |
+| `etcd` | v3 JSON gateway | `kv` (read, write, compare-and-swap), `append`, `ledger` (optimistic transactions guarded by `mod_revision`) | refused or rejected → `fail`; timeout after sending → `info` |
+| `redis` / `valkey` | RESP2, `AUTH`, TLS | `kv` (atomic Lua CAS), `append`, `ledger` (Lua script per transaction) | `-READONLY` / `-ERR` → `fail`; I/O error after sending → `info` |
+| `postgres` | v3 protocol, SCRAM-SHA-256 / MD5, TLS (`require`, `verify-full`) | `kv`, `append`, `ledger` at any `txn_isolation` | `40001`, `40P01`, `25006`… → `fail`; connection lost after `COMMIT` → `info` |
+| `mysql` / `tidb` | `caching_sha2_password` (fast path, RSA or TLS full auth), `mysql_native_password`, TLS, `init_sql` | `kv`, `append`, `ledger` | deadlock / lock timeout / TiDB write conflict → `fail`; lost after `COMMIT` → `info` |
 | `kafka` | ApiVersions, Metadata v4, Produce v3 (`acks=all`), Fetch v4, RecordBatch v2 | `append` (each key a single-partition topic, read from offset 0) | rejected before append (not leader, not enough replicas…) → `fail`; request timeout or lost connection after sending → `info` |
 
-`workload.model` picks `kv` (linearizability) or `append` (list-append transactions checked at `workload.isolation`, from read-uncommitted to strict-serializable). `db.txn_isolation` sets the level the database runs at, so you can, for example, run PostgreSQL at REPEATABLE READ and hold it to serializability.
+`workload.model` picks `kv` (linearizability), `append` (list-append transactions checked at `workload.isolation`, from read-uncommitted to strict-serializable), or `ledger` (double-entry financial transfers and multi-account balance audits checked for conservation of money, non-negativity, and isolation anomalies at `workload.isolation`). `db.txn_isolation` sets the level the database runs at, so you can, for example, run PostgreSQL at REPEATABLE READ and hold it to serializability.
 
 > [!NOTE]
 > Whenever a client records `info` (for example, a TCP connection reset after sending a `SET` or `COMMIT`), the operation may still take effect on the server at an arbitrary point in the future. Following Jepsen's process invariant, the worker closes the socket and increments its logical `process` ID (`process += concurrency`) before issuing another operation.

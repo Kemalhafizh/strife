@@ -651,9 +651,125 @@ func (m *MySQL) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 		}
 		return complete(op, history.OK), nil
 	case history.FTxn:
+		if isLedgerTxn(op) {
+			return m.ledgerTxn(ctx, op, kv)
+		}
 		return m.txn(ctx, op, lists)
 	}
 	return history.Op{}, &notSent{fmt.Errorf("mysql: unsupported operation %q", op.F)}
+}
+
+// ledgerTxn executes either a multi-account ledger balance audit or a
+// two-account double-entry transfer (read both accounts, check non-negativity,
+// write updated balances, and commit).
+func (m *MySQL) ledgerTxn(ctx context.Context, op history.Op, kv string) (history.Op, error) {
+	if readOnly(op) {
+		var b strings.Builder
+		fmt.Fprintf(&b, "SET TRANSACTION ISOLATION LEVEL %s; START TRANSACTION", m.opt.Isolation)
+		for _, mo := range op.Txn {
+			fmt.Fprintf(&b, "; SELECT v FROM %s WHERE k = '%s'", kv, escapeMySQL(mo.Key))
+		}
+		b.WriteString("; COMMIT")
+		commit := len(op.Txn) + 2
+		res, err := m.query(ctx, b.String())
+		if err != nil {
+			m.rollbackOpen(ctx)
+			return history.Op{}, err
+		}
+		if len(res) != commit+1 {
+			m.rollbackOpen(ctx)
+			return history.Op{}, &sentError{fmt.Errorf("mysql: %d results for %d statements", len(res), commit+1)}
+		}
+		out := complete(op, history.OK)
+		out.Txn = make([]history.MicroOp, len(op.Txn))
+		for i, mo := range op.Txn {
+			bal, err := parseMySQLLedgerBalance(res[i+2])
+			if err != nil {
+				return history.Op{}, &sentError{err}
+			}
+			out.Txn[i] = history.MicroOp{F: history.MicroRead, Key: mo.Key, Value: history.Int(bal)}
+		}
+		return out, nil
+	}
+
+	fromKey, toKey, amt, ok := parseTransferAccounts(op)
+	if !ok || fromKey == toKey {
+		return complete(op, history.Fail), nil
+	}
+	fk, tk := escapeMySQL(fromKey), escapeMySQL(toKey)
+	readSQL := fmt.Sprintf("SET TRANSACTION ISOLATION LEVEL %s; START TRANSACTION; SELECT v FROM %s WHERE k = '%s'; SELECT v FROM %s WHERE k = '%s'", m.opt.Isolation, kv, fk, kv, tk)
+	res, err := m.query(ctx, readSQL)
+	if err != nil {
+		m.rollbackOpen(ctx)
+		return history.Op{}, &notSent{err}
+	}
+	if len(res) != 4 {
+		m.rollbackOpen(ctx)
+		return history.Op{}, &notSent{fmt.Errorf("mysql: %d results for 4 ledger read statements", len(res))}
+	}
+	oldFrom, err := parseMySQLLedgerBalance(res[2])
+	if err != nil {
+		m.rollbackOpen(ctx)
+		return history.Op{}, &notSent{err}
+	}
+	oldTo, err := parseMySQLLedgerBalance(res[3])
+	if err != nil {
+		m.rollbackOpen(ctx)
+		return history.Op{}, &notSent{err}
+	}
+	if oldFrom < amt {
+		m.rollbackOpen(ctx)
+		return complete(op, history.Fail), nil
+	}
+
+	newFrom := oldFrom - amt
+	newTo := oldTo + amt
+	writeSQL := fmt.Sprintf(
+		"INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v); "+
+			"INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v); "+
+			"COMMIT",
+		kv, fk, newFrom, kv, tk, newTo,
+	)
+	wres, err := m.query(ctx, writeSQL)
+	if err != nil {
+		m.rollbackOpen(ctx)
+		var me *mysqlError
+		if len(wres) < 2 && asMySQLError(err, &me) {
+			return history.Op{}, &mysqlError{code: 1213, sqlstate: "40001", msg: "before commit: " + me.Error()}
+		}
+		return history.Op{}, err
+	}
+	if len(wres) != 3 {
+		m.rollbackOpen(ctx)
+		return history.Op{}, &sentError{fmt.Errorf("mysql: %d results for 3 ledger write statements", len(wres))}
+	}
+	out := complete(op, history.OK)
+	out.Txn = []history.MicroOp{
+		{F: history.MicroRead, Key: fromKey, Value: history.Int(oldFrom)},
+		{F: history.MicroWrite, Key: fromKey, Value: history.Int(newFrom)},
+		{F: history.MicroRead, Key: toKey, Value: history.Int(oldTo)},
+		{F: history.MicroWrite, Key: toKey, Value: history.Int(newTo)},
+	}
+	return out, nil
+}
+
+func (m *MySQL) rollbackOpen(ctx context.Context) {
+	if m.conn != nil {
+		if _, err := m.query(ctx, "ROLLBACK"); err != nil {
+			m.drop()
+		}
+	}
+}
+
+func parseMySQLLedgerBalance(r result) (int64, error) {
+	if len(r.rows) == 1 && len(r.rows[0]) >= 1 && r.rows[0][0] != nil {
+		n, err := strconv.ParseInt(*r.rows[0][0], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("non-integer ledger balance %q: %w", *r.rows[0][0], err)
+		}
+		return n, nil
+	}
+	return DefaultLedgerInitialBalance, nil
 }
 
 func (m *MySQL) txn(ctx context.Context, op history.Op, lists string) (history.Op, error) {

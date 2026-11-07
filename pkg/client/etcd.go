@@ -143,9 +143,126 @@ func (e *Etcd) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 		}
 		return complete(op, history.Fail), nil
 	case history.FTxn:
+		if isLedgerTxn(op) {
+			return e.ledgerTxn(ctx, op)
+		}
 		return e.txn(ctx, op)
 	}
 	return history.Op{}, &statusError{code: 400, body: "unsupported op " + op.F}
+}
+
+type etcdRangeSnap struct {
+	Responses []struct {
+		Range struct {
+			Kvs []struct {
+				Value       string `json:"value"`
+				ModRevision string `json:"mod_revision"`
+			} `json:"kvs"`
+		} `json:"response_range"`
+	} `json:"responses"`
+}
+
+func parseEtcdLedgerEntry(snap etcdRangeSnap, idx int) (bal int64, modRev string, err error) {
+	if idx >= len(snap.Responses) || len(snap.Responses[idx].Range.Kvs) == 0 {
+		return DefaultLedgerInitialBalance, "0", nil
+	}
+	kv := snap.Responses[idx].Range.Kvs[0]
+	raw, err := base64.StdEncoding.DecodeString(kv.Value)
+	if err != nil {
+		return 0, "", err
+	}
+	n, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil {
+		return 0, "", fmt.Errorf("etcd: non-integer ledger balance %q: %w", raw, err)
+	}
+	return n, kv.ModRevision, nil
+}
+
+// ledgerTxn runs a multi-account ledger balance audit (one atomic range
+// snapshot) or an optimistic compare-and-swap double-entry transfer.
+func (e *Etcd) ledgerTxn(ctx context.Context, op history.Op) (history.Op, error) {
+	if readOnly(op) {
+		ranges := make([]map[string]any, len(op.Txn))
+		for i, m := range op.Txn {
+			ranges[i] = map[string]any{"requestRange": map[string]any{"key": b64(e.prefix + m.Key)}}
+		}
+		var snap etcdRangeSnap
+		if err := e.post(ctx, "/v3/kv/txn", map[string]any{"success": ranges}, &snap); err != nil {
+			return history.Op{}, err
+		}
+		if len(snap.Responses) != len(op.Txn) {
+			return history.Op{}, &statusError{code: 502, body: "etcd: short ledger audit response"}
+		}
+		out := complete(op, history.OK)
+		out.Txn = make([]history.MicroOp, len(op.Txn))
+		for i, m := range op.Txn {
+			bal, _, err := parseEtcdLedgerEntry(snap, i)
+			if err != nil {
+				return history.Op{}, &notSent{err}
+			}
+			out.Txn[i] = history.MicroOp{F: history.MicroRead, Key: m.Key, Value: history.Int(bal)}
+		}
+		return out, nil
+	}
+
+	fromKey, toKey, amt, ok := parseTransferAccounts(op)
+	if !ok || fromKey == toKey {
+		return complete(op, history.Fail), nil
+	}
+	fk, tk := b64(e.prefix+fromKey), b64(e.prefix+toKey)
+	for attempt := 0; attempt < 4; attempt++ {
+		var snap etcdRangeSnap
+		ranges := []map[string]any{
+			{"requestRange": map[string]any{"key": fk}},
+			{"requestRange": map[string]any{"key": tk}},
+		}
+		if err := e.post(ctx, "/v3/kv/txn", map[string]any{"success": ranges}, &snap); err != nil {
+			return history.Op{}, &notSent{err}
+		}
+		if len(snap.Responses) != 2 {
+			return history.Op{}, &notSent{fmt.Errorf("etcd: short ledger transfer snapshot (%d responses)", len(snap.Responses))}
+		}
+		oldFrom, revFrom, err := parseEtcdLedgerEntry(snap, 0)
+		if err != nil {
+			return history.Op{}, &notSent{err}
+		}
+		oldTo, revTo, err := parseEtcdLedgerEntry(snap, 1)
+		if err != nil {
+			return history.Op{}, &notSent{err}
+		}
+		if oldFrom < amt {
+			return complete(op, history.Fail), nil
+		}
+		newFrom := oldFrom - amt
+		newTo := oldTo + amt
+		body := map[string]any{
+			"compare": []map[string]any{
+				{"key": fk, "target": "MOD", "result": "EQUAL", "mod_revision": revFrom},
+				{"key": tk, "target": "MOD", "result": "EQUAL", "mod_revision": revTo},
+			},
+			"success": []map[string]any{
+				{"requestPut": map[string]any{"key": fk, "value": b64(strconv.FormatInt(newFrom, 10))}},
+				{"requestPut": map[string]any{"key": tk, "value": b64(strconv.FormatInt(newTo, 10))}},
+			},
+		}
+		var resp struct {
+			Succeeded bool `json:"succeeded"`
+		}
+		if err := e.post(ctx, "/v3/kv/txn", body, &resp); err != nil {
+			return history.Op{}, err
+		}
+		if resp.Succeeded {
+			out := complete(op, history.OK)
+			out.Txn = []history.MicroOp{
+				{F: history.MicroRead, Key: fromKey, Value: history.Int(oldFrom)},
+				{F: history.MicroWrite, Key: fromKey, Value: history.Int(newFrom)},
+				{F: history.MicroRead, Key: toKey, Value: history.Int(oldTo)},
+				{F: history.MicroWrite, Key: toKey, Value: history.Int(newTo)},
+			}
+			return out, nil
+		}
+	}
+	return history.Op{}, &statusError{code: 409, body: "etcd: lost every optimistic commit race"}
 }
 
 // txn runs a list-append transaction optimistically: read every key in one
