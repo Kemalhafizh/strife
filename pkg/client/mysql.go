@@ -724,11 +724,16 @@ func (m *MySQL) ledgerTxn(ctx context.Context, op history.Op, kv string) (histor
 
 	newFrom := oldFrom - amt
 	newTo := oldTo + amt
+	firstKey, firstVal := fk, newFrom
+	secondKey, secondVal := tk, newTo
+	if firstKey > secondKey {
+		firstKey, firstVal, secondKey, secondVal = secondKey, secondVal, firstKey, firstVal
+	}
 	writeSQL := fmt.Sprintf(
 		"INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v); "+
 			"INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v); "+
 			"COMMIT",
-		kv, fk, newFrom, kv, tk, newTo,
+		kv, firstKey, firstVal, kv, secondKey, secondVal,
 	)
 	wres, err := m.query(ctx, writeSQL)
 	if err != nil {

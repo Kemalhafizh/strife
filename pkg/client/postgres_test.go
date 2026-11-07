@@ -139,6 +139,7 @@ func servePG(c net.Conn, auth string, answer func(q string) []byte) {
 			continue
 		}
 		if q == "ROLLBACK" {
+			_ = answer(q)
 			_, _ = c.Write(append(pgTag("ROLLBACK"), pgReady('I')...))
 			continue
 		}
@@ -248,12 +249,15 @@ func TestPostgresClassification(t *testing.T) {
 
 func TestPostgresLedgerTransactions(t *testing.T) {
 	balances := map[string]string{}
-	var queries []string
+	inTxn := false
 	addr := fakePG(t, "trust", func(q string) []byte {
-		queries = append(queries, q)
 		switch {
+		case q == "ROLLBACK":
+			inTxn = false
+			return nil
 		case strings.Contains(q, "SELECT v FROM") && !strings.Contains(q, "COMMIT;"):
 			// Step 1 of a ledger transfer: BEGIN + two SELECTs (stays in 'T').
+			inTxn = true
 			var b []byte
 			b = append(b, pgTag("BEGIN")...)
 			for _, acct := range []string{"acct:0", "acct:1"} {
@@ -266,6 +270,10 @@ func TestPostgresLedgerTransactions(t *testing.T) {
 			}
 			return append(b, pgReady('T')...)
 		case strings.HasPrefix(q, "INSERT INTO"):
+			if !inTxn {
+				return append(pgErr("25P01", "no transaction in progress"), pgReady('I')...)
+			}
+			inTxn = false
 			// Step 2 of a ledger transfer: two upserts + COMMIT.
 			balances["acct:0"] = "600"
 			balances["acct:1"] = "1400"
@@ -319,9 +327,6 @@ func TestPostgresLedgerTransactions(t *testing.T) {
 	overdraft := transfer
 	overdraft.Value = history.Int(800)
 	out = pg.Invoke(context.Background(), overdraft)
-	if out.Type != history.OK && out.Type != history.Fail {
-		t.Fatalf("unexpected overdraft type: %+v", out)
-	}
 	if out.Type != history.Fail {
 		t.Fatalf("overdraft must fail, got %+v", out)
 	}

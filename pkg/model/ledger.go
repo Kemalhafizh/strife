@@ -321,18 +321,32 @@ func (m Ledger) Decide(ops []history.Operation) (bool, []int, string, []string) 
 		}
 	}
 
-	// If an account was read with a value that was never produced by any write
-	// and InitialBalance was not explicitly fixed, infer B_a(0) from that root
-	// read value so custom opening balances work seamlessly.
+	// If an account's very first read observed a value that was never produced
+	// by any write (nor by an indeterminate write) and InitialBalance was not
+	// explicitly fixed, infer B_a(0) from that root read value so custom
+	// opening balances work seamlessly.
 	if m.InitialBalance <= 0 {
+		hasInfoWrite := map[string]bool{}
+		for _, o := range ops {
+			if o.Status() != history.Info {
+				continue
+			}
+			for _, mop := range effectiveMicroOps(o) {
+				if isWriteMicro(mop.F) && mop.Value == nil {
+					hasInfoWrite[mop.Key] = true
+				}
+			}
+		}
+		seenRead := map[string]bool{}
 		for _, o := range ops {
 			if o.Status() != history.OK {
 				continue
 			}
 			for _, mop := range effectiveMicroOps(o) {
-				if isReadMicro(mop.F) && mop.Value != nil && !explicitInit[mop.Key] {
+				if isReadMicro(mop.F) && mop.Value != nil && !explicitInit[mop.Key] && !seenRead[mop.Key] {
+					seenRead[mop.Key] = true
 					v := *mop.Value
-					if len(writtenValues[mop.Key][v]) == 0 && v >= 0 {
+					if !hasInfoWrite[mop.Key] && len(writtenValues[mop.Key][v]) == 0 && v >= 0 {
 						accounts[mop.Key] = v
 						explicitInit[mop.Key] = true
 					}

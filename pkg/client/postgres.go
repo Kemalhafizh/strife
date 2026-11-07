@@ -44,6 +44,7 @@ type Postgres struct {
 	conn         net.Conn
 	rd           *bufio.Reader
 	schema       bool
+	inTxn        bool
 }
 
 // NewPostgres returns a client for one node ("10.0.0.1:5432").
@@ -67,7 +68,7 @@ func (p *Postgres) Close() error {
 	}
 	_ = p.writeMsg('X', nil)
 	err := p.conn.Close()
-	p.conn, p.rd = nil, nil
+	p.conn, p.rd, p.inTxn = nil, nil, false
 	return err
 }
 
@@ -75,7 +76,7 @@ func (p *Postgres) drop() {
 	if p.conn != nil {
 		_ = p.conn.Close()
 	}
-	p.conn, p.rd = nil, nil
+	p.conn, p.rd, p.inTxn = nil, nil, false
 }
 
 // postgresError is an ErrorResponse from the server.
@@ -303,10 +304,15 @@ func (p *Postgres) exec(ctx context.Context, sql string) ([]stmtResult, error) {
 		case 'E':
 			qerr = parseErrorResponse(body)
 		case 'Z':
-			if len(body) == 1 && body[0] != 'I' {
-				// Still inside a (failed) transaction block.
-				if _, err := p.execRaw("ROLLBACK"); err != nil {
-					p.drop()
+			if len(body) == 1 {
+				p.inTxn = body[0] != 'I'
+				if body[0] == 'E' || (qerr != nil && body[0] != 'I') {
+					// Still inside a (failed) transaction block.
+					if b, err := p.execRaw("ROLLBACK"); err != nil {
+						p.drop()
+					} else {
+						p.inTxn = b != 'I'
+					}
 				}
 			}
 			if qerr != nil {
@@ -589,11 +595,16 @@ func (p *Postgres) ledgerTxn(ctx context.Context, op history.Op, kv string) (his
 
 	newFrom := oldFrom - amt
 	newTo := oldTo + amt
+	firstKey, firstVal := fk, newFrom
+	secondKey, secondVal := tk, newTo
+	if firstKey > secondKey {
+		firstKey, firstVal, secondKey, secondVal = secondKey, secondVal, firstKey, firstVal
+	}
 	writeSQL := fmt.Sprintf(
 		"INSERT INTO %s (k, v) VALUES ('%s', %d) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v; "+
 			"INSERT INTO %s (k, v) VALUES ('%s', %d) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v; "+
 			"COMMIT;",
-		kv, fk, newFrom, kv, tk, newTo,
+		kv, firstKey, firstVal, kv, secondKey, secondVal,
 	)
 	wres, err := p.exec(ctx, writeSQL)
 	if err != nil {
@@ -615,9 +626,11 @@ func (p *Postgres) ledgerTxn(ctx context.Context, op history.Op, kv string) (his
 }
 
 func (p *Postgres) rollbackOpen() {
-	if p.conn != nil {
-		if _, err := p.execRaw("ROLLBACK"); err != nil {
+	if p.conn != nil && p.inTxn {
+		if b, err := p.execRaw("ROLLBACK"); err != nil {
 			p.drop()
+		} else {
+			p.inTxn = b != 'I'
 		}
 	}
 }
