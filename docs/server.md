@@ -122,6 +122,7 @@ The request body (up to 32 MiB) can be:
 1. **A raw `report.json`** produced by `strife sim`, `strife run`, `strife check`, or `strife shrink`. Optional `commit` and `branch` metadata can be passed in the query string (`/api/v1/ingest?commit=abc1234&branch=main`).
 2. **A raw `campaign.json`** produced by `strife campaign`.
 3. **An envelope object** combining git metadata with either payload:
+
    ```json
    {
      "commit": "714fbd6",

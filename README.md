@@ -1,5 +1,3 @@
-<div align="center">
-
 # Strife
 
 **Deterministic fault injection, linearizability verification, and transactional anomaly detection for distributed systems.**
@@ -11,8 +9,6 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 [Quick Start](#quick-start) · [Website & Try It](https://kemalhafizh.github.io/strife/) · [Shrinking](#shrinking-failures) · [Models & Checkers](#consistency-models--anomaly-detection) · [Live Clusters & Agent](#live-clusters--strife-agent) · [Benchmarks](docs/BENCHMARKS.md) · [Wasm Workloads](#custom-workloads--wasm-vm) · [Campaigns](#regression-campaigns) · [Attestation & Compliance](#cryptographic-attestation--compliance-dossiers) · [Architecture](#architecture)
-
-</div>
 
 ---
 
@@ -141,7 +137,6 @@ diagnosis: stale read: p3 read 2 returned at 0.012s, but p2 write 3 completed ea
 > [!IMPORTANT]
 > Naive operation dropping can delete the write that produced a value later observed by a read, fabricating a false "unwritten value" violation. `pkg/shrink` enforces an `isSoundHistory` invariant: a write (or `info` write) that supplies the value for a retained read cannot be removed unless the dependent read is removed first.
 
-
 ### 3. Live Schedule Shrinking (`strife shrink --live`)
 
 A real cluster is not deterministic: the same schedule may or may not trigger a bug. `strife shrink --live` re-runs candidate fault schedules on the cluster with delta debugging, counts a candidate as failing if any of `--attempts` runs fails, then re-runs the minimal schedule `--verify` times and reports its reproduction rate. The result is labelled a candidate, never a proof of minimality.
@@ -160,6 +155,7 @@ replay: strife run --config examples/postgres/strife-replicas.json --schedule st
 ```
 
 Here the stale reads from PostgreSQL's asynchronous standbys need no fault at all, which is the useful answer: the bug is the topology, not the partition. `strife run --schedule FILE` replays any recorded or shrunk schedule.
+
 ---
 
 ## Consistency Models & Anomaly Detection
@@ -183,10 +179,7 @@ strife check --history ledger.jsonl --model ledger --out report/
 | `append` | `txn` of `append(k, v)` / `r(k) → [v…]` | Elle-style list-append: version orders recovered from reads, `ww`/`wr`/`rw` and real-time edges, lost appends, incompatible orders, duplicates and internal-consistency checks (~40k–57k txns/s; 0 false positives and 99.81 % of invalid histories caught in a brute-force cross-check, [measured](docs/BENCHMARKS.md#3-checker-correctness)). |
 | `ledger` | `txn` of account transfers & balance audits | Double-entry financial ledger & conservation-of-money checker (`LEDGER-CONSERVATION` $\sum B_i = M_0$, `LEDGER-OVERDRAFT` $B_i < 0$ & concurrent `G2-item` write skew, `LEDGER-DOUBLE-SPEND` across `info` timeout retries, and `LEDGER-UNBALANCED` $\sum \Delta_k \ne 0$). |
 
-<details>
-<summary><strong>Transactional Isolation Levels & Adya Anomaly Classification (<code>--model txn</code>)</strong></summary>
-
-<br>
+### Transactional Isolation Levels & Adya Anomaly Classification (`--model txn`)
 
 The transactional checker ([`pkg/txn`](pkg/txn/txn.go)) reconstructs item versions from write micro-operations and checks for forbidden phenomena defined by Adya (1999):
 
@@ -198,8 +191,6 @@ The transactional checker ([`pkg/txn`](pkg/txn/txn.go)) reconstructs item versio
 - **`G-realtime` (Real-Time Inversion):** Serialization order contradicts wall-clock completion order (`ro` edge), violating `strict-serializable`.
 
 Supported `--isolation` flags: `read-uncommitted`, `read-committed`, `repeatable-read`, `snapshot-isolation`, `serializable`, `strict-serializable`.
-
-</details>
 
 ---
 
@@ -297,10 +288,7 @@ strife campaign --system raft --workload preset:read-heavy --seeds 1..100
 | `preset:sequential-scan` | `sequential` | 70% `read`, 30% `write` | Deterministic key-range traversal |
 | `preset:si-write-skew` | `hotspot` (85% on 25% keys) | 100% multi-key `txn` (`r, r, w`) | Snapshot Isolation write-skew (`G2`) |
 
-<details>
-<summary><strong>WebAssembly 1.0 Plugin ABI & Sandbox Guarantees</strong></summary>
-
-<br>
+### WebAssembly 1.0 Plugin ABI & Sandbox Guarantees
 
 A `.wasm` workload module exports a single pure function:
 
@@ -315,16 +303,16 @@ A `.wasm` workload module exports a single pure function:
 ```
 
 **Return Value Bit Layout (`uint64`):**
+
 - **Bits `0..7`:** Operation code (`0`=read, `1`=write, `2`=cas, `3`=add, `4`=enqueue, `5`=dequeue, `6`=inc, `7`=generate, `8`=txn).
 - **Bits `8..23`:** Key index (`uint16`, taken modulo `keys`).
 - **Bits `24..43`:** Primary value (`20-bit` unsigned integer, taken modulo `values`).
 - **Bits `44..63`:** Auxiliary / expected CAS value (`20-bit` unsigned integer, taken modulo `values`).
 
 **Sandbox Guarantees:**
+
 - Every invocation runs in an isolated stack/memory frame with a default instruction budget of `10,000` instructions (`DefaultMaxFuel`) and a call-stack depth limit of `32`. Infinite loops trap immediately without hanging the simulator.
 - Linear memory is capped at 16 pages (`1 MiB`) with bounds-checked loads and stores.
-
-</details>
 
 ---
 
@@ -495,37 +483,34 @@ schemas/          Versioned JSON Schemas for report.json, history.jsonl and doss
 site/             Interactive product showcase & standalone HTML5 demos (timeline, campaign, dossier)
 ```
 
-<details>
-<summary><strong>CLI Reference & Exit Codes</strong></summary>
-
-<br>
+### CLI Reference & Exit Codes
 
 | Command | Description |
 | :--- | :--- |
 | `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`) |
 | `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect no-regression`) |
 | `strife shrink [flags]` | Minimize a failing simulation (`--seed` / `--report`) or recorded trace (`--history FILE`) to 1-minimality, or a live schedule (`--live --config`) to a candidate reproducer |
-| `strife check [flags]` | Verify a recorded `history.jsonl` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`) and optional `--probes` |
+| `strife check [flags]` | Verify a recorded `history.jsonl` / `history.edn` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`) and optional `--probes` |
 | `strife plan [flags]` | Print the seeded fault schedule and exact host/container commands without executing them |
 | `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`) |
+| `strife doctor [flags]` | Inspect host OS/cgroup capabilities, transports, and cluster endpoint reachability (`--config`, `--json`) |
 | `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent`, `--json`, `--markdown`) |
 | `strife workload [flags]` | List presets (`--list`), compile specs to `.wasm` (`--compile --out`), or inspect `.wasm` plugins (`--inspect`) |
 | `strife keygen [flags]` | Generate an Ed25519 signing keypair (`<prefix>.key` and `<prefix>.pub`) |
 | `strife sign [flags]` | Sign a `report.json` into an `in-toto` v0.1 attestation bundle, or release artifacts (`--release`) |
 | `strife verify [flags]` | Verify a signed `bundle.json` (and optional `history.jsonl`) or a release directory (`--release-dir`) against an Ed25519 public key |
 | `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk` |
-| `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--token`) |
+| `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--token`, `--webhook`, `--max-mttr`, `--min-availability`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 
 **Exit Codes:**
+
 - `0` — `linearizable` (or matches `--expect` / all compliance controls pass)
 - `1` — `violation` (or regression / compliance failure / signature mismatch)
 - `2` — invalid CLI usage or configuration error
 - `3` — `unknown` (checker search budget or timeout reached without a conclusive verdict)
 - `4` — runtime or transport execution error
-
-</details>
 
 ---
 

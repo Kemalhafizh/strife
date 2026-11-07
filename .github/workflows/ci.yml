@@ -145,3 +145,4 @@ jobs:
           print("JUnit ok:", root.get("tests"), "tests,", root.get("failures"), "failures")
           PY
           test -f strife-out/raft-stale-reads-seed2-min/report.html
+

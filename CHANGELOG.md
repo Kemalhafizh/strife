@@ -8,7 +8,8 @@ only gain optional fields.
 
 ## [0.5.0] - 2026-11-07
 
-### Added
+### Added (0.5.0)
+
 - Live cluster settlement & transactional-outbox reconciliation (`workload.model:
   "settlement"` in `strife run` with post-heal atomic `finalSettlementAudit`,
   idempotent `MemoryStore` settlement appends, and
@@ -39,7 +40,8 @@ only gain optional fields.
 
 ## [0.4.0] - 2026-11-07
 
-### Added
+### Added (0.4.0)
+
 - User-space L4 TCP fault-injection proxy (`transport.type: "proxy"` in
   `pkg/transport/proxy.go`): injects `partition`, `latency`, `loss`, `kill`,
   `pause`, `freeze`, and `io-stall` across Linux, macOS, and Windows without
@@ -61,7 +63,8 @@ only gain optional fields.
 
 ## [0.3.0] - 2026-11-07
 
-### Added
+### Added (0.3.0)
+
 - Live cluster double-entry ledger auditing (`workload.model: "ledger"` in
   `strife run`): executes concurrent account-to-account transfers (`acct:i ->
   acct:j`) and full-supply balance audits across PostgreSQL (`SELECT ... FOR
@@ -79,7 +82,8 @@ only gain optional fields.
   (`report.violation`) or an ingested campaign contains violations or seed
   regressions (`campaign.regression` / `campaign.violation`).
 
-### Changed
+### Changed (0.3.0)
+
 - Direct Serialization Graph (`pkg/txn`) construction now uses $O(1)$
   per-vertex edge deduplication and interval-order transitive reduction for
   real-time (`ro`) and write-write (`ww`) edges, accelerating large
@@ -94,7 +98,8 @@ Phase 5 of the [roadmap](docs/ROADMAP.md): every published claim now has a
 job that reproduces it, the clients work against current database versions
 with their default security, and Strife ships as signed releases.
 
-### Added
+### Added (0.2.0)
+
 - `strife bench inject`: measures how late faults land on a real cluster,
   per transport and fault kind, and for strife-agent also the time spent
   inside the agent; the live CI publishes the numbers, collected in
@@ -160,7 +165,8 @@ with their default security, and Strife ships as signed releases.
   WebAssembly playground, history studio, and cryptographic attestation
   verifier.
 
-### Changed
+### Changed (0.2.0)
+
 - Compliance control IDs are now Strife labels (`dora.data-integrity`,
   `soc2.recovery`, `bi-ojk.jejak-audit`…) instead of strings that looked
   like official clause numbers. Scripts that match on the old IDs must be
@@ -173,7 +179,8 @@ with their default security, and Strife ships as signed releases.
 - The register transaction checker only infers version order from real time
   at strict serializability, and reads results from completions.
 
-### Fixed
+### Fixed (0.2.0)
+
 - Agent "jitter" statistics were Unix timestamps, not durations, and the
   published 0.28 ms figure had no benchmark behind it; it is replaced by
   measurements.

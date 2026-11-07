@@ -25,7 +25,7 @@ back up.
 ## Where we are (v0.1)
 
 | Blueprint item | Status |
-|---|---|
+| --- | --- |
 | Deterministic seeder (PRNG, schedules) | ✅ Done, plus a full discrete-event simulator with trace hashes |
 | WGL linearizability checker | ✅ Done: memoization, per-key parallelism, symmetry reduction, brute-force cross-check |
 | Sequential spec models | ✅ Done (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`) |
@@ -82,7 +82,7 @@ still triggers it.
 system):
 
 | System | Faults | ≤ 3 faults | Distribution of minimal fault counts | Median runs / time |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `raft-stale-reads` | partition | **20/20 (100%)** | 1×15, 2×4, 3×1 | 80 / 4.6s |
 | `raft-lease` | clock-skew, partition | **8/10 (80%)** | 2×5, 3×3, 4×2 | 146 / 7.4s |
 | `raft-unsafe-fsync` | kill, io-stall | **7/7 (100%)** | 2×5, 3×2 | 119 / 11.7s |
@@ -155,7 +155,7 @@ Next for shrinking:
   through the GitHub Action:
 
   | Cluster | Faults | Result |
-  |---|---|---|
+  | --- | --- | --- |
   | etcd 3.5, 3 nodes | partition, kill, pause (+ latency, loss where the kernel has netem) | ✅ linearizable, ~16k ops per minute |
   | Valkey 8, primary + 2 async replicas, reads spread over all nodes | partition, pause | ❌ stale reads, as expected (`--expect violation`) |
   | Valkey 8, single primary, AOF | `kill -9` | ✅ linearizable: acknowledged writes survive a process crash |
@@ -216,7 +216,7 @@ GitHub-hosted runner, 3-node etcd; method and full table in
 [`BENCHMARKS.md`](BENCHMARKS.md#1-fault-injection-latency)):
 
 | Fault | `docker exec` P50 | `strife-agent` P50 | Inside the agent (P50) |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | pause | 43.7 ms | 1.36 ms | 372 µs |
 | kill | 44.4 ms | 1.58 ms | 495 µs |
 | partition | 57.9 ms | 4.02 ms | 2.61 ms (still runs `iptables`) |
@@ -378,7 +378,7 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
 ### 5.0 Pay the proof debt ✅
 
 | Claim | Evidence now |
-|---|---|
+| --- | --- |
 | Agent injection latency | `strife bench inject` + the `agent` job: pause 1.36 ms, kill 1.58 ms, partition 4.02 ms at P50 vs 43–58 ms for `docker exec`; the agent-side column separates kernel time (150–500 µs for signals and netem) from the confirmation. The unbacked 0.28 ms table is withdrawn. |
 | PostgreSQL, Kafka, TiDB, MySQL targets | `live.yml` jobs for each, with expected passes and expected violations (G2 at REPEATABLE READ, stale standby reads, MySQL and TiDB-pessimistic REPEATABLE READ not being snapshot isolation, Kafka stale reads after leader changes with no lost records). |
 | cgroup faults | `cgroup` job on cgroup v2 runners: `io.max` verified to stall writes, freeze confirmed through `cgroup.events`, etcd linearizable under both; freeze 9.6 ms and io-stall 8.3 ms P50. |
@@ -476,7 +476,7 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
 These are the claims we use in documentation and marketing:
 
 | Avoid | Use |
-|---|---|
+| --- | --- |
 | "100% identical reproducibility" | "Bit-for-bit replay in the simulator; identical fault schedule and workload on live clusters" |
 | "Millions of events in seconds" | Numbers from the benchmark suite, with the history size and concurrency |
 | "Recording without instrumentation via eBPF" | "Client-side recording; eBPF for server-side observation" |
