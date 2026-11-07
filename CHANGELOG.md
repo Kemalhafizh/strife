@@ -6,6 +6,33 @@ All notable changes to Strife. The format follows
 [`schemas/`](schemas/) are versioned contracts: within a major version they
 only gain optional fields.
 
+## [0.6.0] - 2026-11-07
+
+### Added (0.6.0)
+
+- Multi-tenant registry isolation, time-series SLA analytics, and built-in
+  push client in `strife serve` (`pkg/serve`):
+  - Per-tenant campaign baseline isolation (`tenant` field / `?tenant=` query
+    parameter on `/api/v1/ingest`, `/api/v1/runs`, and `/api/v1/series`).
+  - `GET /api/v1/series` aggregates per-(tenant, target) time-series metrics
+    (`pass_rate`, `avg_availability`, `latest_mttr_p95_ms`, `max_mttr_p95_ms`,
+    and chronological `points`).
+  - `serve.Push` and `--push` / `--push-token` / `--tenant` flags on
+    `strife check` push reports directly to a `strife serve` registry.
+- SARIF 2.1.0 output (`--sarif <file>` in `pkg/report/sarif.go`): maps
+  linearizability, transactional (`G0`, `G1a/b/c`, `G2`, `G2-item`,
+  `G-realtime`), double-entry ledger (`LEDGER-*`), settlement (`SETTLEMENT-*`),
+  and campaign regression violations to structured SARIF rules for GitHub Code
+  Scanning and security dashboards.
+- Bidirectional Jepsen EDN interoperability (`history.WriteEDN` in
+  `pkg/history/edn.go` and `strife check --export-edn <file>`): losslessly
+  exports Strife histories (including `kv`, `append`, `ledger`, and
+  `settlement` transactions) into canonical Jepsen `.edn` format.
+- Interactive `Resilience & Post-Fault Recovery (MTTR)` section in
+  `report.html` (`pkg/report/html.go`): renders overall, healthy-window, and
+  fault-window availability alongside P50/P95/Max MTTR and per-fault recovery
+  timelines.
+
 ## [0.5.0] - 2026-11-07
 
 ### Added (0.5.0)

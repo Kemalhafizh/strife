@@ -453,10 +453,12 @@ func ErrorSuite(name string, err error) Suite {
 // ---------------------------------------------------------------------------
 
 // Outputs writes CI artifacts. Empty paths are skipped. The summary is
-// appended to, as $GITHUB_STEP_SUMMARY expects; the JUnit file is replaced.
+// appended to, as $GITHUB_STEP_SUMMARY expects; the JUnit and SARIF files are
+// replaced.
 type Outputs struct {
 	JUnit   string
 	Summary string
+	SARIF   string
 }
 
 // Write emits suites to every configured output.
@@ -467,6 +469,19 @@ func (o Outputs) Write(suites []Suite) error {
 			return err
 		}
 		if err := WriteJUnit(f, suites); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	if o.SARIF != "" {
+		f, err := os.Create(o.SARIF)
+		if err != nil {
+			return err
+		}
+		if err := WriteSARIF(f, suites); err != nil {
 			f.Close()
 			return err
 		}
@@ -489,4 +504,4 @@ func (o Outputs) Write(suites []Suite) error {
 }
 
 // Enabled reports whether any output is configured.
-func (o Outputs) Enabled() bool { return o.JUnit != "" || o.Summary != "" }
+func (o Outputs) Enabled() bool { return o.JUnit != "" || o.Summary != "" || o.SARIF != "" }

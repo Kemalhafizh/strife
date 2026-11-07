@@ -158,6 +158,9 @@ func ReadEDN(r io.Reader) ([]Op, error) {
 		if val, ok := v.m["value"]; ok {
 			applyEdnValue(&op, val)
 		}
+		if amtVal, ok := v.m["amount"]; ok && amtVal.kind == ednInt && op.Value == nil {
+			op.Value = amtVal.asIntPtr()
+		}
 		ops = append(ops, op)
 	}
 
@@ -434,4 +437,100 @@ func (p *ednParser) readToken() string {
 		p.pos++
 	}
 	return p.src[start:p.pos]
+}
+
+// WriteEDN serializes a history slice into newline-delimited Jepsen EDN maps.
+// The output is losslessly readable by ReadEDN and ReadJSONL.
+func WriteEDN(w io.Writer, ops []Op) error {
+	var b strings.Builder
+	for i, op := range ops {
+		b.Reset()
+		idx := op.Index
+		if idx == 0 && i > 0 {
+			idx = i
+		}
+		fmt.Fprintf(&b, "{:index %d, :type :%s, :f :%s, :process %d, :time %d",
+			idx, string(op.Type), op.F, op.Process, op.Time)
+		if op.Key != "" {
+			fmt.Fprintf(&b, ", :key %s", quoteEDNString(op.Key))
+		}
+		if op.Node != "" {
+			fmt.Fprintf(&b, ", :node %s", quoteEDNString(op.Node))
+		}
+		if op.Error != "" {
+			fmt.Fprintf(&b, ", :error %s", quoteEDNString(op.Error))
+		}
+		switch {
+		case op.F == FTxn:
+			if op.Value != nil {
+				fmt.Fprintf(&b, ", :amount %d", *op.Value)
+			}
+			b.WriteString(", :value [")
+			for j, m := range op.Txn {
+				if j > 0 {
+					b.WriteByte(' ')
+				}
+				fmt.Fprintf(&b, "[:%s %s ", m.F, quoteEDNString(m.Key))
+				if m.Values != nil {
+					b.WriteByte('[')
+					for k, v := range m.Values {
+						if k > 0 {
+							b.WriteByte(' ')
+						}
+						fmt.Fprintf(&b, "%d", v)
+					}
+					b.WriteByte(']')
+				} else if m.Value != nil {
+					fmt.Fprintf(&b, "%d", *m.Value)
+				} else {
+					b.WriteString("nil")
+				}
+				b.WriteByte(']')
+			}
+			b.WriteByte(']')
+		case op.F == FCas && op.Old != nil && op.Value != nil:
+			fmt.Fprintf(&b, ", :value [%d %d]", *op.Old, *op.Value)
+		case op.Values != nil:
+			b.WriteString(", :value [")
+			for j, v := range op.Values {
+				if j > 0 {
+					b.WriteByte(' ')
+				}
+				fmt.Fprintf(&b, "%d", v)
+			}
+			b.WriteByte(']')
+		case op.Value != nil:
+			fmt.Fprintf(&b, ", :value %d", *op.Value)
+		default:
+			b.WriteString(", :value nil")
+		}
+		b.WriteString("}\n")
+		if _, err := io.WriteString(w, b.String()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func quoteEDNString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }

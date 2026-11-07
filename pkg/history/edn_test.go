@@ -61,3 +61,40 @@ func TestReadEDNElleAppendTransactions(t *testing.T) {
 		t.Fatalf("unexpected micro-op 1: %+v", ops[1].Txn[1])
 	}
 }
+
+func TestWriteAndReadEDNRoundTrip(t *testing.T) {
+	orig := []Op{
+		{Index: 0, Process: 0, Type: Invoke, F: FWrite, Key: "k0", Value: Int(10), Time: 100},
+		{Index: 1, Process: 0, Type: OK, F: FWrite, Key: "k0", Value: Int(10), Time: 200},
+		{Index: 2, Process: 1, Type: Invoke, F: FCas, Key: "k0", Old: Int(10), Value: Int(25), Time: 300},
+		{Index: 3, Process: 1, Type: OK, F: FCas, Key: "k0", Old: Int(10), Value: Int(25), Time: 400},
+		{
+			Index: 4, Process: 2, Type: Invoke, F: FTxn, Key: "settlement", Value: Int(501), Time: 500,
+			Txn: []MicroOp{{F: MicroAppend, Key: "ledger", Value: Int(501)}, {F: MicroAppend, Key: "broker", Value: Int(501)}},
+		},
+		{
+			Index: 5, Process: 2, Type: OK, F: FTxn, Key: "settlement", Value: Int(501), Time: 600,
+			Txn: []MicroOp{{F: MicroAppend, Key: "ledger", Value: Int(501)}, {F: MicroAppend, Key: "broker", Value: Int(501)}},
+		},
+		{
+			Index: 6, Process: 3, Type: Invoke, F: FTxn, Key: "settlement", Time: 700,
+			Txn: []MicroOp{{F: MicroRead, Key: "ledger"}, {F: MicroRead, Key: "broker"}},
+		},
+		{
+			Index: 7, Process: 3, Type: OK, F: FTxn, Key: "settlement", Time: 800,
+			Txn: []MicroOp{{F: MicroRead, Key: "ledger", Values: []int64{501}}, {F: MicroRead, Key: "broker", Values: []int64{501}}},
+		},
+	}
+
+	var buf strings.Builder
+	if err := WriteEDN(&buf, orig); err != nil {
+		t.Fatalf("WriteEDN: %v", err)
+	}
+	roundTrip, err := ReadJSONL(strings.NewReader(buf.String()))
+	if err != nil {
+		t.Fatalf("ReadJSONL on WriteEDN output: %v\nEDN:\n%s", err, buf.String())
+	}
+	if Hash(orig) != Hash(roundTrip) {
+		t.Fatalf("round-trip history hash mismatch:\norig=%+v\ngot =%+v\nEDN:\n%s", orig, roundTrip, buf.String())
+	}
+}

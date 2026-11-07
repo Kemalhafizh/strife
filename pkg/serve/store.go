@@ -25,6 +25,7 @@ import (
 // RunEntry is one indexed record in the persistent registry.jsonl log.
 type RunEntry struct {
 	ID                      string          `json:"id"`
+	Tenant                  string          `json:"tenant,omitempty"`
 	Kind                    string          `json:"kind"` // "report" or "campaign"
 	RunKind                 string          `json:"run_kind,omitempty"`
 	Target                  string          `json:"target"`
@@ -118,11 +119,23 @@ func (s *Store) loadExisting() error {
 		if e.Kind == "campaign" {
 			cPath := filepath.Join(s.dir, "runs", e.ID, "campaign.json")
 			if m, err := campaign.LoadManifest(cPath); err == nil {
-				s.baselines[m.System] = m
+				s.baselines[baselineKey(e.Tenant, m.System)] = m
 			}
 		}
 	}
 	return sc.Err()
+}
+
+func normalizeTenant(t string) string {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return "default"
+	}
+	return t
+}
+
+func baselineKey(tenant, system string) string {
+	return normalizeTenant(tenant) + "/" + system
 }
 
 // Dir returns the root directory of the store.
@@ -131,10 +144,15 @@ func (s *Store) Dir() string {
 }
 
 // List returns stored RunEntry items ordered newest-first, optionally filtered
-// by target or kind.
-func (s *Store) List(target, kind string) []RunEntry {
+// by target, kind, and tenant.
+func (s *Store) List(target, kind string, tenant ...string) []RunEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	wantTenant := ""
+	if len(tenant) > 0 {
+		wantTenant = strings.TrimSpace(tenant[0])
+	}
 
 	var out []RunEntry
 	for i := len(s.entries) - 1; i >= 0; i-- {
@@ -143,6 +161,9 @@ func (s *Store) List(target, kind string) []RunEntry {
 			continue
 		}
 		if kind != "" && e.Kind != kind {
+			continue
+		}
+		if wantTenant != "" && normalizeTenant(e.Tenant) != wantTenant {
 			continue
 		}
 		out = append(out, e)
@@ -182,7 +203,7 @@ func (s *Store) Lookup(id string) (RunEntry, map[string]any, error) {
 }
 
 // IngestReport validates, optionally signs, and persists a single-seed Report.
-func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed25519.PrivateKey, signer string) (*IngestResult, error) {
+func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed25519.PrivateKey, signer string, tenant ...string) (*IngestResult, error) {
 	if rep == nil {
 		return nil, fmt.Errorf("serve: report is nil")
 	}
@@ -213,9 +234,14 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	} else if rep.Verdict == checker.Violation {
 		violations = 1
 	}
+	tName := "default"
+	if len(tenant) > 0 {
+		tName = normalizeTenant(tenant[0])
+	}
 
 	entry := RunEntry{
 		ID:          id,
+		Tenant:      tName,
 		Kind:        "report",
 		RunKind:     rep.Kind,
 		Target:      rep.Target,
@@ -273,8 +299,8 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 }
 
 // IngestCampaign validates, compares against the latest baseline for the same
-// target system, and persists a multi-seed campaign Manifest.
-func (s *Store) IngestCampaign(m *campaign.Manifest) (*IngestResult, error) {
+// tenant and target system, and persists a multi-seed campaign Manifest.
+func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestResult, error) {
 	if m == nil {
 		return nil, fmt.Errorf("serve: campaign manifest is nil")
 	}
@@ -287,14 +313,20 @@ func (s *Store) IngestCampaign(m *campaign.Manifest) (*IngestResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	tName := "default"
+	if len(tenant) > 0 {
+		tName = normalizeTenant(tenant[0])
+	}
+	bKey := baselineKey(tName, m.System)
+
 	var comp *campaign.Comparison
-	if prev, ok := s.baselines[m.System]; ok {
+	if prev, ok := s.baselines[bKey]; ok {
 		comp = campaign.Compare(prev, m)
 		m.Comparison = comp
 	} else if m.Comparison != nil {
 		comp = m.Comparison
 	}
-	s.baselines[m.System] = m
+	s.baselines[bKey] = m
 
 	s.seq++
 	now := time.Now().UTC()
@@ -318,6 +350,7 @@ func (s *Store) IngestCampaign(m *campaign.Manifest) (*IngestResult, error) {
 
 	entry := RunEntry{
 		ID:          id,
+		Tenant:      tName,
 		Kind:        "campaign",
 		RunKind:     "campaign",
 		Target:      m.System,
@@ -419,6 +452,126 @@ func (s *Store) LoadDossierInputs(id string) (*report.Report, *campaign.Manifest
 		}
 	}
 	return rep, camp, bundle, nil
+}
+
+// SeriesPoint is one chronological data point in a target's verification history.
+type SeriesPoint struct {
+	ID                  string          `json:"id"`
+	Timestamp           string          `json:"timestamp"`
+	Commit              string          `json:"commit,omitempty"`
+	Verdict             checker.Verdict `json:"verdict"`
+	Passed              int             `json:"passed"`
+	Violations          int             `json:"violations"`
+	Regressions         int             `json:"regressions"`
+	OverallAvailability float64         `json:"overall_availability,omitempty"`
+	MTTRP95Ms           int64           `json:"mttr_p95_ms,omitempty"`
+}
+
+// SeriesSummary aggregates time-series reliability and MTTR metrics for one
+// (tenant, target) pair across ingested runs and campaigns.
+type SeriesSummary struct {
+	Tenant           string          `json:"tenant"`
+	Target           string          `json:"target"`
+	Model            string          `json:"model"`
+	TotalRuns        int             `json:"total_runs"`
+	PassedRuns       int             `json:"passed_runs"`
+	ViolatingRuns    int             `json:"violating_runs"`
+	TotalRegressions int             `json:"total_regressions"`
+	PassRate         float64         `json:"pass_rate"`
+	AvgAvailability  float64         `json:"avg_availability,omitempty"`
+	LatestMTTRP95Ms  int64           `json:"latest_mttr_p95_ms,omitempty"`
+	MaxMTTRP95Ms     int64           `json:"max_mttr_p95_ms,omitempty"`
+	LatestVerdict    checker.Verdict `json:"latest_verdict"`
+	LatestCommit     string          `json:"latest_commit,omitempty"`
+	LatestTimestamp  string          `json:"latest_timestamp"`
+	Points           []SeriesPoint   `json:"points"`
+}
+
+// Series computes per-target time-series summaries ordered by (tenant, target).
+func (s *Store) Series(tenant, target string) []SeriesSummary {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	wantTenant := strings.TrimSpace(tenant)
+	wantTarget := strings.TrimSpace(target)
+
+	type agg struct {
+		sum        SeriesSummary
+		availSum   float64
+		availCount int
+	}
+	byKey := make(map[string]*agg)
+	var keys []string
+
+	for _, e := range s.entries {
+		tName := normalizeTenant(e.Tenant)
+		if wantTenant != "" && tName != wantTenant {
+			continue
+		}
+		if wantTarget != "" && e.Target != wantTarget {
+			continue
+		}
+		k := tName + "/" + e.Target
+		a, ok := byKey[k]
+		if !ok {
+			a = &agg{
+				sum: SeriesSummary{
+					Tenant: tName,
+					Target: e.Target,
+					Model:  e.Model,
+				},
+			}
+			byKey[k] = a
+			keys = append(keys, k)
+		}
+		a.sum.TotalRuns++
+		if e.Verdict == checker.Linearizable {
+			a.sum.PassedRuns++
+		} else if e.Verdict == checker.Violation {
+			a.sum.ViolatingRuns++
+		}
+		a.sum.TotalRegressions += e.Regressions
+		if e.OverallAvailability > 0 {
+			a.availSum += e.OverallAvailability
+			a.availCount++
+		}
+		if e.MTTRP95Ms > 0 {
+			a.sum.LatestMTTRP95Ms = e.MTTRP95Ms
+			if e.MTTRP95Ms > a.sum.MaxMTTRP95Ms {
+				a.sum.MaxMTTRP95Ms = e.MTTRP95Ms
+			}
+		}
+		a.sum.LatestVerdict = e.Verdict
+		if e.Commit != "" {
+			a.sum.LatestCommit = e.Commit
+		}
+		a.sum.LatestTimestamp = e.Timestamp
+		a.sum.Points = append(a.sum.Points, SeriesPoint{
+			ID:                  e.ID,
+			Timestamp:           e.Timestamp,
+			Commit:              e.Commit,
+			Verdict:             e.Verdict,
+			Passed:              e.Passed,
+			Violations:          e.Violations,
+			Regressions:         e.Regressions,
+			OverallAvailability: e.OverallAvailability,
+			MTTRP95Ms:           e.MTTRP95Ms,
+		})
+	}
+
+	slices.Sort(keys)
+	out := make([]SeriesSummary, 0, len(keys))
+	for _, k := range keys {
+		a := byKey[k]
+		if a.sum.TotalRuns > 0 {
+			a.sum.PassRate = float64(a.sum.PassedRuns) / float64(a.sum.TotalRuns)
+		}
+		if a.availCount > 0 {
+			a.sum.AvgAvailability = a.availSum / float64(a.availCount)
+		}
+		out = append(out, a.sum)
+	}
+	return out
 }
 
 func shortFP(h string) string {

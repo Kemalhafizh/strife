@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +49,7 @@ type Server struct {
 // IngestPayload accepts either a wrapped ingest envelope, a raw report.Report,
 // or a raw campaign.Manifest.
 type IngestPayload struct {
+	Tenant   string             `json:"tenant,omitempty"`
 	Commit   string             `json:"commit,omitempty"`
 	Branch   string             `json:"branch,omitempty"`
 	Report   *report.Report     `json:"report,omitempty"`
@@ -91,6 +94,7 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/v1/health", s.handleHealth)
 	mux.HandleFunc("/api/v1/runs", s.handleRuns)
 	mux.HandleFunc("/api/v1/runs/", s.handleRunByID)
+	mux.HandleFunc("/api/v1/series", s.handleSeries)
 	mux.HandleFunc("/api/v1/ingest", s.handleIngest)
 	mux.HandleFunc("/api/v1/webhooks", s.handleWebhooks)
 
@@ -185,10 +189,25 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	target := strings.TrimSpace(r.URL.Query().Get("target"))
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
-	runs := s.store.List(target, kind)
+	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	runs := s.store.List(target, kind, tenant)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": len(runs),
 		"runs":  runs,
+	})
+}
+
+func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	series := s.store.Series(tenant, target)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  len(series),
+		"series": series,
 	})
 }
 
@@ -269,11 +288,15 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
 	commit := strings.TrimSpace(r.URL.Query().Get("commit"))
 	branch := strings.TrimSpace(r.URL.Query().Get("branch"))
 
 	var env IngestPayload
 	if err := json.Unmarshal(body, &env); err == nil && (env.Report != nil || env.Campaign != nil) {
+		if env.Tenant != "" {
+			tenant = env.Tenant
+		}
 		if env.Commit != "" {
 			commit = env.Commit
 		}
@@ -314,9 +337,9 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		if branch != "" && env.Campaign.Branch == "" {
 			env.Campaign.Branch = branch
 		}
-		res, err2 = s.store.IngestCampaign(env.Campaign)
+		res, err2 = s.store.IngestCampaign(env.Campaign, tenant)
 	} else {
-		res, err2 = s.store.IngestReport(env.Report, commit, branch, s.privKey, s.cfg.Signer)
+		res, err2 = s.store.IngestReport(env.Report, commit, branch, s.privKey, s.cfg.Signer, tenant)
 	}
 	if err2 != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err2.Error()})
@@ -324,6 +347,63 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	res.Webhooks = s.notifyWebhooks(res, env.Report)
 	writeJSON(w, http.StatusCreated, res)
+}
+
+// Push sends a Report or Campaign Manifest to a remote strife serve registry
+// endpoint (either a base URL like "http://127.0.0.1:8080" or a full
+// "/api/v1/ingest" URL).
+func Push(ctx context.Context, registryURL, token, tenant, commit, branch string, artifact any) (*IngestResult, error) {
+	u := strings.TrimSpace(registryURL)
+	if u == "" {
+		return nil, fmt.Errorf("serve: empty registry URL")
+	}
+	u = strings.TrimRight(u, "/")
+	if !strings.HasSuffix(u, "/api/v1/ingest") {
+		u += "/api/v1/ingest"
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return nil, err
+	}
+	q := parsed.Query()
+	if tenant != "" {
+		q.Set("tenant", tenant)
+	}
+	if commit != "" {
+		q.Set("commit", commit)
+	}
+	if branch != "" {
+		q.Set("branch", branch)
+	}
+	parsed.RawQuery = q.Encode()
+
+	body, err := json.Marshal(artifact)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("serve: push failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
+	}
+	var out IngestResult
+	if err := json.Unmarshal(respBytes, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

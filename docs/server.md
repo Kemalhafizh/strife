@@ -113,6 +113,14 @@ curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?framewor
 curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?format=html" -o dossier.html
 ```
 
+### `GET /api/v1/series`
+
+Returns aggregated time-series reliability and post-heal MTTR trends per `(tenant, target)` across all stored runs and campaigns. Supports `?tenant=<name>` and `?target=<name>` filters.
+
+```sh
+curl -fsSL "http://127.0.0.1:8080/api/v1/series?tenant=default"
+```
+
 ### `POST /api/v1/ingest`
 
 Ingests a report or campaign into the registry. If `--token` is set on the server, the request must include `Authorization: Bearer <token>`.

@@ -480,6 +480,12 @@ func maxf(a, b float64) float64 {
 
 var page = template.Must(template.New("report").Funcs(template.FuncMap{
 	"t": fmtTime,
+	"pct": func(v float64) string {
+		return fmt.Sprintf("%.2f%%", v*100)
+	},
+	"dur": func(d time.Duration) string {
+		return d.Round(100 * time.Microsecond).String()
+	},
 	"last": func(n int, s []checker.Step) []checker.Step {
 		if len(s) > n {
 			return s[len(s)-n:]
@@ -689,6 +695,28 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
 <div class="card"><table><tr><th>#</th><th>Start</th><th>End</th><th>Fault</th></tr>
 {{range .FaultRows}}<tr><td>{{.ID}}</td><td>{{.Start}}</td><td>{{.End}}</td><td>{{.Description}}</td></tr>{{end}}
 </table></div>{{end}}
+
+{{with .R.Resilience}}<h2>Resilience &amp; Post-Fault Recovery (MTTR)</h2>
+<div class="card">
+  <table>
+    <tr><th>Overall Availability</th><th>Healthy-Window Availability</th><th>Fault-Window Availability</th><th>MTTR P50</th><th>MTTR P95</th><th>MTTR Max</th></tr>
+    <tr>
+      <td><b>{{pct .OverallAvailability}}</b></td>
+      <td>{{pct .HealthyWindowAvailability}}</td>
+      <td>{{pct .FaultWindowAvailability}}</td>
+      <td><code>{{dur .MTTR.P50}}</code></td>
+      <td><code>{{dur .MTTR.P95}}</code></td>
+      <td><code>{{dur .MTTR.Max}}</code></td>
+    </tr>
+  </table>
+  {{if .Recoveries}}
+  <p class="muted" style="margin-top:12px">Per-fault recovery latency after fault heal:</p>
+  <table>
+    <tr><th>Fault #</th><th>Kind</th><th>Healed At</th><th>Recovered At</th><th>MTTR</th><th>Recovered</th></tr>
+    {{range .Recoveries}}<tr><td>{{.FaultID}}</td><td><code>{{.Kind}}</code></td><td>{{dur .HealedAt}}</td><td>{{if .RecoveredOK}}{{dur .Recovered}}{{else}}—{{end}}</td><td><code>{{dur .MTTR}}</code></td><td>{{if .RecoveredOK}}yes{{else}}no{{end}}</td></tr>{{end}}
+  </table>
+  {{end}}
+</div>{{end}}
 
 {{if or .R.Findings .R.Probes}}<h2>Server-Side Probes &amp; Root-Cause Attribution</h2>
 <div class="card">

@@ -206,3 +206,37 @@ func TestOutputsAppendSummaryAndReplaceJUnit(t *testing.T) {
 		t.Fatal("empty outputs are disabled")
 	}
 }
+
+func TestWriteSARIF(t *testing.T) {
+	dir := t.TempDir()
+	sarifPath := filepath.Join(dir, "strife.sarif")
+	s := SuiteFromReport(violatingReport(), time.Second)
+	s.Cases = append(s.Cases, Case{
+		Name:    "settlement",
+		Class:   "outbox-dual-write",
+		Status:  Failed,
+		Message: "SETTLEMENT-ATOMICITY: settlement ID 101 missing from broker",
+	})
+	o := Outputs{SARIF: sarifPath}
+	if !o.Enabled() {
+		t.Fatal("expected SARIF output to be enabled")
+	}
+	if err := o.Write([]Suite{s}); err != nil {
+		t.Fatalf("Write SARIF: %v", err)
+	}
+	raw, err := os.ReadFile(sarifPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		`"version": "2.1.0"`,
+		`"STRIFE-LINEARIZABILITY"`,
+		`"STRIFE-SETTLEMENT-ATOMICITY"`,
+		`"STRIFE-INCONCLUSIVE"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("SARIF output missing %s:\n%s", want, text)
+		}
+	}
+}

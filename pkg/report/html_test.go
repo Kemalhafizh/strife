@@ -212,3 +212,24 @@ func TestHTMLEmptyHistory(t *testing.T) {
 		t.Errorf("expected valid HTML generated on empty history")
 	}
 }
+
+func TestHTMLResilienceAndMTTRSection(t *testing.T) {
+	rep := sampleViolatingReport()
+	ops := sampleTestOps()
+	rep.Resilience = ComputeResilience(rep.Schedule, nil, ops)
+
+	var buf bytes.Buffer
+	if err := HTML(&buf, rep, ops); err != nil {
+		t.Fatalf("HTML() error: %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		"Resilience &amp; Post-Fault Recovery (MTTR)",
+		"Overall Availability",
+		"MTTR P95",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML missing resilience snippet %q", want)
+		}
+	}
+}

@@ -442,3 +442,70 @@ func TestServeComplianceDossierEndpointAndSLABreachWebhook(t *testing.T) {
 		t.Fatalf("expected HTML compliance dossier, got status=%d", hResp.StatusCode)
 	}
 }
+
+func TestServeMultiTenantIsolationSeriesAndPush(t *testing.T) {
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   t.TempDir(),
+		Token:      "push-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	// Tenant A baseline campaign (passes seed 1)
+	campA := &campaign.Manifest{
+		Tool:       "strife",
+		Version:    "0.6.0",
+		System:     "raft-ledger",
+		TotalSeeds: 1,
+		Passed:     1,
+		Seeds:      []campaign.SeedRecord{{Seed: 1, Verdict: checker.Linearizable, Ops: 50, TraceHash: "t1"}},
+	}
+	resA, err := Push(context.Background(), baseURL, "push-secret", "bank-alpha", "c1", "main", campA)
+	if err != nil {
+		t.Fatalf("Push tenant A: %v", err)
+	}
+	if resA.Entry.Tenant != "bank-alpha" || resA.Entry.Regressions != 0 {
+		t.Fatalf("unexpected tenant A entry: %+v", resA.Entry)
+	}
+
+	// Tenant B campaign on the SAME system ("raft-ledger") where seed 1 violates:
+	// Because Tenant B has no prior baseline of its own, it must NOT be diffed against Tenant A's baseline!
+	campB := &campaign.Manifest{
+		Tool:       "strife",
+		Version:    "0.6.0",
+		System:     "raft-ledger",
+		TotalSeeds: 1,
+		Violations: 1,
+		Seeds:      []campaign.SeedRecord{{Seed: 1, Verdict: checker.Violation, Ops: 50, TraceHash: "t2"}},
+	}
+	resB, err := Push(context.Background(), baseURL, "push-secret", "fintech-beta", "c2", "main", campB)
+	if err != nil {
+		t.Fatalf("Push tenant B: %v", err)
+	}
+	if resB.Entry.Tenant != "fintech-beta" || resB.Entry.Regressions != 0 {
+		t.Fatalf("tenant B must be isolated from tenant A's baseline, got: %+v", resB.Entry)
+	}
+
+	// Query GET /api/v1/series?tenant=bank-alpha
+	sResp, err := http.Get(baseURL + "/api/v1/series?tenant=bank-alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sBody, _ := io.ReadAll(sResp.Body)
+	sResp.Body.Close()
+	if sResp.StatusCode != http.StatusOK || !strings.Contains(string(sBody), `"tenant": "bank-alpha"`) || strings.Contains(string(sBody), "fintech-beta") {
+		t.Fatalf("unexpected /api/v1/series response: %s", string(sBody))
+	}
+}

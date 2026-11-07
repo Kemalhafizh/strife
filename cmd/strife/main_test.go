@@ -476,4 +476,18 @@ func TestDoctorAndSettlementAndEDNCheck(t *testing.T) {
 	if code != exitOK || !strings.Contains(out, "verdict: LINEARIZABLE") {
 		t.Fatalf("check on EDN history failed (%d):\n%s", code, out)
 	}
+
+	// 4. strife check --export-edn and --sarif
+	exportedEDN := filepath.Join(dir, "exported.edn")
+	sarifOut := filepath.Join(dir, "check.sarif")
+	code, out = runCLI(t, "check", "--history", ednFile, "--model", "kv", "--export-edn", exportedEDN, "--sarif", sarifOut)
+	if code != exitOK || !strings.Contains(out, "exported:") {
+		t.Fatalf("check --export-edn --sarif failed (%d):\n%s", code, out)
+	}
+	if _, err := os.Stat(exportedEDN); err != nil {
+		t.Fatalf("missing exported EDN file: %v", err)
+	}
+	if _, err := os.Stat(sarifOut); err != nil {
+		t.Fatalf("missing SARIF file: %v", err)
+	}
 }

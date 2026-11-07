@@ -252,6 +252,7 @@ func ciFlags(fs *flag.FlagSet) *report.Outputs {
 	o := &report.Outputs{}
 	fs.StringVar(&o.JUnit, "junit", "", "write a JUnit XML report here (for CI test reporting)")
 	fs.StringVar(&o.Summary, "summary", "", "append a Markdown summary here (e.g. \"$GITHUB_STEP_SUMMARY\")")
+	fs.StringVar(&o.SARIF, "sarif", "", "write a SARIF 2.1.0 report here (for GitHub Code Scanning / security dashboards)")
 	return o
 }
 
@@ -899,6 +900,10 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
 	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn and append): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
 	out := fs.String("out", "", "write a report directory here")
+	exportEDN := fs.String("export-edn", "", "optional path to export the parsed history in canonical Jepsen EDN format")
+	pushURL := fs.String("push", "", "optional strife serve registry URL to push the checked report to")
+	pushToken := fs.String("push-token", "", "optional Bearer token for --push")
+	tenant := fs.String("tenant", "", "optional tenant namespace for --push")
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
 	timeout := fs.Duration("check-timeout", 0, "wall-clock budget per key (0 = none)")
 	ci := ciFlags(fs)
@@ -928,6 +933,20 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	ops, err := history.ReadJSONL(r)
 	if err != nil {
 		return exitError, err
+	}
+	if *exportEDN != "" {
+		ef, err := os.Create(*exportEDN)
+		if err != nil {
+			return exitError, err
+		}
+		if err := history.WriteEDN(ef, ops); err != nil {
+			ef.Close()
+			return exitError, err
+		}
+		if err := ef.Close(); err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "exported: %s (Jepsen EDN, %d ops)\n", *exportEDN, len(ops))
 	}
 	var probeEvents []probe.Event
 	if *probesPath != "" {
@@ -974,6 +993,13 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 			return exitError, err
 		}
 		fmt.Fprintf(stdout, "report:  %s\n", filepath.Join(*out, "report.html"))
+	}
+	if *pushURL != "" {
+		ing, err := serve.Push(context.Background(), *pushURL, *pushToken, *tenant, "", "", rr)
+		if err != nil {
+			return exitError, err
+		}
+		fmt.Fprintf(stdout, "pushed:  %s (tenant %s)\n", ing.Entry.ID, ing.Entry.Tenant)
 	}
 	return emitCI(*ci, verdictCode(rep.Verdict), nil, report.SuiteFromReport(rr, time.Since(start)))
 }
