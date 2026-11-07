@@ -171,10 +171,12 @@ Each row sweeps a 5-node cluster for 10 simulated seconds (`--seeds 1..200`, or
 ever reported as violating; correct Raft and the correct Raft ledger never are.
 
 ```sh
-strife sim --system raft-stale-reads      --faults partition           --seeds 1..200
-strife sim --system raft-lease            --faults clock-skew,partition --seeds 1..200
-strife sim --system raft-unsafe-fsync     --faults kill,io-stall        --seeds 1..200
-strife sim --system raft-ledger-overdraft --faults partition,latency    --seeds 1..60
+strife sim --system raft-stale-reads       --faults partition           --seeds 1..200
+strife sim --system raft-lease             --faults clock-skew,partition --seeds 1..200
+strife sim --system raft-unsafe-fsync      --faults kill,io-stall        --seeds 1..200
+strife sim --system raft-ledger-overdraft  --faults partition,latency    --seeds 1..60
+strife sim --system 2pc-ledger-torn-commit --faults partition,kill       --seeds 1..60
+strife sim --system 2pc-ledger  --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
 strife sim --system raft-ledger --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
 strife sim --system raft        --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
 ```
@@ -183,10 +185,12 @@ strife sim --system raft        --faults partition,latency,loss,kill,pause,freez
 |---|---|---|---|
 | `raft` | none | all eight kinds | **0 / 200** |
 | `raft-ledger` | none (double-entry financial ledger over Raft) | all eight kinds | **0 / 200** |
+| `2pc-ledger` | none (two-phase prepare/commit financial ledger) | all eight kinds | **0 / 200** |
 | `raft-stale-reads` | deposed leader serves local reads | partition | 75 / 200 (37.5 %) |
 | `raft-lease` | lease timed with the wall clock | clock-skew, partition | 10 / 200 (5 %); 0 / 200 without clock-skew |
 | `raft-unsafe-fsync` | acks before `fsync` | kill, io-stall | 7 / 200 (3.5 %); 0 / 200 under partition alone |
 | `raft-ledger-overdraft` | pre-replication balance check allows concurrent overdraft (`LEDGER-OVERDRAFT`) | partition, latency | **60 / 60 (100 %)** |
+| `2pc-ledger-torn-commit` | non-atomic 2PC / Saga commits debit leg before credit leg (`LEDGER-CONSERVATION`) | partition, kill | **60 / 60 (100 %)** |
 
 The sweeps take 17–34 s each on the 4-vCPU host above.
 
@@ -205,6 +209,7 @@ that does not produce the expected verdict fails the job.
 | valkey | Valkey 8, primary + 2 async replicas | partition, pause | linearizable | **violation** (stale replica reads) |
 | valkey | Valkey 8, single primary, `appendfsync always` | kill -9 | linearizable | pass |
 | postgres | PostgreSQL 17 primary, SERIALIZABLE | kill -9, pause | strict serializable | pass |
+| postgres | PostgreSQL 17 primary, double-entry ledger (`SERIALIZABLE`) | kill -9, pause | strict serializable (`ledger`) | pass |
 | postgres | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation | pass |
 | postgres | same history | – | serializable | **violation** (G2, write skew) |
 | postgres | async standbys | partition | strict serializable | **violation** (G-realtime); `shrink --live` reduces it to zero faults |

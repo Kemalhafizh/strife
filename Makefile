@@ -20,10 +20,12 @@ lint:
 chaos: build
 	./bin/strife sim --system raft --seeds 1..200 --determinism --expect linearizable --out ""
 	./bin/strife sim --system raft-ledger --seeds 1..50 --determinism --expect linearizable --out ""
+	./bin/strife sim --system 2pc-ledger --seeds 1..50 --determinism --expect linearizable --out ""
 	./bin/strife sim --system raft-stale-reads --faults partition --seeds 1..50 --expect violation --out ""
 	./bin/strife sim --system raft-lease --faults clock-skew,partition --seeds 1..200 --expect violation --out ""
 	./bin/strife sim --system raft-unsafe-fsync --faults kill,io-stall --seeds 1..200 --expect violation --out ""
 	./bin/strife sim --system raft-ledger-overdraft --faults partition,latency --seeds 1..20 --expect violation --out ""
+	./bin/strife sim --system 2pc-ledger-torn-commit --faults partition,kill --seeds 1..20 --expect violation --out ""
 	./bin/strife shrink --system raft-stale-reads --faults partition --seed 2 --out "" ; test $$? -eq 1
 
 clean:

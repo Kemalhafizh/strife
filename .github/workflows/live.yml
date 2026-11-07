@@ -250,6 +250,13 @@ jobs:
           out: live-out/pg-primary
           junit: live-out/pg-primary.xml
           artifact-name: live-pg-primary
+      - name: double-entry ledger transfers conserve money under kill -9 and pauses
+        uses: ./
+        with:
+          command: run --config examples/postgres/strife-ledger.json --duration 45s --expect linearizable --quiet
+          out: live-out/pg-ledger
+          junit: live-out/pg-ledger.xml
+          artifact-name: live-pg-ledger
       - name: REPEATABLE READ satisfies snapshot isolation
         uses: ./
         with:

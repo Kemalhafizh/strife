@@ -47,6 +47,7 @@ var presets = []struct {
 	{"stale-reads", bridge.SimRequest{System: "raft-stale-reads", Faults: "partition", Seed: 2}},
 	{"lease", bridge.SimRequest{System: "raft-lease", Faults: "clock-skew,partition", Seed: 2}},
 	{"ledger-overdraft", bridge.SimRequest{System: "raft-ledger-overdraft", Faults: "partition,latency", Seed: 1}},
+	{"torn-commit", bridge.SimRequest{System: "2pc-ledger-torn-commit", Faults: "partition,kill", Seed: 1}},
 	{"correct", bridge.SimRequest{System: "raft", Faults: "all", Seed: 7}},
 }
 
