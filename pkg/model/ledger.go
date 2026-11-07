@@ -649,7 +649,16 @@ func (m Ledger) Decide(ops []history.Operation) (bool, []int, string, []string) 
 	if level == "" {
 		level = txn.LevelSerializable
 	}
-	rep := txn.Check(txn.FromOperations(ops), level)
+	txns := txn.FromOperations(ops)
+	if len(accounts) > 0 {
+		var initOps []txn.MicroOp
+		for acct, initB := range accounts {
+			v := initB
+			initOps = append(initOps, txn.MicroOp{Kind: txn.OpWrite, Key: acct, Value: &v})
+		}
+		txns = append([]txn.Txn{{ID: -1, Status: history.Info, Ops: initOps}}, txns...)
+	}
+	rep := txn.Check(txns, level)
 	if rep.Verdict == txn.Violation {
 		idToIdx := make(map[int]int, len(ops))
 		for i, o := range ops {

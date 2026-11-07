@@ -214,3 +214,40 @@ func TestLedgerDoubleSpendAcrossTimeoutRetry(t *testing.T) {
 		t.Fatalf("expected 2-op witness [0, 1], got %v", witness)
 	}
 }
+
+func TestLedgerIndeterminateWriteDoesNotCauseFalseG2(t *testing.T) {
+	// T0 writes acct:0 = 1200; T1 consumes acct:0 = 1200 -> 900; T2 is an
+	// indeterminate (Info) transfer with nil write values that restores
+	// acct:0 = 1200 on the server; T3 then consumes acct:0 = 1200 -> 800.
+	ops := []history.Operation{
+		makeTxnOp(0, 0, 10, 20, history.OK, "acct:1->acct:0", []history.MicroOp{
+			{F: "r", Key: "acct:1", Value: i64(1000)},
+			{F: "w", Key: "acct:1", Value: i64(800)},
+			{F: "r", Key: "acct:0", Value: i64(1000)},
+			{F: "w", Key: "acct:0", Value: i64(1200)},
+		}),
+		makeTxnOp(1, 1, 30, 40, history.OK, "acct:0->acct:1", []history.MicroOp{
+			{F: "r", Key: "acct:0", Value: i64(1200)},
+			{F: "w", Key: "acct:0", Value: i64(900)},
+			{F: "r", Key: "acct:1", Value: i64(800)},
+			{F: "w", Key: "acct:1", Value: i64(1100)},
+		}),
+		makeTxnOp(2, 2, 50, history.Infinity, history.Info, "acct:1->acct:0", []history.MicroOp{
+			{F: "r", Key: "acct:1", Value: nil},
+			{F: "w", Key: "acct:1", Value: nil},
+			{F: "r", Key: "acct:0", Value: nil},
+			{F: "w", Key: "acct:0", Value: nil},
+		}),
+		makeTxnOp(3, 3, 70, 80, history.OK, "acct:0->acct:1", []history.MicroOp{
+			{F: "r", Key: "acct:0", Value: i64(1200)},
+			{F: "w", Key: "acct:0", Value: i64(800)},
+			{F: "r", Key: "acct:1", Value: i64(800)},
+			{F: "w", Key: "acct:1", Value: i64(1200)},
+		}),
+	}
+
+	m := model.Ledger{InitialBalance: 1000}
+	if bad, witness, diag, kinds := m.Decide(ops); bad {
+		t.Fatalf("expected linearizable ledger history, got violation: %s (witness=%v, kinds=%v)", diag, witness, kinds)
+	}
+}

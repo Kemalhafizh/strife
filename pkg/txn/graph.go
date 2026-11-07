@@ -119,7 +119,9 @@ func BuildGraph(txns []Txn) *Graph { return buildGraph(txns, true) }
 func buildGraph(txns []Txn, realtime bool) *Graph {
 	g := NewGraph()
 	for _, t := range txns {
-		g.AddTxn(t)
+		if t.ID >= 0 {
+			g.AddTxn(t)
+		}
 	}
 
 	// 1. Index writers: writers[key][val] -> TxnID
@@ -130,6 +132,7 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 	writesByKey := make(map[string][]writeEntry)
 	writerOfVal := make(map[string]map[int64]int) // key -> val -> txnID
 	ambiguous := make(map[string]map[int64]bool)  // values with several writers
+	unknownWrite := make(map[string]bool)         // keys with indeterminate (Value==nil) writes
 
 	for _, t := range txns {
 		if t.Status == history.Fail {
@@ -143,12 +146,21 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 					writerOfVal[k] = make(map[int64]int)
 					ambiguous[k] = make(map[int64]bool)
 				}
-				if prev, dup := writerOfVal[k][v]; dup && prev != t.ID {
+				if prev, dup := writerOfVal[k][v]; (dup && prev != t.ID) || t.ID < 0 {
 					ambiguous[k][v] = true
 				}
 				writerOfVal[k][v] = t.ID
-				writesByKey[k] = append(writesByKey[k], writeEntry{txnID: t.ID, val: v})
+				if t.ID >= 0 {
+					writesByKey[k] = append(writesByKey[k], writeEntry{txnID: t.ID, val: v})
+				}
+			} else if op.Kind == OpWrite && op.Value == nil && t.Status == history.Info {
+				unknownWrite[op.Key] = true
 			}
+		}
+	}
+	for k := range unknownWrite {
+		for v := range writerOfVal[k] {
+			ambiguous[k][v] = true
 		}
 	}
 
@@ -292,6 +304,9 @@ func buildGraph(txns []Txn, realtime bool) *Graph {
 			}
 			k := op.Key
 			if op.Value == nil {
+				if reader.Status != history.OK {
+					continue
+				}
 				// Reader observed initial state: anti-depends on every writer of k
 				for _, w := range writesByKey[k] {
 					if reader.ID != w.txnID {
