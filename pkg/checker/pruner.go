@@ -423,7 +423,7 @@ func (p *kvPruner) rankCandidates(m model.Model, curState model.State, headNext,
 			}
 			bestW := -1
 			for _, w := range p.creatorsByCall[wantV] {
-				if w == targetOp || p.lin.has(w) || p.ops[w].Call > rMin.time {
+				if w == targetOp || p.lin.has(w) || p.ops[w].Call > rMin.time || p.ops[w].Return == history.Infinity {
 					continue
 				}
 				if okW, nextW := m.Step(curState, p.ops[w].Input, p.ops[w].Output); okW && p.firstBlocker(m, w, curState, nextW, rMin) < 0 {
@@ -460,7 +460,7 @@ func (p *kvPruner) rankCandidates(m model.Model, curState model.State, headNext,
 			v := queue[0]
 			queue = queue[1:]
 			for c := headNext; c != nil && c.call; c = c.next {
-				if p.ops[c.id].Input.F == history.FCas && p.createVID[c.id] == v {
+				if p.ops[c.id].Return != history.Infinity && p.ops[c.id].Input.F == history.FCas && p.createVID[c.id] == v {
 					if u := p.obsVID[c.id]; u >= 0 && dist[u] < 0 {
 						dist[u] = dist[v] + 1
 						queue = append(queue, u)
@@ -473,6 +473,11 @@ func (p *kvPruner) rankCandidates(m model.Model, curState model.State, headNext,
 	for i := range cands {
 		id := cands[i].e.id
 		nextV := p.vid(cands[i].next)
+		if p.ops[id].Return == history.Infinity {
+			cands[i].lock = true
+			cands[i].prio = 2_000_000_000_000 + p.ops[id].Call
+			continue
+		}
 		hasOpenObs := false
 		if nextV >= 0 {
 			for _, r := range p.observersByRet[nextV] {
