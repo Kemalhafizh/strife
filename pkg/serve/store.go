@@ -219,9 +219,16 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	seq := s.seq + 1
+	seq := s.seq
+	var id string
+	for {
+		seq++
+		id = fmt.Sprintf("run-%04d-%s", seq, shortFP(rep.Fingerprint))
+		if _, exists := s.byID[id]; !exists {
+			break
+		}
+	}
 	now := time.Now().UTC()
-	id := fmt.Sprintf("run-%04d-%s", seq, shortFP(rep.Fingerprint))
 	runDir := filepath.Join(s.dir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
@@ -339,9 +346,16 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 		comp = m.Comparison
 	}
 
-	seq := s.seq + 1
+	seq := s.seq
+	var id string
+	for {
+		seq++
+		id = fmt.Sprintf("camp-%04d-%s", seq, shortFP(m.Fingerprint))
+		if _, exists := s.byID[id]; !exists {
+			break
+		}
+	}
 	now := time.Now().UTC()
-	id := fmt.Sprintf("camp-%04d-%s", seq, shortFP(m.Fingerprint))
 	runDir := filepath.Join(s.dir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err

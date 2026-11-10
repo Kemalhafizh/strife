@@ -331,7 +331,10 @@ func Namespace(cfg *Config, now time.Time) string {
 
 func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workload.Plugin, rot *keyRotation, factory client.Factory, rec *history.Recorder, until time.Time, logf func(string, ...any)) {
 	w := cfg.Workload
-	node := slot % len(cfg.Nodes)
+	node := 0
+	if len(cfg.Nodes) > 0 {
+		node = slot % len(cfg.Nodes)
+	}
 	c, err := factory(node)
 	if err != nil {
 		logf("client %d: %v", slot, err)
@@ -539,8 +542,12 @@ func finalLedgerAudit(ctx context.Context, cfg *Config, factory client.Factory, 
 		micro[i] = history.MicroOp{F: history.MicroRead, Key: fmt.Sprintf("acct:%d", i)}
 	}
 	process := 1 << 30
-	for attempt := 0; attempt < 3*len(cfg.Nodes) && ctx.Err() == nil; attempt++ {
-		node := attempt % len(cfg.Nodes)
+	numNodes := len(cfg.Nodes)
+	if numNodes == 0 {
+		numNodes = 1
+	}
+	for attempt := 0; attempt < 3*numNodes && ctx.Err() == nil; attempt++ {
+		node := attempt % numNodes
 		c, err := factory(node)
 		if err != nil {
 			continue
@@ -557,7 +564,7 @@ func finalLedgerAudit(ctx context.Context, cfg *Config, factory client.Factory, 
 		cancel()
 		_ = c.Close()
 		out.Process = process
-		if out.Node == "" {
+		if out.Node == "" && node < len(cfg.Nodes) {
 			out.Node = cfg.Nodes[node].Name
 		}
 		rec.Record(out)
@@ -642,10 +649,14 @@ func finalReads(ctx context.Context, cfg *Config, factory client.Factory, rec *h
 		}
 	}()
 	missing := 0
+	readNodes := len(cfg.Nodes)
+	if readNodes == 0 {
+		readNodes = 1
+	}
 	for _, k := range sorted {
 		ok := false
-		for attempt := 0; attempt < 3*len(cfg.Nodes) && !ok && ctx.Err() == nil; attempt++ {
-			node := attempt % len(cfg.Nodes)
+		for attempt := 0; attempt < 3*readNodes && !ok && ctx.Err() == nil; attempt++ {
+			node := attempt % readNodes
 			c, found := clients[node]
 			if !found {
 				var err error
@@ -659,7 +670,7 @@ func finalReads(ctx context.Context, cfg *Config, factory client.Factory, rec *h
 			out := c.Invoke(octx, op)
 			cancel()
 			out.Process = process
-			if out.Node == "" {
+			if out.Node == "" && node < len(cfg.Nodes) {
 				out.Node = cfg.Nodes[node].Name
 			}
 			rec.Record(out)

@@ -103,14 +103,14 @@ func ReadEDN(r io.Reader) ([]Op, error) {
 			continue
 		}
 		var typ Type
-		switch typStr {
-		case "invoke":
+		switch {
+		case strings.HasSuffix(typStr, "invoke"):
 			typ = Invoke
-		case "ok":
+		case strings.HasSuffix(typStr, "ok"):
 			typ = OK
-		case "fail":
+		case strings.HasSuffix(typStr, "fail"):
 			typ = Fail
-		case "info":
+		case strings.HasSuffix(typStr, "info"):
 			typ = Info
 		default:
 			continue
@@ -166,7 +166,20 @@ func ReadEDN(r io.Reader) ([]Op, error) {
 		ops = append(ops, op)
 	}
 
-	sort.SliceStable(ops, func(i, j int) bool { return ops[i].Time < ops[j].Time })
+	var hasAnyTime bool
+	for _, op := range ops {
+		if op.Time != 0 {
+			hasAnyTime = true
+			break
+		}
+	}
+	if !hasAnyTime {
+		for i := range ops {
+			ops[i].Time = int64((i + 1) * 1000)
+		}
+	} else {
+		sort.SliceStable(ops, func(i, j int) bool { return ops[i].Time < ops[j].Time })
+	}
 	for i := range ops {
 		ops[i].Index = i
 	}

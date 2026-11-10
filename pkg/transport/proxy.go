@@ -274,6 +274,16 @@ func (p *Proxy) WrapEndpoints(ctx context.Context, nodes []Node, endpoints []str
 		for _, l := range listeners {
 			_ = l.Close()
 		}
+		p.mu.Lock()
+		for _, pn := range p.byKey {
+			pn.reset()
+			pn.mu.Lock()
+			for c := range pn.conns {
+				_ = c.Close()
+			}
+			pn.mu.Unlock()
+		}
+		p.mu.Unlock()
 	}
 	return wrapped, closeFn, nil
 }
@@ -331,6 +341,12 @@ func (p *Proxy) handleConn(ctx context.Context, clientConn net.Conn, upstream st
 	}
 	defer pn.unregisterConn(upConn)
 
+	stop := context.AfterFunc(ctx, func() {
+		_ = clientConn.Close()
+		_ = upConn.Close()
+	})
+	defer stop()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -366,6 +382,8 @@ func (p *Proxy) pipe(ctx context.Context, dst, src net.Conn, pn *proxyNode, isRe
 				select {
 				case <-time.After(delay):
 				case <-ctx.Done():
+					_ = dst.Close()
+					_ = src.Close()
 					return
 				}
 			}

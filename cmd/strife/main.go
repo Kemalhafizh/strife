@@ -1778,12 +1778,20 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) (int, error) {
 
 	if cfg != nil {
 		fmt.Fprintf(stdout, "\nconfig %q (%s, transport %q, %d nodes):\n", cfg.Name, *cfgPath, cfg.Transport.Type, len(cfg.Nodes))
+		unreachableCount := 0
 		for _, ep := range rep.Endpoints {
 			if ep.Reachable {
 				fmt.Fprintf(stdout, "  ✓ %s (%dms)\n", ep.Endpoint, ep.LatencyMs)
 			} else {
+				unreachableCount++
 				fmt.Fprintf(stdout, "  ✗ %s (%s)\n", ep.Endpoint, ep.Error)
 			}
+		}
+		if unreachableCount > 0 {
+			for _, n := range rep.Notes {
+				fmt.Fprintf(stdout, "\nnote: %s\n", n)
+			}
+			return exitError, fmt.Errorf("%d of %d endpoints unreachable in %s", unreachableCount, len(rep.Endpoints), *cfgPath)
 		}
 	}
 	for _, n := range rep.Notes {

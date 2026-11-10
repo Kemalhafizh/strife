@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -172,7 +171,9 @@ func mapBool(cond bool, t, f string) string {
 
 func endpointHostPort(ep string) string {
 	s := strings.TrimSpace(ep)
+	scheme := ""
 	if idx := strings.Index(s, "://"); idx >= 0 {
+		scheme = strings.ToLower(s[:idx])
 		s = s[idx+3:]
 	}
 	if idx := strings.IndexByte(s, '/'); idx >= 0 {
@@ -184,5 +185,19 @@ func endpointHostPort(ep string) string {
 	if _, _, err := net.SplitHostPort(s); err == nil {
 		return s
 	}
-	return fmt.Sprintf("%s", s)
+	switch scheme {
+	case "postgres", "postgresql":
+		return net.JoinHostPort(s, "5432")
+	case "mysql":
+		return net.JoinHostPort(s, "3306")
+	case "redis", "valkey":
+		return net.JoinHostPort(s, "6379")
+	case "kafka":
+		return net.JoinHostPort(s, "9092")
+	case "etcd", "http":
+		return net.JoinHostPort(s, "2379")
+	case "https":
+		return net.JoinHostPort(s, "443")
+	}
+	return s
 }

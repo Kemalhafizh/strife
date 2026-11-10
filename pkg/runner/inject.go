@@ -49,6 +49,9 @@ func (in *Injector) Exec(ctx context.Context, cmds []nemesis.Command) []string {
 		wg   sync.WaitGroup
 	)
 	for _, c := range cmds {
+		if c.Node < 0 || c.Node >= len(in.Nodes) {
+			continue
+		}
 		wg.Add(1)
 		go func(c nemesis.Command) {
 			defer wg.Done()
@@ -102,6 +105,9 @@ func (in *Injector) Apply(ctx context.Context, f nemesis.Fault, start bool) []st
 		wg   sync.WaitGroup
 	)
 	for _, i := range targets {
+		if i < 0 || i >= len(in.Nodes) {
+			continue
+		}
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

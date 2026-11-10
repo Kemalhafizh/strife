@@ -232,3 +232,56 @@ func TestProxyHalfDuplexResponseDrop(t *testing.T) {
 		t.Fatalf("expected positive forwarded byte counters, got up=%d down=%d", up, down)
 	}
 }
+
+func TestEndpointHostPortDefaultPorts(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"127.0.0.1:5432", "127.0.0.1:5432"},
+		{"postgres://user:pass@localhost/testdb", "localhost:5432"},
+		{"postgresql://localhost/testdb", "localhost:5432"},
+		{"mysql://127.0.0.1/app", "127.0.0.1:3306"},
+		{"redis://cache.local", "cache.local:6379"},
+		{"valkey://cache.local", "cache.local:6379"},
+		{"kafka://broker.local", "broker.local:9092"},
+		{"etcd://cluster.local", "cluster.local:2379"},
+		{"http://127.0.0.1", "127.0.0.1:2379"},
+		{"https://secure.local", "secure.local:443"},
+	}
+	for _, tc := range cases {
+		got := endpointHostPort(tc.input)
+		if got != tc.want {
+			t.Errorf("endpointHostPort(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestProxyTeardownAndContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	upstream := startEchoServer(t)
+
+	p := NewProxy()
+	nodes := []Node{{Name: "n1", IP: "127.0.0.1"}}
+	wrapped, closeFn, err := p.WrapEndpoints(ctx, nodes, []string{"http://" + upstream})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxyAddr := endpointHostPort(wrapped[0])
+	c, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Calling closeFn must terminate active connection
+	closeFn()
+	_ = c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 16)
+	_, rerr := c.Read(buf)
+	if rerr == nil {
+		t.Errorf("expected read error after proxy closeFn, got nil")
+	}
+	_ = c.Close()
+}

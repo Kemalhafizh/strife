@@ -490,4 +490,15 @@ func TestDoctorAndSettlementAndEDNCheck(t *testing.T) {
 	if _, err := os.Stat(sarifOut); err != nil {
 		t.Fatalf("missing SARIF file: %v", err)
 	}
+
+	// 5. strife doctor with unreachable endpoint config returns exitError
+	cfgUnreachable := filepath.Join(dir, "down.json")
+	cfgJSON := `{"name":"test-down","duration":"1s","nodes":[{"name":"n1","ip":"10.0.0.1"}],"transport":{"type":"proxy"},"db":{"kind":"postgres","endpoints":["127.0.0.1:1"]}}`
+	if err := os.WriteFile(cfgUnreachable, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCLI(t, "doctor", "--config", cfgUnreachable)
+	if code != exitError || !strings.Contains(out, "unreachable") {
+		t.Fatalf("expected doctor with unreachable endpoint to exit with exitError (%d), got code %d:\n%s", exitError, code, out)
+	}
 }

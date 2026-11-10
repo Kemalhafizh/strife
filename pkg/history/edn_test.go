@@ -109,3 +109,34 @@ func TestReadEDNMaxDepth(t *testing.T) {
 		t.Fatalf("expected maximum nesting depth error for discards, got %v", err)
 	}
 }
+
+func TestReadEDNNamespacedTypesAndMissingTime(t *testing.T) {
+	edn := `
+	{:type :jepsen.client/invoke, :process 0, :f :write, :key "x", :value 42}
+	{:type :jepsen.client/ok,     :process 0, :f :write, :key "x", :value 42}
+	{:type :jepsen/invoke,        :process 1, :f :read,  :key "x"}
+	{:type :jepsen/ok,            :process 1, :f :read,  :key "x", :value 42}
+	`
+	ops, err := ReadEDN(strings.NewReader(edn))
+	if err != nil {
+		t.Fatalf("ReadEDN: %v", err)
+	}
+	if len(ops) != 4 {
+		t.Fatalf("expected 4 ops, got %d", len(ops))
+	}
+	for i, op := range ops {
+		if op.Time <= 0 {
+			t.Errorf("op %d expected positive synthesized time, got %d", i, op.Time)
+		}
+		if i > 0 && op.Time <= ops[i-1].Time {
+			t.Errorf("op %d time (%d) not strictly greater than previous (%d)", i, op.Time, ops[i-1].Time)
+		}
+	}
+	paired, err := Pair(ops)
+	if err != nil {
+		t.Fatalf("Pair: %v", err)
+	}
+	if len(paired) != 2 {
+		t.Fatalf("expected 2 paired ops, got %d", len(paired))
+	}
+}
