@@ -114,6 +114,7 @@ func (Settlement) Step(s State, in, out history.Op) (bool, State) {
 		op = in
 	}
 	if in.F == history.FTxn || len(op.Txn) > 0 {
+		var wroteLedger, wroteBroker bool
 		for _, m := range op.Txn {
 			switch m.F {
 			case history.MicroAppend, history.MicroWrite:
@@ -126,11 +127,21 @@ func (Settlement) Step(s State, in, out history.Op) (bool, State) {
 						return false, st
 					}
 					next.ledger = append(next.ledger, v)
+					wroteLedger = true
 				} else if isDestLegKey(m.Key) {
 					if slices.Contains(next.broker, v) {
 						return false, st
 					}
 					next.broker = append(next.broker, v)
+					wroteBroker = true
+				} else {
+					if slices.Contains(next.ledger, v) || slices.Contains(next.broker, v) {
+						return false, st
+					}
+					next.ledger = append(next.ledger, v)
+					next.broker = append(next.broker, v)
+					wroteLedger = true
+					wroteBroker = true
 				}
 			case history.MicroRead:
 				if out.Type != history.OK {
@@ -144,7 +155,7 @@ func (Settlement) Step(s State, in, out history.Op) (bool, State) {
 				}
 			}
 		}
-		if out.Type == history.OK && !slices.Equal(next.ledger, next.broker) {
+		if wroteLedger && wroteBroker && out.Type == history.OK && !slices.Equal(next.ledger, next.broker) {
 			return false, st
 		}
 		return true, next

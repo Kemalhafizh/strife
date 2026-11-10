@@ -71,3 +71,34 @@ func TestSettlementDetectsOrphanCreditAndDuplicate(t *testing.T) {
 			AnomalySettlementOrphan, AnomalySettlementIdempotency, kinds, strings.TrimSpace(diag))
 	}
 }
+
+func TestSettlementStep(t *testing.T) {
+	m := Settlement{}
+	s := m.Init()
+
+	// 1. Write to ledger leg only
+	in1 := history.Op{Type: history.Invoke, F: history.FTxn}
+	out1 := history.Op{Type: history.OK, F: history.FTxn, Txn: []history.MicroOp{
+		{F: history.MicroAppend, Key: "ledger", Value: history.Int(42)},
+	}}
+	ok, s1 := m.Step(s, in1, out1)
+	if !ok {
+		t.Fatalf("expected step 1 (ledger append) to succeed")
+	}
+
+	// 2. Write to broker leg only
+	in2 := history.Op{Type: history.Invoke, F: history.FTxn}
+	out2 := history.Op{Type: history.OK, F: history.FTxn, Txn: []history.MicroOp{
+		{F: history.MicroAppend, Key: "broker", Value: history.Int(42)},
+	}}
+	ok, s2 := m.Step(s1, in2, out2)
+	if !ok {
+		t.Fatalf("expected step 2 (broker append) to succeed")
+	}
+
+	// 3. Duplicate write to ledger should fail
+	ok, _ = m.Step(s2, in1, out1)
+	if ok {
+		t.Fatalf("expected duplicate ledger append to fail")
+	}
+}
