@@ -97,3 +97,14 @@ func TestAgentTransport(t *testing.T) {
 	}
 	_ = portStr
 }
+
+func TestAgentPartitionUnknownNode(t *testing.T) {
+	tr := NewAgent(Config{Type: "agent"})
+	errNode := Node{Name: "stranger", IP: ""}
+	env := nemesis.Env{
+		Nodes: []nemesis.Target{{Name: "node-0", IP: "127.0.0.1"}},
+	}
+	if _, err := tr.InjectFault(context.Background(), errNode, nemesis.Fault{Kind: nemesis.Partition, Nodes: []int{0}}, env); err == nil {
+		t.Fatal("expected error when injecting partition on node not in env.Nodes")
+	}
+}

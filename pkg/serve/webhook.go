@@ -310,5 +310,45 @@ func redactWebhookURL(rawURL string) string {
 		return rawURL
 	}
 	u.User = nil
+
+	// Redact sensitive query parameters.
+	if q := u.Query(); len(q) > 0 {
+		changed := false
+		for k := range q {
+			lowerK := strings.ToLower(k)
+			if strings.Contains(lowerK, "token") || strings.Contains(lowerK, "secret") ||
+				strings.Contains(lowerK, "key") || strings.Contains(lowerK, "auth") ||
+				strings.Contains(lowerK, "pass") {
+				q.Set(k, "redacted")
+				changed = true
+			}
+		}
+		if changed {
+			u.RawQuery = q.Encode()
+		}
+	}
+
+	// Redact secret path tokens for known providers (Slack, Discord).
+	host := strings.ToLower(u.Host)
+	path := u.Path
+	if strings.Contains(host, "hooks.slack.com") {
+		// Slack webhook path: /services/T.../B.../<token>
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) >= 3 && parts[0] == "services" {
+			parts[len(parts)-1] = "redacted"
+			u.Path = "/" + strings.Join(parts, "/")
+			u.RawPath = ""
+		}
+	} else if (strings.Contains(host, "discord.com") || strings.Contains(host, "discordapp.com")) &&
+		strings.Contains(strings.ToLower(path), "/api/webhooks") {
+		// Discord webhook path: /api/webhooks/<id>/<token>
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) >= 4 {
+			parts[len(parts)-1] = "redacted"
+			u.Path = "/" + strings.Join(parts, "/")
+			u.RawPath = ""
+		}
+	}
+
 	return u.String()
 }

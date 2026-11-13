@@ -532,7 +532,7 @@ ol li,ul li{margin:3px 0}
 /* Toolbar & Controls */
 .tl-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line)}
 .tl-group{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-.tl-btn{background:var(--card-alt);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;font-size:12px;font-weight:5px;cursor:pointer;display:inline-flex;align-items:center;gap:4px;user-select:none;transition:all 0.15s ease}
+.tl-btn{background:var(--card-alt);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;font-size:12px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:4px;user-select:none;transition:all 0.15s ease}
 .tl-btn:hover{background:var(--line);border-color:var(--muted)}
 .tl-btn:active{transform:scale(0.98)}
 .tl-btn.primary{background:var(--bad);color:#fff;border-color:var(--bad);font-weight:600}
@@ -784,8 +784,6 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
   let activeProc = -1;
   let showFaults = true;
   let witnessOnly = false;
-  let hoveredOp = null;
-  let hoveredFault = null;
   let selectedOp = null;
 
   const mainCanvas = document.getElementById("tl-main-canvas");
@@ -1009,12 +1007,15 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
       const y = laneTop + o._lane * (laneH + 2);
       const h = laneH;
 
+      if (y + h > height) {
+        o._x = undefined;
+        return;
+      }
+
       o._x = x0;
       o._y = y;
       o._w = w;
       o._h = h;
-
-      if (y + h > height) return;
 
       // Base bar
       ctx.fillStyle = colors[o.s] || colors.ok;
@@ -1241,6 +1242,15 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
     tooltip.style.display = "none";
   }
 
+  function escHtml(v) {
+    return String(v)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   function showOpTooltip(o, clientX, clientY) {
     let roleBadge = "";
     if (o.m === "stuck") roleBadge = '<span class="badge-role badge-stuck">🚨 Stuck Op</span>';
@@ -1249,14 +1259,15 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
     else if (o.m === "concurrent") roleBadge = '<span class="badge-role badge-concurrent">⏳ Concurrent</span>';
 
     const lat = o.r !== -1 ? fmtDuration(o.r - o.c) : "∞ (timeout)";
+    const statusCls = escHtml(o.s);
     tooltip.innerHTML =
-      '<div class="tt-title"><span>' + o.d + '</span>' + roleBadge + '</div>' +
-      '<div class="tt-row"><span>Status:</span><span class="tt-val" style="color:var(--' + o.s + ')">' + o.s.toUpperCase() + '</span></div>' +
-      '<div class="tt-row"><span>Process:</span><span class="tt-val">p' + o.p + '</span></div>' +
-      (o.k ? '<div class="tt-row"><span>Key:</span><span class="tt-val">' + o.k + '</span></div>' : '') +
-      '<div class="tt-row"><span>Call:</span><span class="tt-val">' + fmtTime(o.c) + '</span></div>' +
-      '<div class="tt-row"><span>Return:</span><span class="tt-val">' + fmtTime(o.r) + '</span></div>' +
-      '<div class="tt-row"><span>Latency:</span><span class="tt-val">' + lat + '</span></div>' +
+      '<div class="tt-title"><span>' + escHtml(o.d) + '</span>' + roleBadge + '</div>' +
+      '<div class="tt-row"><span>Status:</span><span class="tt-val" style="color:var(--' + statusCls + ')">' + escHtml(String(o.s).toUpperCase()) + '</span></div>' +
+      '<div class="tt-row"><span>Process:</span><span class="tt-val">p' + escHtml(o.p) + '</span></div>' +
+      (o.k ? '<div class="tt-row"><span>Key:</span><span class="tt-val">' + escHtml(o.k) + '</span></div>' : '') +
+      '<div class="tt-row"><span>Call:</span><span class="tt-val">' + escHtml(fmtTime(o.c)) + '</span></div>' +
+      '<div class="tt-row"><span>Return:</span><span class="tt-val">' + escHtml(fmtTime(o.r)) + '</span></div>' +
+      '<div class="tt-row"><span>Latency:</span><span class="tt-val">' + escHtml(lat) + '</span></div>' +
       '<div style="margin-top:6px;font-size:10px;color:var(--muted)">Click to inspect JSON / timeline stream</div>';
 
     positionTooltip(clientX, clientY);
@@ -1265,11 +1276,11 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
   function showFaultTooltip(f, clientX, clientY) {
     const dur = fmtDuration(f.end - f.start);
     tooltip.innerHTML =
-      '<div class="tt-title"><span>Fault #' + f.id + ': ' + f.kind + '</span><span class="badge-role badge-witness">FAULT</span></div>' +
-      '<div class="tt-row"><span>Target:</span><span class="tt-val">' + f.desc + '</span></div>' +
-      '<div class="tt-row"><span>Start:</span><span class="tt-val">' + fmtTime(f.start) + '</span></div>' +
-      '<div class="tt-row"><span>End:</span><span class="tt-val">' + fmtTime(f.end) + '</span></div>' +
-      '<div class="tt-row"><span>Duration:</span><span class="tt-val">' + dur + '</span></div>';
+      '<div class="tt-title"><span>Fault #' + escHtml(f.id) + ': ' + escHtml(f.kind) + '</span><span class="badge-role badge-witness">FAULT</span></div>' +
+      '<div class="tt-row"><span>Target:</span><span class="tt-val">' + escHtml(f.desc) + '</span></div>' +
+      '<div class="tt-row"><span>Start:</span><span class="tt-val">' + escHtml(fmtTime(f.start)) + '</span></div>' +
+      '<div class="tt-row"><span>End:</span><span class="tt-val">' + escHtml(fmtTime(f.end)) + '</span></div>' +
+      '<div class="tt-row"><span>Duration:</span><span class="tt-val">' + escHtml(dur) + '</span></div>';
     positionTooltip(clientX, clientY);
   }
 
@@ -1309,20 +1320,21 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
     if (title) title.textContent = "Operation #" + o.i + " · " + o.d;
     const lat = o.r !== -1 ? fmtDuration(o.r - o.c) : "∞ (indeterminate)";
     const raw = JSON.stringify(o, null, 2);
+    const statusCls = escHtml(o.s);
 
     body.innerHTML =
       '<table style="margin-bottom:12px">' +
-      '<tr><th>Index</th><td class="mono">#' + o.i + '</td></tr>' +
-      '<tr><th>Process</th><td class="mono">p' + o.p + '</td></tr>' +
-      (o.k ? '<tr><th>Key</th><td class="mono">' + o.k + '</td></tr>' : '') +
-      '<tr><th>Status</th><td class="mono" style="color:var(--' + o.s + ')">' + o.s.toUpperCase() + '</td></tr>' +
-      '<tr><th>Call Time</th><td class="mono">' + fmtTime(o.c) + ' (' + o.c + ' ns)</td></tr>' +
-      '<tr><th>Return Time</th><td class="mono">' + fmtTime(o.r) + ' (' + o.r + ' ns)</td></tr>' +
-      '<tr><th>Latency</th><td class="mono">' + lat + '</td></tr>' +
-      (o.m ? '<tr><th>Anomaly Role</th><td><b>' + o.m.toUpperCase() + '</b></td></tr>' : '') +
+      '<tr><th>Index</th><td class="mono">#' + escHtml(o.i) + '</td></tr>' +
+      '<tr><th>Process</th><td class="mono">p' + escHtml(o.p) + '</td></tr>' +
+      (o.k ? '<tr><th>Key</th><td class="mono">' + escHtml(o.k) + '</td></tr>' : '') +
+      '<tr><th>Status</th><td class="mono" style="color:var(--' + statusCls + ')">' + escHtml(String(o.s).toUpperCase()) + '</td></tr>' +
+      '<tr><th>Call Time</th><td class="mono">' + escHtml(fmtTime(o.c)) + ' (' + escHtml(o.c) + ' ns)</td></tr>' +
+      '<tr><th>Return Time</th><td class="mono">' + escHtml(fmtTime(o.r)) + ' (' + escHtml(o.r) + ' ns)</td></tr>' +
+      '<tr><th>Latency</th><td class="mono">' + escHtml(lat) + '</td></tr>' +
+      (o.m ? '<tr><th>Anomaly Role</th><td><b>' + escHtml(String(o.m).toUpperCase()) + '</b></td></tr>' : '') +
       '</table>' +
       '<div style="font-weight:600;font-size:12px;margin-bottom:4px">Raw JSON Record:</div>' +
-      '<pre class="dialog-code"><code>' + raw + '</code></pre>';
+      '<pre class="dialog-code"><code>' + escHtml(raw) + '</code></pre>';
 
     dialog.showModal();
   }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/kemalhafizh/strife/pkg/checker"
@@ -183,7 +184,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		b.WriteString(`<div class="filters"><span style="color:var(--muted);font-size:0.82rem">Filter target:</span><a class="pill" href="/">all</a>`)
 		for _, t := range targets {
 			esc := html.EscapeString(t)
-			fmt.Fprintf(&b, `<a class="pill" href="/?target=%s">%s</a>`, esc, esc)
+			fmt.Fprintf(&b, `<a class="pill" href="/?target=%s">%s</a>`, url.QueryEscape(t), esc)
 		}
 		b.WriteString(`</div>`)
 	}
@@ -191,7 +192,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		b.WriteString(`<div class="filters"><span style="color:var(--muted);font-size:0.82rem">Filter tenant:</span><a class="pill" href="/">all</a>`)
 		for _, tn := range tenants {
 			esc := html.EscapeString(tn)
-			fmt.Fprintf(&b, `<a class="pill" href="/?tenant=%s">%s</a>`, esc, esc)
+			fmt.Fprintf(&b, `<a class="pill" href="/?tenant=%s">%s</a>`, url.QueryEscape(tn), esc)
 		}
 		b.WriteString(`</div>`)
 	}

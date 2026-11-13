@@ -161,11 +161,20 @@ func (e Env) Inject(f Fault) []Command {
 		}
 	case ClockSkew:
 		for _, n := range f.Nodes {
-			out = append(out, Command{Node: n, Script: fmt.Sprintf(
-				`date -s "@$(( $(date +%%s) + %d ))" >/dev/null`, int64(f.Offset/time.Second))})
+			out = append(out, Command{Node: n, Script: clockShiftCmd(f.Offset)})
 		}
 	}
 	return out
+}
+
+func clockShiftCmd(offset time.Duration) string {
+	sec := int64(offset / time.Second)
+	op := "+"
+	if sec < 0 {
+		op = "-"
+		sec = -sec
+	}
+	return fmt.Sprintf(`date -s "@$(( $(date +%%s) %s %d ))" >/dev/null`, op, sec)
 }
 
 // freezeScript requests a freezer state and waits (up to 5s) until the
@@ -220,8 +229,7 @@ func (e Env) Heal(f Fault) []Command {
 		}
 	case ClockSkew:
 		for _, n := range f.Nodes {
-			out = append(out, Command{Node: n, Script: fmt.Sprintf(
-				`date -s "@$(( $(date +%%s) - %d ))" >/dev/null`, int64(f.Offset/time.Second))})
+			out = append(out, Command{Node: n, Script: clockShiftCmd(-f.Offset)})
 		}
 	}
 	return out

@@ -368,3 +368,30 @@ func TestMySQLLedgerTransactions(t *testing.T) {
 		t.Fatalf("unexpected audit balances: %+v", out.Txn)
 	}
 }
+
+func TestMySQLDefensiveGuards(t *testing.T) {
+	if _, err := encryptPassword("secret", nil, []byte("not-pem")); err == nil {
+		t.Fatal("expected error for invalid PEM")
+	}
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	if _, err := encryptPassword("secret", nil, pemBytes); err == nil || !strings.Contains(err.Error(), "empty auth nonce") {
+		t.Fatalf("expected empty auth nonce error, got %v", err)
+	}
+
+	m := myClient(startMyFake(t, &myFake{auth: "native", answer: func(string) [][]byte { return [][]byte{myOK(2)} }}))
+	defer m.Close()
+	if out := m.Invoke(context.Background(), history.Op{F: history.FWrite, Key: "k"}); out.Type != history.Fail {
+		t.Fatalf("expected Fail on nil write value, got %+v", out)
+	}
+	if out := m.Invoke(context.Background(), history.Op{F: history.FCas, Key: "k"}); out.Type != history.Fail {
+		t.Fatalf("expected Fail on nil cas values, got %+v", out)
+	}
+	if out := m.Invoke(context.Background(), history.Op{F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "k"}}}); out.Type != history.Fail {
+		t.Fatalf("expected Fail on nil append micro-op value, got %+v", out)
+	}
+}

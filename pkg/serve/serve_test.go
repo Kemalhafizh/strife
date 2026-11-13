@@ -620,3 +620,74 @@ func TestServePerTenantKeysAndUIDashboard(t *testing.T) {
 		t.Fatalf("unexpected dashboard HTML: %s", string(uiBody))
 	}
 }
+
+func TestRedactWebhookURL(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{
+			input: "https://hooks.slack.com/services/T0123/B0456/SECRET_TOKEN_XYZ",
+			want:  "https://hooks.slack.com/services/T0123/B0456/redacted",
+		},
+		{
+			input: "https://discord.com/api/webhooks/987654321/SECRET_DISCORD_TOKEN",
+			want:  "https://discord.com/api/webhooks/987654321/redacted",
+		},
+		{
+			input: "https://discordapp.com/api/webhooks/987654321/SECRET_DISCORD_TOKEN",
+			want:  "https://discordapp.com/api/webhooks/987654321/redacted",
+		},
+		{
+			input: "https://user:password@example.com/alerts?token=MY_SECRET&format=slack",
+			want:  "https://example.com/alerts?format=slack&token=redacted",
+		},
+		{
+			input: "http://127.0.0.1:8080/hook?format=slack",
+			want:  "http://127.0.0.1:8080/hook?format=slack",
+		},
+	}
+
+	for _, tc := range cases {
+		got := redactWebhookURL(tc.input)
+		if got != tc.want {
+			t.Errorf("redactWebhookURL(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestServeIngestValidation(t *testing.T) {
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0", StoreDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	for _, payload := range []string{"{}", "null", "[]"} {
+		resp, err := http.Post(baseURL+"/api/v1/ingest", "application/json", strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("payload %s: expected 400 Bad Request, got %d", payload, resp.StatusCode)
+		}
+	}
+
+	store := srv.store
+	if _, err := store.IngestReport(&report.Report{}, "", "", nil, ""); err == nil {
+		t.Fatal("expected error for report missing Target")
+	}
+	if _, err := store.IngestCampaign(&campaign.Manifest{}); err == nil {
+		t.Fatal("expected error for campaign missing System")
+	}
+}

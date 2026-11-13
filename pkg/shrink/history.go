@@ -107,9 +107,32 @@ func History(ctx context.Context, m model.Model, raw []history.Op, opts HistoryO
 	res.Key = violatingKey
 	step("partition", fmt.Sprintf("isolated violating partition %q: %d → %d ops", violatingKey, len(paired), len(violatingOps)), len(violatingOps))
 
-	// Phase 2: Model Diagnoser shortcut.
-	// If the model provides a sound, provable certificate (e.g. stale register read or cycle),
+	// Phase 2: Model Decider / Diagnoser shortcut.
+	// If the model provides a sound, provable certificate (e.g. cycle or stale register read),
 	// verify if that witness alone violates.
+	if d, ok := m.(model.Decider); ok {
+		bad, idx, diag, _ := d.Decide(violatingOps)
+		if bad && len(idx) > 0 {
+			witness := make([]history.Operation, len(idx))
+			for i, j := range idx {
+				witness[i] = violatingOps[j]
+			}
+			chk := checker.CheckOperations(m, witness, checker.Options{
+				MaxSteps: opts.MaxSteps,
+				Timeout:  opts.Timeout,
+			})
+			if chk.Verdict == checker.Violation {
+				sort.Slice(witness, func(i, j int) bool { return witness[i].Call < witness[j].Call })
+				res.Diagnosis = diag
+				res.MinimalOps = len(witness)
+				res.Operations = witness
+				res.History = reconstruct(witness)
+				res.Elapsed = time.Since(start)
+				step("decide", fmt.Sprintf("sound decider extracted %d-op minimal witness: %s", len(witness), diag), len(witness))
+				return res, nil
+			}
+		}
+	}
 	if d, ok := m.(model.Diagnoser); ok {
 		if idx, diag, ok := d.Diagnose(violatingOps); ok && len(idx) > 0 {
 			witness := make([]history.Operation, len(idx))
@@ -154,7 +177,7 @@ func History(ctx context.Context, m model.Model, raw []history.Op, opts HistoryO
 	// 3a. Pure-read minimisation: dropping pure reads is always sound.
 	var muts, reads []history.Operation
 	for _, o := range violatingOps {
-		if isReadOnly(o) {
+		if isReadOnly(m, o) {
 			reads = append(reads, o)
 		} else {
 			muts = append(muts, o)
@@ -213,7 +236,10 @@ func History(ctx context.Context, m model.Model, raw []history.Op, opts HistoryO
 	return res, nil
 }
 
-func isReadOnly(o history.Operation) bool {
+func isReadOnly(m model.Model, o history.Operation) bool {
+	if ro, ok := m.(model.ReadOnly); ok {
+		return ro.ReadOnly(o.Input)
+	}
 	f := o.Input.F
 	if f == history.FRead || f == "get" {
 		return true
@@ -262,7 +288,7 @@ func buildSoundReference(ops []history.Operation) soundReference {
 	}
 	for _, o := range ops {
 		f := o.Input.F
-		if f == history.FWrite || f == history.FCas || f == history.FAdd || f == history.FEnqueue {
+		if f == history.FWrite || f == history.FCas || f == history.FAdd || f == history.FEnqueue || f == "push" || f == "send" {
 			if o.Input.Value != nil {
 				ref.scalarWritten[*o.Input.Value] = true
 			}
@@ -271,7 +297,7 @@ func buildSoundReference(ops []history.Operation) soundReference {
 			for _, m := range o.Input.Txn {
 				if m.Value != nil {
 					switch m.F {
-					case history.MicroWrite:
+					case history.MicroWrite, "write":
 						recordWrite(m.Key, *m.Value)
 					case history.MicroAppend:
 						recordAppend(m.Key, *m.Value)
@@ -281,7 +307,7 @@ func buildSoundReference(ops []history.Operation) soundReference {
 			for _, m := range o.Output.Txn {
 				if m.Value != nil {
 					switch m.F {
-					case history.MicroWrite:
+					case history.MicroWrite, "write":
 						recordWrite(m.Key, *m.Value)
 					case history.MicroAppend:
 						recordAppend(m.Key, *m.Value)
@@ -295,12 +321,26 @@ func buildSoundReference(ops []history.Operation) soundReference {
 
 // isSoundHistory ensures candidate does not contain reads observing values
 // that were produced in the original history but dropped from the candidate.
-func isSoundHistory(_ model.Model, ops []history.Operation, ref soundReference) bool {
+func isSoundHistory(m model.Model, ops []history.Operation, ref soundReference) bool {
 	if len(ops) == 0 {
 		return false
 	}
+	if m != nil && m.Name() == "counter" {
+		return true
+	}
 
+	// Track values written by operations that did not explicitly fail.
 	written := map[int64]bool{0: true}
+	var hasLedgerInit bool
+	var ledgerInit int64
+	if lm, ok := m.(model.Ledger); ok {
+		hasLedgerInit = true
+		ledgerInit = lm.InitialBalance
+		if ledgerInit <= 0 {
+			ledgerInit = model.DefaultLedgerInitialBalance
+		}
+		written[ledgerInit] = true
+	}
 	txnWritten := make(map[string]map[int64]bool)
 	txnAppended := make(map[string]map[int64]bool)
 
@@ -318,30 +358,33 @@ func isSoundHistory(_ model.Model, ops []history.Operation, ref soundReference) 
 	}
 
 	for _, o := range ops {
+		if o.Status() == history.Fail {
+			continue
+		}
 		f := o.Input.F
-		if f == history.FWrite || f == history.FCas || f == history.FAdd || f == history.FEnqueue {
+		if f == history.FWrite || f == history.FCas || f == history.FAdd || f == history.FEnqueue || f == "push" || f == "send" {
 			if o.Input.Value != nil {
 				written[*o.Input.Value] = true
 			}
 		}
 		if f == history.FTxn {
-			for _, m := range o.Input.Txn {
-				if m.Value != nil {
-					switch m.F {
-					case history.MicroWrite:
-						addWrite(m.Key, *m.Value)
+			for _, mop := range o.Input.Txn {
+				if mop.Value != nil {
+					switch mop.F {
+					case history.MicroWrite, "write":
+						addWrite(mop.Key, *mop.Value)
 					case history.MicroAppend:
-						addAppend(m.Key, *m.Value)
+						addAppend(mop.Key, *mop.Value)
 					}
 				}
 			}
-			for _, m := range o.Output.Txn {
-				if m.Value != nil {
-					switch m.F {
-					case history.MicroWrite:
-						addWrite(m.Key, *m.Value)
+			for _, mop := range o.Output.Txn {
+				if mop.Value != nil {
+					switch mop.F {
+					case history.MicroWrite, "write":
+						addWrite(mop.Key, *mop.Value)
 					case history.MicroAppend:
-						addAppend(m.Key, *m.Value)
+						addAppend(mop.Key, *mop.Value)
 					}
 				}
 			}
@@ -349,31 +392,31 @@ func isSoundHistory(_ model.Model, ops []history.Operation, ref soundReference) 
 	}
 
 	for _, o := range ops {
-		if (o.Input.F == history.FRead || o.Input.F == "get") && o.Status() == history.OK && o.Output.Value != nil {
+		if (o.Input.F == history.FRead || o.Input.F == "get" || isReadOnly(m, o)) && o.Status() == history.OK && o.Output.Value != nil {
 			v := *o.Output.Value
 			if ref.scalarWritten[v] && !written[v] {
 				return false
 			}
 		}
-		if o.Input.F == history.FDequeue && o.Status() == history.OK && o.Output.Value != nil {
+		if (o.Input.F == history.FDequeue || o.Input.F == "pop" || o.Input.F == "poll") && o.Status() == history.OK && o.Output.Value != nil {
 			v := *o.Output.Value
 			if ref.scalarWritten[v] && !written[v] {
 				return false
 			}
 		}
 		if o.Input.F == history.FTxn && o.Status() == history.OK {
-			for _, m := range o.Output.Txn {
-				if m.F != history.MicroRead {
+			for _, mop := range o.Output.Txn {
+				if mop.F != history.MicroRead && mop.F != "read" {
 					continue
 				}
-				if m.Value != nil {
-					v := *m.Value
-					if ref.txnWritten[m.Key][v] && !txnWritten[m.Key][v] {
+				if mop.Value != nil {
+					v := *mop.Value
+					if v != 0 && !(hasLedgerInit && v == ledgerInit) && ref.txnWritten[mop.Key][v] && !txnWritten[mop.Key][v] {
 						return false
 					}
 				}
-				for _, v := range m.Values {
-					if ref.txnAppended[m.Key][v] && !txnAppended[m.Key][v] {
+				for _, v := range mop.Values {
+					if ref.txnAppended[mop.Key][v] && !txnAppended[mop.Key][v] {
 						return false
 					}
 				}

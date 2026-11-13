@@ -120,9 +120,11 @@ func (n *LinuxNetlink) setNetemNetlink(iface string, delay, jitter time.Duration
 		return err
 	}
 
+	delayNs := max(delay.Nanoseconds(), 0)
+	jitterNs := max(jitter.Nanoseconds(), 0)
 	qopt := tcNetemQopt{
-		Latency: clampU32(delay.Nanoseconds()),
-		Jitter:  clampU32(jitter.Nanoseconds()),
+		Latency: clampU32(delayNs),
+		Jitter:  clampU32(jitterNs),
 		Limit:   1000,
 	}
 	if loss > 0 {
@@ -133,8 +135,8 @@ func (n *LinuxNetlink) setNetemNetlink(iface string, delay, jitter time.Duration
 	if err := binary.Write(&optBuf, binary.LittleEndian, qopt); err != nil {
 		return err
 	}
-	writeAttr(&optBuf, tcaNetemLatency64, binary.LittleEndian.AppendUint64(nil, uint64(delay.Nanoseconds())))
-	writeAttr(&optBuf, tcaNetemJitter64, binary.LittleEndian.AppendUint64(nil, uint64(jitter.Nanoseconds())))
+	writeAttr(&optBuf, tcaNetemLatency64, binary.LittleEndian.AppendUint64(nil, uint64(delayNs)))
+	writeAttr(&optBuf, tcaNetemJitter64, binary.LittleEndian.AppendUint64(nil, uint64(jitterNs)))
 
 	var attrBuf bytes.Buffer
 	writeAttr(&attrBuf, tcaKind, append([]byte("netem"), 0))

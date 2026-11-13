@@ -181,7 +181,7 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 	}
 	wg.Wait()
 	nemWG.Wait()
-	if cfg.Workload.Model == "append" || cfg.Workload.Model == "ledger" || cfg.Workload.Model == "settlement" {
+	if (cfg.Workload.Model == "append" || cfg.Workload.Model == "ledger" || cfg.Workload.Model == "settlement") && ctx.Err() == nil {
 		// Heal, let the cluster settle, then read every key once more: an
 		// acknowledged append or balance discrepancy that no read ever saw
 		// is otherwise invisible.
@@ -190,12 +190,14 @@ func Run(ctx context.Context, cfg *Config, opts Options) (*Result, error) {
 			logf("healing before final reads: %v", errs)
 		}
 		hcancel()
-		if cfg.Workload.Model == "append" {
-			finalReads(ctx, cfg, factory, rec, logf)
-		} else if cfg.Workload.Model == "settlement" {
-			finalSettlementAudit(ctx, cfg, factory, rec, logf)
-		} else {
-			finalLedgerAudit(ctx, cfg, factory, rec, logf)
+		if ctx.Err() == nil {
+			if cfg.Workload.Model == "append" {
+				finalReads(ctx, cfg, factory, rec, logf)
+			} else if cfg.Workload.Model == "settlement" {
+				finalSettlementAudit(ctx, cfg, factory, rec, logf)
+			} else {
+				finalLedgerAudit(ctx, cfg, factory, rec, logf)
+			}
 		}
 	}
 

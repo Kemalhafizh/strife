@@ -138,3 +138,16 @@ func TestK8sResolverPodAndContainerCgroupDiscovery(t *testing.T) {
 		t.Fatalf("expected pod slice cgroup.freeze to be '1\\n', got %q", string(b))
 	}
 }
+
+func TestParseK8sTargetWhitespace(t *testing.T) {
+	if _, ok := ParseK8sTarget("pod:default/   "); ok {
+		t.Fatal("expected ParseK8sTarget to reject whitespace-only pod name")
+	}
+	if _, ok := ParseK8sTarget("pod:   "); ok {
+		t.Fatal("expected ParseK8sTarget to reject empty pod spec")
+	}
+	got, ok := ParseK8sTarget("  pod: payments / db-0 ")
+	if !ok || got.Namespace != "payments" || got.PodName != "db-0" {
+		t.Fatalf("unexpected parsed target: %+v ok=%v", got, ok)
+	}
+}

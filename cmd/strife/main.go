@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -796,8 +797,11 @@ func cmdShrinkHistory(path, modelName, isolation, outDir string, ci report.Outpu
 				Diagnosis: res.Diagnosis, Explanation: res.Explanation,
 			}}},
 		}, "")
-		if err == nil {
-			_, _ = report.WriteDir(minDir, rep, res.History)
+		if err != nil {
+			return exitError, err
+		}
+		if _, err := report.WriteDir(minDir, rep, res.History); err != nil {
+			return exitError, err
 		}
 		fmt.Fprintf(stdout, "artifacts: %s\n", minDir)
 	}
@@ -830,7 +834,11 @@ func runShrink(cfg explore.Config, opts shrink.Options, out string, stdout io.Wr
 		return nil, err
 	}
 	min := res.Minimal
-	addWitnesses(model.KV{}, res.Final.History, &res.Final.Check)
+	var checkModel model.Model = model.KV{}
+	if sys, lerr := explore.LookupSystem(min.System); lerr == nil {
+		checkModel = sys.Model()
+	}
+	addWitnesses(checkModel, res.Final.History, &res.Final.Check)
 	fmt.Fprintf(stdout, "minimal: %d → %d faults, %v → %v, %d → %d clients, %d → %d ops (%d runs, %v)\n",
 		len(res.OriginalSchedule.Faults), len(res.Faults()), res.Original.Duration, min.Duration,
 		res.Original.Clients, min.Clients, res.OriginalOps, res.Final.Check.Operations, res.Runs, res.Elapsed.Round(time.Millisecond))
@@ -1013,7 +1021,7 @@ func cmdPlan(args []string, stdout, stderr io.Writer) (int, error) {
 	seed := fs.Uint64("seed", 1, "seed (overrides the config's)")
 	nodes := fs.Int("nodes", 5, "cluster size (without --config)")
 	duration := fs.Duration("duration", 60*time.Second, "test length (overrides the config's)")
-	faults := fs.String("faults", "all", "fault kinds (without --config)")
+	faults := fs.String("faults", "all", "fault kinds (overrides the config's)")
 	interval := fs.Duration("fault-interval", 6*time.Second, "mean time between faults (without --config)")
 	length := fs.Duration("fault-length", 6*time.Second, "mean fault length (without --config)")
 	asJSON := fs.Bool("json", false, "print the schedule as JSON")
@@ -1027,15 +1035,28 @@ func cmdPlan(args []string, stdout, stderr io.Writer) (int, error) {
 		if cfg, err = runner.Load(*cfgPath); err != nil {
 			return exitUsage, err
 		}
-		// Explicit --seed / --duration override the config, as they do for run.
+		// Explicit --seed / --duration / --faults override the config, as they do for run.
+		var parseFaultsErr error
 		fs.Visit(func(f *flag.Flag) {
 			switch f.Name {
 			case "seed":
 				cfg.Seed = *seed
 			case "duration":
 				cfg.Duration = runner.Duration(*duration)
+			case "faults":
+				var kinds []nemesis.Kind
+				kinds, parseFaultsErr = nemesis.ParseKinds(*faults)
+				if parseFaultsErr == nil {
+					cfg.Nemesis.Faults = kinds
+				}
 			}
 		})
+		if parseFaultsErr != nil {
+			return exitUsage, parseFaultsErr
+		}
+		if err := cfg.Validate(); err != nil {
+			return exitUsage, err
+		}
 		sched = cfg.Schedule()
 	} else {
 		kinds, err := nemesis.ParseKinds(*faults)
@@ -1702,7 +1723,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	}()
 
 	fmt.Fprintf(stdout, "strife serve listening on http://%s (store: %s)\n", *listen, *storeDir)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, flag.ErrHelp) && !strings.Contains(err.Error(), "Server closed") {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return exitError, err
 	}
 	return exitOK, nil

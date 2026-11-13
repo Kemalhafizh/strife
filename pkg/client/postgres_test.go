@@ -354,3 +354,41 @@ func md5sum(b []byte) string {
 	h := md5.Sum(b) //nolint:gosec
 	return hex.EncodeToString(h[:])
 }
+
+func TestPostgresDefensiveGuards(t *testing.T) {
+	pg := pgClient(fakePG(t, "trust", func(string) []byte { return append(pgTag("OK"), pgReady('I')...) }))
+	defer pg.Close()
+
+	if out := pg.Invoke(context.Background(), history.Op{F: history.FWrite, Key: "k"}); out.Type != history.Fail {
+		t.Fatalf("expected Fail on nil write value, got %+v", out)
+	}
+	if out := pg.Invoke(context.Background(), history.Op{F: history.FCas, Key: "k"}); out.Type != history.Fail {
+		t.Fatalf("expected Fail on nil cas values, got %+v", out)
+	}
+	if out := pg.Invoke(context.Background(), history.Op{F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "k"}}}); out.Type != history.Fail {
+		t.Fatalf("expected Fail on nil append micro-op value, got %+v", out)
+	}
+
+	// Short MD5 salt packet must error rather than panic.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		var n uint32
+		_ = binary.Read(c, binary.BigEndian, &n)
+		_, _ = io.CopyN(io.Discard, c, int64(n-4))
+		_, _ = c.Write(pgAuth(5, "ab")) // 2-byte salt < 4 bytes required
+	}()
+	badPG := pgClient(ln.Addr().String())
+	defer badPG.Close()
+	if out := badPG.Invoke(context.Background(), history.Op{F: history.FRead, Key: "k"}); out.Type != history.Fail || !strings.Contains(out.Error, "short md5 salt") {
+		t.Fatalf("expected Fail with short md5 salt error, got %+v", out)
+	}
+}

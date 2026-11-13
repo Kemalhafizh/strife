@@ -191,8 +191,10 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 					dropped = append(dropped, ip)
 					continue
 				}
-				if e := s.filter.Drop(ip); e != nil && err == nil {
-					err = e
+				if e := s.filter.Drop(ip); e != nil {
+					if err == nil {
+						err = e
+					}
 				} else {
 					dropped = append(dropped, ip)
 				}
@@ -239,7 +241,13 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 
 		case nemesis.ClockSkew:
 			method = "clock:date"
-			cmd := exec.Command("sh", "-c", fmt.Sprintf(`date -s "@$(( $(date +%%s) + %d ))" >/dev/null`, int64(req.Offset/time.Second)))
+			sec := int64(req.Offset / time.Second)
+			op := "+"
+			if sec < 0 {
+				op = "-"
+				sec = -sec
+			}
+			cmd := exec.Command("sh", "-c", fmt.Sprintf(`date -s "@$(( $(date +%%s) %s %d ))" >/dev/null`, op, sec))
 			err = cmd.Run()
 			applied = fmt.Sprintf("clock-skew:%v", req.Offset)
 			s.probes.Record(probe.Event{
@@ -303,7 +311,13 @@ func (s *Server) executeApply(req ApplyRequest) ApplyResponse {
 
 		case nemesis.ClockSkew:
 			method = "clock:date"
-			cmd := exec.Command("sh", "-c", fmt.Sprintf(`date -s "@$(( $(date +%%s) - %d ))" >/dev/null`, int64(req.Offset/time.Second)))
+			sec := -int64(req.Offset / time.Second)
+			op := "+"
+			if sec < 0 {
+				op = "-"
+				sec = -sec
+			}
+			cmd := exec.Command("sh", "-c", fmt.Sprintf(`date -s "@$(( $(date +%%s) %s %d ))" >/dev/null`, op, sec))
 			err = cmd.Run()
 			applied = fmt.Sprintf("heal-clock-skew:%v", req.Offset)
 

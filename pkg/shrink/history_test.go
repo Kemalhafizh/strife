@@ -213,3 +213,47 @@ func TestHistoryShrinkSettlementAndTransactionalSoundness(t *testing.T) {
 		t.Fatalf("shrunk settlement history must still violate: %v (%s)", err, chk.Verdict)
 	}
 }
+
+func TestHistoryShrinkLedger(t *testing.T) {
+	// A ledger history with noise transfers and an unbalanced transfer
+	var ops []history.Op
+	tCursor := int64(0)
+	// Legitimate noise transfer acct:0 -> acct:1 (amt 100)
+	tCursor += 10
+	ops = append(ops, history.Op{Process: 0, Type: history.Invoke, F: history.FTxn, Key: "acct:0->acct:1", Value: v(100), Time: tCursor})
+	tCursor += 10
+	ops = append(ops, history.Op{
+		Process: 0, Type: history.OK, F: history.FTxn, Key: "acct:0->acct:1", Value: v(100), Time: tCursor,
+		Txn: []history.MicroOp{
+			{F: "r", Key: "acct:0", Value: v(1000)},
+			{F: "w", Key: "acct:0", Value: v(900)},
+			{F: "r", Key: "acct:1", Value: v(1000)},
+			{F: "w", Key: "acct:1", Value: v(1100)},
+		},
+	})
+
+	// Unbalanced transfer: debits 100 from acct:0, but credits 500 to acct:1 (\sum \Delta != 0)
+	tCursor += 10
+	ops = append(ops, history.Op{Process: 1, Type: history.Invoke, F: history.FTxn, Key: "acct:0->acct:1", Value: v(100), Time: tCursor})
+	tCursor += 10
+	ops = append(ops, history.Op{
+		Process: 1, Type: history.OK, F: history.FTxn, Key: "acct:0->acct:1", Value: v(100), Time: tCursor,
+		Txn: []history.MicroOp{
+			{F: "r", Key: "acct:0", Value: v(900)},
+			{F: "w", Key: "acct:0", Value: v(800)},
+			{F: "r", Key: "acct:1", Value: v(1100)},
+			{F: "w", Key: "acct:1", Value: v(1600)},
+		},
+	})
+
+	res, err := History(context.Background(), model.Ledger{}, ops, HistoryOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Verdict != checker.Violation {
+		t.Fatalf("expected violation, got %s", res.Verdict)
+	}
+	if res.MinimalOps == 0 {
+		t.Fatalf("expected non-zero minimal ops, got %d", res.MinimalOps)
+	}
+}

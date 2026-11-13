@@ -666,8 +666,13 @@ func (m Ledger) Decide(ops []history.Operation) (bool, []int, string, []string) 
 	txns := txn.FromOperations(ops)
 	if len(accounts) > 0 {
 		var initOps []txn.MicroOp
-		for acct, initB := range accounts {
-			v := initB
+		acctList := make([]string, 0, len(accounts))
+		for acct := range accounts {
+			acctList = append(acctList, acct)
+		}
+		sort.Strings(acctList)
+		for _, acct := range acctList {
+			v := accounts[acct]
 			initOps = append(initOps, txn.MicroOp{Kind: txn.OpWrite, Key: acct, Value: &v})
 		}
 		txns = append([]txn.Txn{{ID: -1, Status: history.Info, Ops: initOps}}, txns...)

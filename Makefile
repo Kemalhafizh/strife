@@ -13,7 +13,7 @@ test-short:
 lint:
 	test -z "$$(gofmt -l .)"
 	go vet ./...
-	shellcheck scripts/*.sh
+	shellcheck scripts/*.sh scripts/live/*.sh scripts/release/*.sh
 	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
 
 # The same gauntlet CI runs.
@@ -29,4 +29,4 @@ chaos: build
 	./bin/strife shrink --system raft-stale-reads --faults partition --seed 2 --out "" ; test $$? -eq 1
 
 clean:
-	rm -rf bin strife-out
+	rm -rf bin strife-out dist out
