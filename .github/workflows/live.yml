@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: pick faults the runner kernel supports
         id: faults
         run: |
@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: pick faults the runner kernel supports
         id: faults
         run: |
@@ -96,7 +96,7 @@ jobs:
     env:
       STRIFE_AGENT_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-agent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -153,7 +153,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -189,7 +189,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: start a Valkey primary with two replicas
         working-directory: examples/valkey
         run: docker compose up -d --build
@@ -227,7 +227,7 @@ jobs:
     env:
       STRIFE_PG_PASSWORD: ${{ github.run_id }}-pg
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -304,7 +304,7 @@ jobs:
     env:
       STRIFE_MYSQL_PASSWORD: ${{ github.run_id }}-my
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: start MySQL 8.4 (caching_sha2_password)
         working-directory: examples/mysql
         run: docker compose up -d
@@ -340,7 +340,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: start TiDB
         working-directory: examples/tidb
         run: docker compose up -d
@@ -381,7 +381,7 @@ jobs:
     env:
       KAFKA_VERSION: ${{ matrix.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: start a 3-broker KRaft cluster
         working-directory: examples/kafka
         run: docker compose up -d --build
