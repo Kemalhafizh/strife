@@ -1,6 +1,6 @@
 # strife-agent: the per-node fault injection daemon. It needs iptables and
 # tc next to it, and NET_ADMIN (plus SYS_ADMIN for cgroups) at run time.
-FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS build
 ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
 COPY . .

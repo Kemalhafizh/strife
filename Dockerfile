@@ -1,6 +1,6 @@
 # strife: the CLI (simulator, checker, live runner, attestation).
 # Built for the target platform without emulation: Go cross-compiles.
-FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS build
 ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
 COPY go.mod ./
