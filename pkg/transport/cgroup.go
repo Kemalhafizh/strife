@@ -60,3 +60,122 @@ func wholeDisk(sysRoot, dev string) (string, error) {
 	}
 	return strings.TrimSpace(string(parent)), nil
 }
+
+// resolveIODevice resolves root to the whole-disk "major:minor" suitable for
+// cgroup v2 io.max. When stat reports an anonymous superblock (major == 0,
+// e.g. overlay or btrfs), mountInfo is consulted to locate the backing path or
+// block device.
+func resolveIODevice(root, mountInfo, sysRoot string, statDev, statBlock func(string) (string, error)) (string, error) {
+	cur := root
+	for range 5 {
+		dev, err := statDev(cur)
+		if err != nil {
+			return "", err
+		}
+		if !strings.HasPrefix(dev, "0:") {
+			return wholeDisk(sysRoot, dev)
+		}
+		entry, ok, err := findMountEntry(mountInfo, cur, dev)
+		if err != nil {
+			return "", fmt.Errorf("reading %s for %s (%s): %w", mountInfo, root, dev, err)
+		}
+		if !ok {
+			return "", fmt.Errorf("block device %s for %s not found in %s", dev, root, mountInfo)
+		}
+		if entry.fsType == "overlay" {
+			if upper, ok := overlayUpperDir(entry.options); ok && upper != "" {
+				cur = upper
+				continue
+			}
+		}
+		src := entry.source
+		if i := strings.IndexByte(src, '['); i > 0 {
+			src = src[:i]
+		}
+		if src != "" {
+			if bdev, err := statBlock(src); err == nil && !strings.HasPrefix(bdev, "0:") {
+				return wholeDisk(sysRoot, bdev)
+			}
+		}
+		return "", fmt.Errorf("cannot resolve physical block device for %s (filesystem %s, device %s)", root, entry.fsType, dev)
+	}
+	return "", fmt.Errorf("too many nested mounts resolving disk for %s", root)
+}
+
+type mountEntry struct {
+	mountPoint string
+	fsType     string
+	source     string
+	options    string
+}
+
+func findMountEntry(mountInfo, target, dev string) (mountEntry, bool, error) {
+	data, err := os.ReadFile(mountInfo)
+	if err != nil {
+		return mountEntry{}, false, err
+	}
+	var best, fallback mountEntry
+	bestLen := -1
+	hasFallback := false
+	cleanTarget := path.Clean(target)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		before, after, ok := strings.Cut(line, " - ")
+		if !ok {
+			continue
+		}
+		left := strings.Fields(before)
+		if len(left) < 5 || left[2] != dev {
+			continue
+		}
+		right := strings.SplitN(after, " ", 3)
+		if len(right) < 3 {
+			continue
+		}
+		mp := path.Clean(unescapeMountField(left[4]))
+		e := mountEntry{
+			mountPoint: mp,
+			fsType:     right[0],
+			source:     unescapeMountField(right[1]),
+			options:    unescapeMountField(right[2]),
+		}
+		fallback = e
+		hasFallback = true
+		if mp == "/" && len(mp) > bestLen || cleanTarget == mp || strings.HasPrefix(cleanTarget, mp+"/") {
+			if len(mp) >= bestLen {
+				best = e
+				bestLen = len(mp)
+			}
+		}
+	}
+	if bestLen >= 0 {
+		return best, true, nil
+	}
+	return fallback, hasFallback, nil
+}
+
+func overlayUpperDir(opts string) (string, bool) {
+	for _, opt := range strings.Split(opts, ",") {
+		if upper, ok := strings.CutPrefix(opt, "upperdir="); ok {
+			return upper, true
+		}
+	}
+	return "", false
+}
+
+func unescapeMountField(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	isOctal := func(b byte) bool { return b >= '0' && b <= '7' }
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) && isOctal(s[i+1]) && isOctal(s[i+2]) && isOctal(s[i+3]) {
+			b.WriteByte((s[i+1]-'0')<<6 | (s[i+2]-'0')<<3 | (s[i+3] - '0'))
+			i += 3
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}

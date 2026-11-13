@@ -153,11 +153,7 @@ func (d *Docker) ResolveIODevice(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dev, err := deviceOf(strings.TrimSpace(root))
-	if err != nil {
-		return "", err
-	}
-	return wholeDisk("/sys", dev)
+	return resolveIODevice(strings.TrimSpace(root), "/proc/self/mountinfo", "/sys", deviceOf, blockDeviceOf)
 }
 
 // SSH runs scripts through the system ssh client, so keys, agents, jump
