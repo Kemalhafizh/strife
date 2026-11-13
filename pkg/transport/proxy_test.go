@@ -222,7 +222,12 @@ func TestProxyHalfDuplexResponseDrop(t *testing.T) {
 	if _, err := io.ReadFull(c2, reply[:9]); err != nil {
 		t.Fatalf("expected second request to receive response: %v", err)
 	}
+	deadline := time.Now().Add(500 * time.Millisecond)
 	up, down := p.ForwardedBytes("n1")
+	for (up == 0 || down == 0) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		up, down = p.ForwardedBytes("n1")
+	}
 	if up == 0 || down == 0 {
 		t.Fatalf("expected positive forwarded byte counters, got up=%d down=%d", up, down)
 	}
