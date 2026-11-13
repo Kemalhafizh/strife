@@ -64,7 +64,7 @@ jobs:
           go test ./...
       - id: pages
         if: github.event_name != 'pull_request'
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
       - name: build the site
         env:
           GITHUB_TOKEN: ${{ github.token }}
