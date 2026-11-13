@@ -13,10 +13,11 @@ body:
       label: Topic
       options:
         - "Simulator & Determinism (strife sim / campaign)"
-        - "Linearizability / Transactional Checkers (strife check)"
-        - "Live Cluster Testing & strife-agent (strife run / plan)"
+        - "Linearizability / Transactional / Ledger / Settlement Checkers (strife check)"
+        - "Live Cluster Testing, Proxy & strife-agent (strife run / plan / doctor)"
         - "Custom Workloads & WebAssembly (strife workload)"
-        - "Contributing / Architecture"
+        - "Run Registry, Attestation & Compliance (strife serve / sign / compliance)"
+        - "Contributing / Architecture / Governance"
         - "Other"
     validations:
       required: true

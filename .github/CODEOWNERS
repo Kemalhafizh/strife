@@ -1,0 +1,18 @@
+# Default owner across the repository.
+* @Kemalhafizh
+
+# Core invariants, schemas, security, workflows, and release engineering.
+/go.mod @Kemalhafizh
+/schemas/ @Kemalhafizh
+/.github/ @Kemalhafizh
+/action.yml @Kemalhafizh
+/scripts/ @Kemalhafizh
+/SECURITY.md @Kemalhafizh
+/GOVERNANCE.md @Kemalhafizh
+/CONTRIBUTING.md @Kemalhafizh
+
+# Engine, protocol clients, agent, compliance, and website bridge.
+/cmd/ @Kemalhafizh
+/internal/ @Kemalhafizh
+/pkg/ @Kemalhafizh
+/site/ @Kemalhafizh

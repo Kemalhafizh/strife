@@ -35,6 +35,7 @@ Lewat `strife-agent`, median keterlambatan injeksi pause adalah 1,36 ms, dibandi
 | `txn` | Isolasi transaksi lewat Direct Serialization Graph: anomali Adya G0, G1a, G1b, G1c, G2, dan G-realtime pada enam level isolasi |
 | `append` | List-append bergaya Elle: G0–G2, G-single, G-realtime, append yang hilang, urutan yang tidak cocok, duplikat, dan konsistensi internal |
 | `ledger` | Buku besar keuangan berpasangan (double-entry): konservasi saldo total (`LEDGER-CONSERVATION`), deteksi saldo negatif/overdraft (`LEDGER-OVERDRAFT` & write skew `G2-item`), idempotensi retry (`LEDGER-DOUBLE-SPEND`), dan keseimbangan debit/kredit (`LEDGER-UNBALANCED`) |
+| `settlement` | Kliring lintas-sistem dan transaksional outbox settlement: propagasi atomik buku besar ke kliring (`SETTLEMENT-ATOMICITY`), pencegahan kredit yatim (`SETTLEMENT-NO-ORPHAN-CREDIT`), dan deduplikasi idempoten (`SETTLEMENT-IDEMPOTENCY`) |
 
 Bila anggaran pencarian habis, verdict-nya **tidak pasti**, tidak pernah lulus. Kecepatan dan ketepatan checker diukur di [benchmark](/docs/benchmarks#2-checker-throughput), termasuk batasnya. Detail setiap model ada di [Consistency Models](/docs/models).
 

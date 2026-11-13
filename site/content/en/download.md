@@ -13,5 +13,5 @@ This needs Go 1.23 or later. The commands above fetch the code straight from the
 ## System requirements
 
 - **Simulation, history checking, shrinking and verification** run on Linux, macOS and Windows (amd64 and arm64).
-- **Real clusters.** The CLI injects faults into the target nodes over Docker, SSH, Kubernetes (`kubectl exec`) or the `strife-agent`. Targets and the agent need Linux. Network partitions use iptables and `tc netem`; freeze and I/O stalls use cgroup v2.
+- **Real clusters.** The CLI injects faults over Docker, SSH, Kubernetes (`kubectl exec`), `strife-agent`, or the zero-privilege L4 TCP `proxy` transport (Linux, macOS, Windows). `strife-agent` and remote container/host targets require Linux (`AF_NETLINK` FIB rules / `iptables`, `tc netem`, and `cgroup v2`).
 - Next steps are in the [Quick Start](/docs/quick-start), with example setups for etcd, PostgreSQL, MySQL/TiDB, Valkey, Kafka and Kubernetes in the [documentation](/docs).

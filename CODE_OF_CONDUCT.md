@@ -6,9 +6,9 @@ We are committed to keeping the **Strife** community welcoming, constructive, an
 
 ## Expected Behavior
 
-- **Focus on technical evidence:** Support claims about correctness, performance, or anomalies with reproducible seeds (`--seed`), `history.jsonl` traces, or benchmark outputs.
+- **Focus on technical evidence:** Support claims about correctness, performance, or anomalies with reproducible seeds (`--seed`), `history.jsonl` / `.edn` traces, `schedule.json`, or measured benchmark commands.
 - **Critique code and schedules, not people:** Keep code reviews direct, constructive, and respectful.
-- **Respect maintainer and contributor time:** Keep issues and pull requests focused, minimal, and free of unnecessary complexity.
+- **Respect maintainer and contributor time:** Keep issues and pull requests focused, minimal, and aligned with [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`GOVERNANCE.md`](GOVERNANCE.md).
 
 ## Unacceptable Behavior
 

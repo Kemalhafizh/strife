@@ -8,10 +8,11 @@ Strife plugs into CI in two layers:
    - `--sarif FILE` writes a SARIF 2.1.0 report for GitHub Code Scanning.
    - `--summary FILE` appends a Markdown digest.
 2. **A GitHub Action** (`action.yml` at the root of this repository) that
-   builds Strife, runs it, and does the following:
+   downloads a checksum-verified release binary when pinned to a release tag
+   (or builds from source), runs Strife, and does the following:
    - publishes the digest on the job summary page,
    - uploads the HTML/JSON reports, JUnit XML, and SARIF 2.1.0 files as an artifact,
-   - optionally pushes the run report or campaign manifest to a `strife serve` registry,
+   - optionally pushes reports to a `strife serve` registry when running subcommands with `--push` support,
    - annotates the run,
    - fails the job when Strife finds a problem.
 
@@ -26,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: kemalhafizh/strife@main   # pin a tag or commit SHA in production
+      - uses: kemalhafizh/strife@v0.7.0   # pin a release tag or commit SHA
         with:
           command: sim --system raft --seeds 1..500 --determinism --expect linearizable
 ```
@@ -40,13 +41,13 @@ jobs:
 | `junit` | `strife-junit.xml` | JUnit XML path (`""` to disable). |
 | `sarif` | `""` | SARIF 2.1.0 report path (`""` to disable). |
 | `summary` | `true` | Append a Markdown digest to the job summary. |
-| `push` | `""` | Optional `strife serve` registry URL to push the resulting report or campaign manifest to. |
-| `push-token` | `""` | Optional Bearer token for pushing to the `strife serve` registry. |
-| `tenant` | `default` | Tenant identifier recorded when pushing to a multi-tenant `strife serve` registry. |
+| `push` | `""` | Registry URL passed via `--push` (currently used by `scripts/github-action.sh` on subcommands that accept `--push`; for `sim`/`campaign`/`run`, see [`docs/server.md`](server.md#publishing-from-ci)). |
+| `push-token` | `""` | Optional Bearer token for `--push-token`. |
+| `tenant` | `default` | Tenant identifier for `--tenant`. |
 | `upload` | `true` | Upload `out`, `junit` and `sarif` as an artifact. The upload also runs when Strife fails. |
 | `artifact-name` | `strife-reports` | Artifact name. It must be unique per workflow run when you use the action twice. |
 | `fail` | `true` | Fail the step when Strife exits non-zero. |
-| `go-version` | Strife's `go.mod` | Go version used to build Strife. |
+| `go-version` | Strife's `go.mod` | Go version used when building Strife from source. |
 
 ### Outputs
 
@@ -64,7 +65,7 @@ jobs:
 linearizable, and every replay must be identical:
 
 ```yaml
-- uses: kemalhafizh/strife@main
+- uses: kemalhafizh/strife@v0.7.0
   with:
     command: sim --system raft --seeds 1..1000 --determinism --expect linearizable
 ```
@@ -73,25 +74,47 @@ linearizable, and every replay must be identical:
 seed violates. `--shrink` attaches a minimal reproducer to the reports:
 
 ```yaml
-- uses: kemalhafizh/strife@main
+- uses: kemalhafizh/strife@v0.7.0
   with:
     command: sim --system raft-unsafe-fsync --faults kill,io-stall --seeds 1..300 --expect violation --shrink
+```
+
+**Multi-seed campaign gate with baseline regression diff:**
+
+```yaml
+- uses: kemalhafizh/strife@v0.7.0
+  with:
+    command: campaign --system raft --seeds 1..200 --baseline baseline.json --expect no-regression
 ```
 
 **Check a history your own test suite recorded:**
 
 ```yaml
 - run: ./run-my-jepsen-style-test --history-out ops.jsonl
-- uses: kemalhafizh/strife@main
+- uses: kemalhafizh/strife@v0.7.0
   with:
     command: check --model kv ops.jsonl
+```
+
+**Generate a compliance dossier with SLA gates and SARIF rules:**
+
+```yaml
+- uses: kemalhafizh/strife@v0.7.0
+  with:
+    command: sim --system outbox-settlement --seed 7 --expect linearizable
+    out: settle-out
+- uses: kemalhafizh/strife@v0.7.0
+  with:
+    command: compliance --report settle-out/outbox-settlement-seed7/report.json --frameworks dora,soc2,iso27001,bi-ojk --max-mttr 500ms --min-availability 0.95
+    out: settle-compliance
+    sarif: compliance.sarif.json
 ```
 
 **React to the verdict yourself:**
 
 ```yaml
 - id: strife
-  uses: kemalhafizh/strife@main
+  uses: kemalhafizh/strife@v0.7.0
   with:
     command: sim --system raft-stale-reads --faults partition --seeds 1..50
     fail: "false"
@@ -112,7 +135,7 @@ reporter action, for example:
 **Publish SARIF 2.1.0 findings to GitHub Code Scanning:**
 
 ```yaml
-- uses: kemalhafizh/strife@main
+- uses: kemalhafizh/strife@v0.7.0
   with:
     command: sim --system outbox-settlement --seeds 1..100 --expect linearizable
     sarif: strife.sarif.json
@@ -122,17 +145,22 @@ reporter action, for example:
     sarif_file: strife.sarif.json
 ```
 
+> [!NOTE]
+> For publishing `sim`, `campaign`, or `run` JSON artifacts directly to `strife serve`, post `report.json` or `campaign.json` to `/api/v1/ingest` as shown in [`docs/server.md`](server.md#publishing-from-ci). On CLI directly, `strife check --push ... --push-token ... --tenant ...` pushes checked histories in one command.
+
 ## What the JUnit report contains
 
 The `testcase` elements depend on the command:
 
 | Command | `testcase` elements | Failure means |
 | --- | --- | --- |
-| `sim --seed N`, `shrink`, `check` | one per key of the history | that key's history is not linearizable; the body holds the counterexample and the reproduction command |
+| `sim --seed N`, `shrink`, `check` | one per key of the history | that key's history violates the model; the body holds the counterexample and reproduction command |
 | `sim --seeds A..B` | one per seed | that seed violates; the body holds its explanation and reproduction command |
 | `sim --seeds A..B --expect violation` | one: `finds a violation` | no seed in the range violated (finding the bug *is* the test) |
 | `sim --seed N --expect …` | one: `expect …` | the verdict differs from the expectation |
+| `campaign` | one per seed (`seed N`), or `finds a violation` with `--expect violation` | that seed violated or regressed; under `--expect no-regression`, known baseline failures are recorded as `skipped` |
 | `run` | one per key, plus `fault injection` | as above; `fault injection` is an error when fault commands failed, because the cluster did not see the planned schedule |
+| `compliance` | one per evaluated control (`[FW] control_id — Title`) | the control evaluated to `FAIL` (or `PARTIAL` when `--strict` is set) |
 
 Outcomes map as follows:
 
@@ -145,10 +173,10 @@ Outcomes map as follows:
 Suite `properties` carry the audit trail:
 
 - the Strife version,
-- the seed,
-- the verdict,
-- the report fingerprint,
-- the SHA-256 of the schedule, history and trace,
+- the seed (or campaign seed count & trace counts),
+- the verdict (or compliance overall status),
+- the report, campaign, or dossier SHA-256 fingerprint,
+- the SHA-256 of the schedule, history and trace (for simulation/live runs),
 - the reproduction command.
 
 ## Other CI systems
@@ -157,7 +185,7 @@ The report flags are plain files, so any CI system can use them:
 
 ```sh
 strife sim --system raft --seeds 1..500 --expect linearizable \
-  --junit strife-junit.xml --summary strife-summary.md
+  --junit strife-junit.xml --sarif strife.sarif.json --summary strife-summary.md
 ```
 
 - **GitLab:** `artifacts: reports: junit: strife-junit.xml`

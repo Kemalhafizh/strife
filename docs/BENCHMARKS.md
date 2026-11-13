@@ -157,7 +157,7 @@ anomaly can hide behind an indeterminate transaction, or a corrupted read can
 remain explainable by another version order. The 93 misses are of that kind.
 
 Continuous fuzzing (`ci.yml`, job `fuzz`) runs `FuzzCheckAppendSound`,
-`FuzzReadJSONL`, `FuzzParseWasm` and the wire-protocol decoders
+`FuzzReadJSONL`, `FuzzReadEDN`, `FuzzParseWasm`, and the wire-protocol decoders
 (`FuzzPostgresMessages`, `FuzzMySQLPackets`, `FuzzKafkaRecords`, `FuzzRESP`).
 It found a stack-underflow panic in the Wasm interpreter and an integer
 overflow in the MySQL packet decoder, both fixed; their inputs are kept as
@@ -167,8 +167,9 @@ allocates by what actually arrives, not by lengths announced on the wire.
 ## 4. Bug detection in the simulator
 
 Each row sweeps a 5-node cluster for 10 simulated seconds (`--seeds 1..200`, or
-`--seeds 1..60` for `raft-ledger-overdraft`). A system with a known bug is only
-ever reported as violating; correct Raft and the correct Raft ledger never are.
+`--seeds 1..60` for `raft-ledger-overdraft`, `2pc-ledger-torn-commit`, and
+`outbox-dual-write`). A system with a known bug is only ever reported as
+violating; the correct reference implementations never are.
 
 ```sh
 strife sim --system raft-stale-reads       --faults partition           --seeds 1..200
@@ -176,6 +177,8 @@ strife sim --system raft-lease             --faults clock-skew,partition --seeds
 strife sim --system raft-unsafe-fsync      --faults kill,io-stall        --seeds 1..200
 strife sim --system raft-ledger-overdraft  --faults partition,latency    --seeds 1..60
 strife sim --system 2pc-ledger-torn-commit --faults partition,kill       --seeds 1..60
+strife sim --system outbox-dual-write      --faults partition,kill       --seeds 1..60
+strife sim --system outbox-settlement      --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --determinism --expect linearizable
 strife sim --system 2pc-ledger  --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
 strife sim --system raft-ledger --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
 strife sim --system raft        --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
@@ -186,13 +189,15 @@ strife sim --system raft        --faults partition,latency,loss,kill,pause,freez
 | `raft` | none | all eight kinds | **0 / 200** |
 | `raft-ledger` | none (double-entry financial ledger over Raft) | all eight kinds | **0 / 200** |
 | `2pc-ledger` | none (two-phase prepare/commit financial ledger) | all eight kinds | **0 / 200** |
+| `outbox-settlement` | none (transactional outbox settlement pipeline with idempotent deduplication) | all eight kinds | **0 / 200** |
 | `raft-stale-reads` | deposed leader serves local reads | partition | 75 / 200 (37.5 %) |
 | `raft-lease` | lease timed with the wall clock | clock-skew, partition | 10 / 200 (5 %); 0 / 200 without clock-skew |
 | `raft-unsafe-fsync` | acks before `fsync` | kill, io-stall | 7 / 200 (3.5 %); 0 / 200 under partition alone |
 | `raft-ledger-overdraft` | pre-replication balance check allows concurrent overdraft (`LEDGER-OVERDRAFT`) | partition, latency | **60 / 60 (100 %)** |
 | `2pc-ledger-torn-commit` | non-atomic 2PC / Saga commits debit leg before credit leg (`LEDGER-CONSERVATION`) | partition, kill | **60 / 60 (100 %)** |
+| `outbox-dual-write` | async dual-write service drops clearing events on crash/partition (`SETTLEMENT-ATOMICITY`) | partition, kill | **60 / 60 (100 %)** |
 
-The sweeps take 17–34 s each on the 4-vCPU host above.
+The first eight sweeps take 17–34 s each on the 4-vCPU host above. The `outbox-settlement` sweep (including `--determinism` replay, 2m13s) and `outbox-dual-write` sweep (2m27s) were measured on 2026-11-13 at commit `8300f0a` on a 2 vCPU Intel Xeon Platinum 8481C host (Linux 6.12.105+ x86_64, Go 1.27.3).
 
 ## 5. Live clusters
 

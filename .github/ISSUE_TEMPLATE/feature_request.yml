@@ -1,8 +1,12 @@
 name: Feature Request
-description: Propose a new consistency model, protocol client, fault injector, or CLI capability.
+description: Propose a new consistency model, protocol client, fault injector, compliance control, or CLI capability.
 title: "[feat]: "
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Before proposing changes affecting output schemas, CLI exit codes, determinism, or core dependencies, please review `GOVERNANCE.md`.
   - type: dropdown
     id: area
     attributes:
@@ -10,9 +14,9 @@ body:
       options:
         - "Consistency Model / Anomaly Checker (pkg/model, pkg/checker, pkg/txn)"
         - "Live Protocol Client (pkg/client)"
-        - "Fault Injection / Agent Capability (pkg/nemesis, pkg/agent)"
+        - "Fault Injection / Transport / Agent Capability (pkg/nemesis, pkg/transport, pkg/agent)"
         - "Simulator / Built-in System (pkg/sim, pkg/explore)"
-        - "Attestation / Compliance Mapping (pkg/attest, pkg/compliance)"
+        - "Attestation / Compliance / SARIF Reporting (pkg/attest, pkg/compliance, pkg/report)"
         - "CLI / Run Registry / CI Action (cmd/strife, pkg/serve)"
     validations:
       required: true
