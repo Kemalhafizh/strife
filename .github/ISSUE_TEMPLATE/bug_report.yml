@@ -1,24 +1,25 @@
 name: Bug Report
-description: Report a reproducible bug in the simulator, checkers, live runner, or strife-agent.
+description: Report a reproducible bug in the simulator, checkers, live runner, strife-agent, or run registry.
 title: "[bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting an issue. Because Strife runs are seeded, including the `--seed` or `history.jsonl` makes most issues immediately reproducible.
+        Thanks for reporting an issue. Because Strife runs are seeded, including the `--seed` or `history.jsonl` / `.edn` makes most issues immediately reproducible.
   - type: dropdown
     id: component
     attributes:
       label: Component / Subcommand
       options:
         - "strife sim / campaign (deterministic simulator)"
-        - "strife check (WGL linearizability / Elle / Ledger checker)"
-        - "strife shrink (delta debugging)"
-        - "strife run / plan (live cluster runner)"
-        - "strife-agent (Linux Netlink / cgroup v2 / Kubernetes)"
-        - "strife sign / verify / compliance (attestation & dossiers)"
+        - "strife check (kv, set, queue, counter, idgen, txn, append, ledger, settlement)"
+        - "strife shrink (scenario, history, or live delta debugging)"
+        - "strife run / plan / doctor (live cluster runner & transports incl. proxy)"
+        - "strife-agent (Linux Netlink / cgroup v2 / Kubernetes / /probes)"
+        - "strife sign / verify / compliance (attestation, SARIF & dossiers)"
         - "strife serve (self-hosted run registry)"
+        - "strife bench inject (fault injection benchmarks)"
         - "pkg/workload (WebAssembly VM / presets)"
         - "Website / Documentation"
     validations:
@@ -27,7 +28,7 @@ body:
     id: reproduce
     attributes:
       label: Reproduction Command / Seed
-      description: Provide the exact CLI command, `--seed`, schedule hash, or attach a minimal `history.jsonl` / `strife.json`.
+      description: Provide the exact CLI command, `--seed`, schedule hash, or attach a minimal `history.jsonl` / `.edn` or `strife.json`.
       placeholder: |
         strife sim --system raft --faults partition,kill --seed 42 --determinism
       render: sh
@@ -44,6 +45,6 @@ body:
     id: environment
     attributes:
       label: Strife Version, Go Version & OS
-      placeholder: "strife v0.2.0, go1.23 linux/amd64 (Ubuntu 24.04 kernel 6.8)"
+      placeholder: "strife 0.7.0, go1.23+ linux/amd64 (Ubuntu 24.04 kernel 6.8)"
     validations:
       required: true

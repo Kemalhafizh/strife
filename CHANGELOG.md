@@ -6,6 +6,16 @@ All notable changes to Strife. The format follows
 [`schemas/`](schemas/) are versioned contracts: within a major version they
 only gain optional fields.
 
+## [Unreleased]
+
+### Fixed
+
+- Harden checker soundness, input bounds (wire decoders, JSONL/EDN parsers, and Wasm module loader), live client outcome classification guards, and live fault handling ([#13](https://github.com/Kemalhafizh/strife/pull/13)).
+
+### Documentation & Governance
+
+- Add project governance (`GOVERNANCE.md`), `NOTICE`, `.github/CODEOWNERS`, Dependabot configuration, expanded `SECURITY.md`, updated contributor verification workflow (`CONTRIBUTING.md`), and aligned `README.md`, `docs/`, and `examples/` documentation with `v0.7.0`.
+
 ## [0.7.0] - 2026-11-07
 
 ### Added (0.7.0)
@@ -258,5 +268,11 @@ JUnit and job-summary output with a GitHub Action, strife-agent, server
 probes, Wasm workloads, campaigns with regression tracking, in-toto report
 attestation and compliance dossiers.
 
-[0.2.0]: https://github.com/kemalhafizh/strife/compare/main...phase-5/proof-and-reach
-[0.1.0]: https://github.com/kemalhafizh/strife/tree/22a3dff
+[Unreleased]: https://github.com/Kemalhafizh/strife/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Kemalhafizh/strife/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/Kemalhafizh/strife/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/Kemalhafizh/strife/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/Kemalhafizh/strife/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/Kemalhafizh/strife/compare/640c9bc...v0.3.0
+[0.2.0]: https://github.com/Kemalhafizh/strife/compare/22a3dff...640c9bc
+[0.1.0]: https://github.com/Kemalhafizh/strife/tree/22a3dff

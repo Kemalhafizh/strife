@@ -8,7 +8,7 @@
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20(stdlib%20only)-2ea44f)](go.mod)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-[Quick Start](#quick-start) · [Website & Try It](https://kemalhafizh.github.io/strife/) · [Shrinking](#shrinking-failures) · [Models & Checkers](#consistency-models--anomaly-detection) · [Live Clusters & Agent](#live-clusters--strife-agent) · [Benchmarks](docs/BENCHMARKS.md) · [Wasm Workloads](#custom-workloads--wasm-vm) · [Campaigns](#regression-campaigns) · [Attestation & Compliance](#cryptographic-attestation--compliance-dossiers) · [Architecture](#architecture)
+[Quick Start](#quick-start) · [Website & Try It](https://kemalhafizh.github.io/strife/) · [Shrinking](#shrinking-failures) · [Models & Checkers](#consistency-models--anomaly-detection) · [Live Clusters & Agent](#live-clusters--strife-agent) · [Benchmarks](docs/BENCHMARKS.md) · [Wasm Workloads](#custom-workloads--wasm-vm) · [Campaigns](#regression-campaigns) · [Attestation & Compliance](#cryptographic-attestation--compliance-dossiers) · [Run Registry](#run-registry-strife-serve) · [Architecture](#architecture) · [Governance](GOVERNANCE.md)
 
 ---
 
@@ -53,7 +53,7 @@ Install a release (archives for Linux, macOS and Windows with `SHA256SUMS`, an S
 ```sh
 # Release binaries: https://github.com/Kemalhafizh/strife/releases
 sha256sum -c --ignore-missing SHA256SUMS
-strife verify --bundle strife_v0.2.0.intoto.json --key release.pub --release-dir .
+strife verify --bundle strife_v0.7.0.intoto.json --key release.pub --release-dir .
 
 # Container images (linux/amd64, linux/arm64)
 docker run --rm ghcr.io/kemalhafizh/strife:latest version
@@ -160,12 +160,13 @@ Here the stale reads from PostgreSQL's asynchronous standbys need no fault at al
 
 ## Consistency Models & Anomaly Detection
 
-`strife check` verifies any JSONL history against eight built-in models:
+`strife check` verifies any recorded native `.jsonl` or Jepsen `.edn` history against nine built-in models (and `--export-edn` exports parsed histories into canonical Jepsen EDN format):
 
 ```sh
 strife check --history ops.jsonl --model kv --out report/
 strife check --history txn.jsonl --model txn --isolation snapshot-isolation
 strife check --history ledger.jsonl --model ledger --out report/
+strife check --history settlement.edn --model settlement --out report/
 ```
 
 | Model | Operations | Verification Engine & Complexity |
@@ -178,6 +179,7 @@ strife check --history ledger.jsonl --model ledger --out report/
 | `txn` | `txn` (`[r(k), w(k,v), ...]`) | Direct Serialization Graph (DSG) construction (`wr`, `ww`, `rw`, `so`, `ro` edges) + Tarjan SCC shortest-cycle extraction across 6 isolation levels. |
 | `append` | `txn` of `append(k, v)` / `r(k) → [v…]` | Elle-style list-append: version orders recovered from reads, `ww`/`wr`/`rw` and real-time edges, lost appends, incompatible orders, duplicates and internal-consistency checks (~40k–57k txns/s; 0 false positives and 99.81 % of invalid histories caught in a brute-force cross-check, [measured](docs/BENCHMARKS.md#3-checker-correctness)). |
 | `ledger` | `txn` of account transfers & balance audits | Double-entry financial ledger & conservation-of-money checker (`LEDGER-CONSERVATION` $\sum B_i = M_0$, `LEDGER-OVERDRAFT` $B_i < 0$ & concurrent `G2-item` write skew, `LEDGER-DOUBLE-SPEND` across `info` timeout retries, and `LEDGER-UNBALANCED` $\sum \Delta_k \ne 0$). |
+| `settlement` | `txn` of ledger/broker appends & reconciliation reads | Cross-system settlement & transactional-outbox verification (`SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, and `SETTLEMENT-IDEMPOTENCY`). |
 
 ### Transactional Isolation Levels & Adya Anomaly Classification (`--model txn`)
 
@@ -190,7 +192,7 @@ The transactional checker ([`pkg/txn`](pkg/txn/txn.go)) reconstructs item versio
 - **`G2-item` / `G2` (Anti-Dependency Cycles):** Cycles containing one or more read-write (`rw`) anti-dependency edges, such as Write Skew (`T1` reads `x`, `T2` reads `y`, `T1` writes `y`, `T2` writes `x`).
 - **`G-realtime` (Real-Time Inversion):** Serialization order contradicts wall-clock completion order (`ro` edge), violating `strict-serializable`.
 
-Supported `--isolation` flags: `read-uncommitted`, `read-committed`, `repeatable-read`, `snapshot-isolation`, `serializable`, `strict-serializable`.
+Supported `--isolation` flags (applies to `--model txn`, `append`, and `ledger`): `read-uncommitted`, `read-committed`, `repeatable-read`, `snapshot-isolation`, `serializable`, `strict-serializable`.
 
 ---
 
@@ -242,7 +244,7 @@ strife run    --config strife.json --faults none --expect linearizable   # fault
 | `partition` (iptables) | 57.9 / 61.3 ms | **4.02 / 4.29 ms** | 2.61 ms |
 | `latency` (netem) | 42.8 / 44.1 ms | 48.1 / 59.5 ms ¹ | **159 µs** |
 
-¹ The agent's reply crosses the interface it just slowed down, so the confirmation arrives late; the qdisc itself was installed 159 µs after the request reached the agent. Partitions still shell out to `iptables` inside the agent; signals, netem and cgroup writes are direct syscalls.
+¹ The agent's reply crosses the interface it just slowed down, so the confirmation arrives late; the qdisc itself was installed 159 µs after the request reached the agent. In run 39039844498 partitions fell back to `iptables`; `strife-agent` now uses `AF_NETLINK` FIB blackhole rules (`RTM_NEWRULE` / `FR_ACT_BLACKHOLE`) when kernel policy routing is permitted, falling back automatically to `iptables`. Signals, netem, and cgroup writes are direct syscalls.
 
 ### Server-Side Diagnostic Probes & Root-Cause Correlation
 
@@ -350,10 +352,11 @@ strife sign --report strife-out/raft-seed7/report.json \
 strife verify --bundle strife-out/raft-seed7/bundle.json \
   --key audit-key.pub --history strife-out/raft-seed7/history.jsonl
 
-# 4. Generate a regulatory compliance dossier (JSON, Markdown, and print-ready HTML)
+# 4. Generate a regulatory compliance dossier (JSON, Markdown, HTML) with SLA gates & SARIF
 strife compliance --report strife-out/raft-seed7/report.json \
   --bundle strife-out/raft-seed7/bundle.json --key audit-key.pub \
-  --frameworks dora,soc2,iso27001,bi-ojk --out strife-compliance --strict
+  --frameworks dora,soc2,iso27001,bi-ojk --max-mttr 500ms --min-availability 0.99 \
+  --sarif compliance.sarif.json --out strife-compliance --strict
 ```
 
 ### Supported Regulatory Frameworks
@@ -375,23 +378,27 @@ Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` wh
 
 `strife serve` ([`pkg/serve`](pkg/serve/server.go), full reference in [`docs/server.md`](docs/server.md)) runs a self-hosted HTTP daemon and embedded web dashboard that keeps every CI run and regression campaign inside your own network:
 
-- **Verified on arrival:** Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; tampered payloads are rejected.
-- **Automatic baseline regression diffing:** Ingested campaigns are automatically compared against the latest stored campaign for the same target system, recording `regressed`, `fixed`, and `trace_drift` seed transitions.
-- **Automatic Ed25519 `in-toto` signing:** When started with `--key <private.key>`, every ingested report is automatically signed into a verifiable `bundle.json`.
-- **Automatic webhook alerting:** When started with `--webhook <urls>`, `strife serve` dispatches Slack, Discord, or generic JSON alerts whenever an ingested report violates consistency or a campaign introduces seed regressions.
+- **Verified on arrival & multi-tenant isolated:** Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; baselines and time-series rollups (`GET /api/v1/series`) are isolated by `(tenant, target)`.
+- **Automatic baseline regression diffing:** Ingested campaigns are automatically compared against the latest stored campaign for the same `(tenant, target)` pair, recording `regressed`, `fixed`, and `trace_drift` seed transitions.
+- **Per-tenant Ed25519 signing & on-demand dossiers:** Sign ingested reports automatically with `--key` or per-tenant keys (`--tenant-keys tenant=path.key`), discover active public keys via `GET /api/v1/keys`, and generate verified regulatory dossiers on demand (`GET /api/v1/runs/<id>/dossier`).
+- **Consistency & SLA webhook alerting:** When started with `--webhook <urls>`, `strife serve` dispatches Slack, Discord, or generic JSON alerts on consistency violations (`report.violation`), campaign regressions/violations (`campaign.regression` / `campaign.violation`), and recovery SLA breaches (`report.sla_breach` via `--max-mttr` and `--min-availability`).
 
 ```sh
-# Start the registry with Bearer token auth, Ed25519 signing, and webhook alerts
+# Start the registry with Bearer auth, per-tenant Ed25519 keys, SLA gates, and webhook alerts
 strife serve --listen 127.0.0.1:8080 --store ./strife-registry \
-  --token "$STRIFE_REGISTRY_TOKEN" --key audit-key.key --signer "ci-registry" \
+  --token "$STRIFE_REGISTRY_TOKEN" --key audit-key.key \
+  --tenant-keys "payments=payments.key" --signer "ci-registry" \
+  --max-mttr 500ms --min-availability 0.99 \
   --webhook "https://hooks.slack.com/services/T00/B00/X00"
 
-# Push a report or campaign from CI
+# Push a checked history directly from CLI, or POST sim/campaign/run JSON to /api/v1/ingest
+strife check --model settlement --history history.jsonl \
+  --push http://127.0.0.1:8080 --push-token "$STRIFE_REGISTRY_TOKEN" --tenant payments
 curl -fsSL -X POST \
   -H "Authorization: Bearer $STRIFE_REGISTRY_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @strife-out/raft-seed7/report.json \
-  "http://127.0.0.1:8080/api/v1/ingest?commit=$(git rev-parse --short HEAD)&branch=main"
+  "http://127.0.0.1:8080/api/v1/ingest?tenant=payments&commit=$(git rev-parse --short HEAD)&branch=main"
 ```
 
 ---
@@ -400,18 +407,20 @@ curl -fsSL -X POST \
 
 Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-**Simulated bug corpus** (200 seeds each, 5 nodes, 10 simulated seconds):
+**Simulated bug corpus** (200 seeds, or 60 seeds for deterministic bug-injection models, 5 nodes, 10 simulated seconds):
 
 | System | Bug | Required faults | Violating seeds |
 | :--- | :--- | :--- | :--- |
 | `raft` | none | all 8 fault kinds | **0 / 200** |
 | `raft-ledger` | none (double-entry financial ledger over Raft) | all 8 fault kinds | **0 / 200** |
 | `2pc-ledger` | none (two-phase prepare/commit financial ledger) | all 8 fault kinds | **0 / 200** |
+| `outbox-settlement` | none (transactional outbox settlement pipeline with idempotent deduplication) | all 8 fault kinds | **0 / 200** |
 | `raft-stale-reads` | deposed leader serves local reads | `partition` | **75 / 200** |
 | `raft-lease` | lease timed with the local wall clock | `clock-skew` + `partition` | **10 / 200** (0 without `clock-skew`) |
 | `raft-unsafe-fsync` | votes and entries acked before `fsync` | `kill` + `io-stall` | **7 / 200** (0 under `partition` alone) |
 | `raft-ledger-overdraft` | pre-replication balance check allows concurrent overdraft (`LEDGER-OVERDRAFT`) | `partition` + `latency` | **60 / 60** |
 | `2pc-ledger-torn-commit` | non-atomic 2PC / Saga commits debit leg before credit leg (`LEDGER-CONSERVATION`) | `partition` + `kill` | **60 / 60** |
+| `outbox-dual-write` | async dual-write drops clearing event on crash/partition (`SETTLEMENT-ATOMICITY`) | `partition` + `kill` | **60 / 60** |
 
 **Live clusters in CI** ([`.github/workflows/live.yml`](.github/workflows/live.yml), every push). Correct configurations must pass and known-weak ones must be caught:
 
@@ -426,7 +435,7 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 | Valkey 8 | partition, pause, kill -9 | **stale replica reads** caught; single primary with `appendfsync always` linearizable |
 | Kafka 3.9.1 and 4.1.0 (KRaft) | partition, kill -9, pause | no acknowledged record lost or reordered; stale reads after leader changes reported |
 
-**Checker correctness:** in brute-force cross-checks the list-append checker flagged none of 150,030 valid histories and caught 99.81 % of 49,970 invalid ones; the register-transaction checker flagged none of 40,000. Every parser of untrusted bytes (wire protocols, JSONL, Wasm) is fuzzed in CI.
+**Checker correctness:** in brute-force cross-checks the list-append checker flagged none of 150,030 valid histories and caught 99.81 % of 49,970 invalid ones; the register-transaction checker flagged none of 40,000. Every parser of untrusted bytes (wire protocols, JSONL, Jepsen EDN, Wasm) is fuzzed in CI.
 
 ---
 
@@ -438,69 +447,72 @@ flowchart LR
   seed --> wl["pkg/workload<br/>PRNG / Wasm 1.0 VM"]
   sched --> simw["pkg/sim<br/>Discrete-Event Simulator"]
   wl --> simw
-  sched --> live["pkg/runner + strife-agent<br/>RTNETLINK · cgroup v2 · Signals"]
+  sched --> live["pkg/runner + strife-agent<br/>RTNETLINK · cgroup v2 · Proxy"]
   wl --> live
-  simw --> hist[("history.jsonl")]
+  simw --> hist[("history.jsonl / .edn")]
   live --> hist
   live --> probes[("probes.jsonl")]
   hist --> chk["pkg/checker + pkg/txn<br/>WGL + Elle DSG Cycles"]
   probes --> corr["pkg/probe<br/>Root-Cause Correlator"]
   chk --> corr
-  corr --> rep["pkg/report<br/>HTML5 Studio · JUnit · JSON"]
+  corr --> rep["pkg/report<br/>HTML5 Studio · JUnit · SARIF · MTTR"]
   rep --> att["pkg/attest + pkg/compliance<br/>Ed25519 in-toto · Audit Dossier"]
 ```
 
 ```text
-cmd/strife        CLI: sim, campaign, shrink, check, plan, run, bench, workload, keygen, sign, verify, compliance, serve, systems, version
+cmd/strife        CLI: sim, campaign, shrink, check, plan, run, doctor, bench, workload, keygen, sign, verify, compliance, serve, systems, version
 cmd/strife-agent  Per-node daemon: Linux AF_NETLINK (netem + FIB blackhole rules), K8s pod/container cgroup v2 discovery, direct signals, /probes telemetry
 internal/rng      Pinned, forkable xoshiro256** PRNG seeded with SplitMix64
 internal/stats    Nearest-rank percentiles and latency summaries
 internal/secret   env:/file: secret references and redaction
+internal/version  Build-time semantic version metadata
 internal/jsonschema  JSON Schema generation, validation and compatibility checks for schemas/
-pkg/history       Jepsen-style operation histories, JSONL codec, SHA-256 hashing
-pkg/model         Sequential & transactional specifications: kv, set, queue, counter, idgen, txn, append, ledger
+pkg/history       Jepsen-style operation histories, JSONL & Jepsen EDN codecs, SHA-256 hashing
+pkg/model         Sequential & transactional specifications: kv, set, queue, counter, idgen, txn, append, ledger, settlement
 pkg/txn           Dependency-graph checkers: register txns and Elle-style list-append (G0, G1a/b/c, G-single, G2, G-realtime, lost appends)
 pkg/checker       Wing & Gong / Lowe linearizability solver, value-interval pruning (kvPruner), P-compositionality, witness diagnosis
 pkg/nemesis       Deterministic fault schedule generator & command lowering
 pkg/workload      Declarative workload compiler, presets, and fuel-metered WebAssembly 1.0 stack machine
 pkg/sim           Discrete-event simulation world (network, timers, disk flushes, local clocks)
-pkg/sim/raft      Reference Raft consensus & double-entry ledger implementation with configurable safety bugs
+pkg/sim/raft      Reference Raft consensus, double-entry ledger, 2PC, and outbox settlement implementations with configurable safety bugs
 pkg/explore       Parallel seed exploration & bit-for-bit determinism verification
-pkg/campaign      Multi-seed campaign runner, baseline regression tracker, HTML heatmap dashboard
+pkg/campaign      Multi-seed campaign runner, baseline regression tracker, MTTR/availability rollups, HTML heatmap dashboard
 pkg/shrink        1-minimal scenario & history delta debugging; live schedule shrinking with reproduction rates
-pkg/transport     Execution transports: docker exec, ssh, kubectl exec, strife-agent HTTP/Unix socket, dry-run
+pkg/transport     Execution transports: proxy (user-space L4 TCP), docker exec, ssh, kubectl exec, strife-agent HTTP/Unix socket, dry-run, doctor
 pkg/agent         Agent HTTP server, Linux RTNETLINK (netem + FIB rules), K8s /proc + cgroup v2 resolver, apply-latency collector
 pkg/probe         Server-side telemetry collector (fsync canary, Linux PSI, OOM, clock jumps) & correlator
 pkg/client        Zero-dependency clients: etcd v3, Redis/Valkey, PostgreSQL (SCRAM, TLS), Kafka, MySQL/TiDB (caching_sha2, TLS)
 pkg/runner        Live cluster test orchestrator, fault injector & per-run namespace isolation
 pkg/bench         Fault-injection latency benchmark (strife bench inject)
-pkg/report        Interactive HTML5/Canvas timeline studio, Markdown/JUnit exporters, fingerprints
+pkg/report        Interactive HTML5/Canvas timeline studio, Markdown/JUnit/SARIF 2.1.0 exporters, post-heal MTTR/availability metrics, fingerprints
 pkg/attest        in-toto v0.1 statements, Ed25519 signing/verification, release attestations
 pkg/compliance    Regulatory control evaluator (EU DORA, SOC 2, ISO 27001, OJK + double-entry ledger reconciliation) with citations & dossiers
-pkg/serve         Self-hosted continuous verification & run registry HTTP daemon (strife serve), REST API, auto-regression diffing, web UI
+pkg/serve         Self-hosted continuous verification & run registry HTTP daemon (strife serve), REST API, per-tenant Ed25519 keys, auto-regression diffing, web UI
 deploy/kubernetes DaemonSet manifest (strife-agent-daemonset.yaml) with hostPID/hostNetwork and /sys/fs/cgroup mount
 schemas/          Versioned JSON Schemas for report.json, history.jsonl and dossier.json
-site/             Interactive product showcase & standalone HTML5 demos (timeline, campaign, dossier)
+docs/             Operational guides and reference specs (benchmarks, GitHub Action, run registry, roadmap)
+examples/         Runnable Docker Compose and Kubernetes suites (etcd, agent, PostgreSQL, MySQL, TiDB, Valkey, Kafka)
+site/             Interactive product showcase & standalone HTML5 demos (timeline, campaign, dossier, Wasm playground)
 ```
 
 ### CLI Reference & Exit Codes
 
 | Command | Description |
 | :--- | :--- |
-| `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`) |
-| `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect no-regression`) |
+| `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`, `--junit`, `--sarif`) |
+| `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect no-regression`, `--junit`, `--sarif`) |
 | `strife shrink [flags]` | Minimize a failing simulation (`--seed` / `--report`) or recorded trace (`--history FILE`) to 1-minimality, or a live schedule (`--live --config`) to a candidate reproducer |
-| `strife check [flags]` | Verify a recorded `history.jsonl` / `history.edn` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`) and optional `--probes` |
+| `strife check [flags]` | Verify a recorded `history.jsonl` / `.edn` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`), export EDN (`--export-edn`), emit `--sarif`, or push to `strife serve` (`--push`) |
 | `strife plan [flags]` | Print the seeded fault schedule and exact host/container commands without executing them |
-| `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`) |
+| `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`, `--sarif`) |
 | `strife doctor [flags]` | Inspect host OS/cgroup capabilities, transports, and cluster endpoint reachability (`--config`, `--json`) |
 | `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent`, `--json`, `--markdown`) |
 | `strife workload [flags]` | List presets (`--list`), compile specs to `.wasm` (`--compile --out`), or inspect `.wasm` plugins (`--inspect`) |
 | `strife keygen [flags]` | Generate an Ed25519 signing keypair (`<prefix>.key` and `<prefix>.pub`) |
 | `strife sign [flags]` | Sign a `report.json` into an `in-toto` v0.1 attestation bundle, or release artifacts (`--release`) |
 | `strife verify [flags]` | Verify a signed `bundle.json` (and optional `history.jsonl`) or a release directory (`--release-dir`) against an Ed25519 public key |
-| `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk` |
-| `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--token`, `--webhook`, `--max-mttr`, `--min-availability`) |
+| `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk` (`--max-mttr`, `--min-availability`, `--sarif`, `--strict`) |
+| `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--tenant-keys`, `--token`, `--webhook`, `--max-mttr`, `--min-availability`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 
@@ -516,12 +528,13 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 
 ## CI Integration
 
-Use the composite GitHub Action (see [`docs/github-action.md`](docs/github-action.md) for inputs, outputs, and GitLab/Jenkins recipes):
+Use the composite GitHub Action (see [`docs/github-action.md`](docs/github-action.md) for inputs, `junit` / `sarif` / `push` options, and GitLab/Jenkins recipes):
 
 ```yaml
-- uses: kemalhafizh/strife@v0.2.0   # a release tag downloads the checksum-verified binary
+- uses: kemalhafizh/strife@v0.7.0   # a release tag downloads the checksum-verified binary
   with:
     command: sim --system raft --seeds 1..500 --determinism --expect linearizable
+    sarif: strife.sarif.json
 ```
 
 Reports follow versioned JSON Schemas in [`schemas/`](schemas) (`report.v1.json`, `history.v1.json`, `dossier.v1.json`); CI rejects any change that would break them.
@@ -529,13 +542,14 @@ Reports follow versioned JSON Schemas in [`schemas/`](schemas) (`report.v1.json`
 ## Development
 
 ```sh
+make lint        # Formatting check (gofmt), go vet, shellcheck, and actionlint
 make test        # Unit tests + bug-finding regression suite
 make test-short  # Fast unit tests with the race detector (-race)
 make chaos       # Full CI gauntlet: 200 seeds of Raft + bug discovery + shrinking verification
 ```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines, [`SECURITY.md`](SECURITY.md) for vulnerability disclosure, [`SUPPORT.md`](SUPPORT.md) for community support, and [`docs/ROADMAP.md`](docs/ROADMAP.md) for architectural decisions and benchmark methodology.
+See [`GOVERNANCE.md`](GOVERNANCE.md) for maintainership and design-review policy, [`CONTRIBUTING.md`](CONTRIBUTING.md) for contributor guidelines and local verification, [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community standards, [`SECURITY.md`](SECURITY.md) for vulnerability disclosure, [`SUPPORT.md`](SUPPORT.md) for troubleshooting and help channels, [`CHANGELOG.md`](CHANGELOG.md) for release history, and [`docs/ROADMAP.md`](docs/ROADMAP.md) for architectural decisions and benchmark methodology.
 
 ## License
 
-Apache License 2.0. See [`LICENSE`](LICENSE).
+Apache License 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

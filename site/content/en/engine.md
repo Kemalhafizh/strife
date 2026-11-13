@@ -35,6 +35,7 @@ Through `strife-agent` the median delay of a pause is 1.36 ms, against 43.7 ms t
 | `txn` | Transaction isolation through a Direct Serialization Graph: Adya's G0, G1a, G1b, G1c, G2 and G-realtime across six isolation levels |
 | `append` | Elle-style list-append: G0–G2, G-single, G-realtime, lost appends, incompatible orders, duplicates and internal consistency |
 | `ledger` | Double-entry financial ledger: conservation of total money (`LEDGER-CONSERVATION`), overdraft & concurrent write-skew detection (`LEDGER-OVERDRAFT` / `G2-item`), retry idempotency (`LEDGER-DOUBLE-SPEND`), and balanced postings (`LEDGER-UNBALANCED`) |
+| `settlement` | Cross-system clearing and transactional outbox settlement: atomic ledger-to-clearing propagation (`SETTLEMENT-ATOMICITY`), orphan credit prevention (`SETTLEMENT-NO-ORPHAN-CREDIT`), and idempotent deduplication (`SETTLEMENT-IDEMPOTENCY`) |
 
 When the search budget runs out the verdict is **unknown**, never a pass. Checker speed and accuracy are measured in the [benchmarks](/docs/benchmarks#2-checker-throughput), limits included; each model is described in [Consistency Models](/docs/models).
 

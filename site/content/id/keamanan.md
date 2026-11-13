@@ -18,7 +18,7 @@ translationKey: security
 
 - **Nol dependensi eksternal.** Engine dibangun hanya dari pustaka standar Go, dan `go.mod` tidak memuat blok `require`. Seluruh kode yang berjalan bisa ditinjau di satu repositori.
 - **Rilis yang bisa diverifikasi.** Setiap rilis menyertakan arsip untuk Linux, macOS, dan Windows (amd64 dan arm64), `SHA256SUMS`, SBOM SPDX, dan image container multi-arsitektur. Bila kunci rilis sudah dikonfigurasi, rilis juga menyertakan atestasi in-toto yang ditandatangani Ed25519.
-- **Fuzzing berkelanjutan** untuk setiap parser data tak tepercaya, yaitu protokol database dan WebAssembly. Temuannya dicatat di [benchmark](/docs/benchmarks#3-checker-correctness).
+- **Fuzzing berkelanjutan** untuk setiap parser data tak tepercaya (protokol wire database, WebAssembly, JSONL, dan Jepsen EDN) serta ketepatan checker list-append. Temuannya dicatat di [benchmark](/docs/benchmarks#3-checker-correctness).
 
 ## Kunci rilis
 

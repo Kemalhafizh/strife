@@ -18,7 +18,7 @@ translationKey: security
 
 - **Zero external dependencies.** The engine builds from the Go standard library alone, and `go.mod` has no `require` block. All the code that runs can be reviewed in one repository.
 - **Verifiable releases.** Every release ships archives for Linux, macOS and Windows (amd64 and arm64), `SHA256SUMS`, an SPDX SBOM and multi-architecture container images. When the release key is configured, it also ships an in-toto attestation signed with Ed25519.
-- **Continuous fuzzing** of every parser of untrusted bytes, meaning the database protocols and WebAssembly. Findings are recorded in the [benchmarks](/docs/benchmarks#3-checker-correctness).
+- **Continuous fuzzing** of every parser of untrusted bytes (database wire protocols, WebAssembly, JSONL, and Jepsen EDN) plus list-append checker soundness. Findings are recorded in the [benchmarks](/docs/benchmarks#3-checker-correctness).
 
 ## Release key
 

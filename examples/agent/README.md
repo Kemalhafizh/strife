@@ -47,24 +47,26 @@ or a failover.
                                v
 +-------------------------------------------------------------+
 | strife-agent daemon (cmd/strife-agent, port 9292)           |
+|   /health  /apply  /exec  /teardown  /probes                |
 +-------------------------------------------------------------+
    |                  |                     |               |
    v                  v                     v               v
-RTNETLINK       Direct Signals         cgroup v2        iptables
-(RTM_NEWQDISC)  (syscall.SIGSTOP)     (/sys/fs/cgroup)  (STRIFE chain)
-  Netem Latency   Process Freeze        cgroup.freeze     Network Partitions
-  Packet Loss     SIGKILL Crash         io.max Stall
+RTNETLINK       Direct Signals         cgroup v2        iptables fallback
+(QDISC + FIB)   (syscall.SIGSTOP)     (/sys/fs/cgroup)  (STRIFE chain)
+  Netem + FIB     Process Freeze        cgroup.freeze     Network Partitions
+  Blackhole       SIGKILL Crash         io.max Stall
 ```
 
-1. **RTNETLINK (`RTM_NEWQDISC` / `RTM_DELQDISC`)**:
+1. **RTNETLINK (`RTM_NEWQDISC` + `RTM_NEWRULE` / `FR_ACT_BLACKHOLE`)**:
    Communicates directly with the Linux kernel network subsystem over `AF_NETLINK`
-   sockets to create and replace `netem` qdiscs (`latency`, `jitter`, `loss`).
+   sockets to configure `netem` qdiscs (`latency`, `jitter`, `loss`) and
+   kernel FIB blackhole routing rules for zero-fork network partitions.
 2. **Direct Syscall Signals**:
-   Replaces `pkill -STOP` and `pkill -9` with direct `/proc` scanning and `syscall.Kill(pid, sig)`.
-3. **Direct cgroup v2 File Writes**:
-   Writes directly to `/sys/fs/cgroup/.../cgroup.freeze` and `/sys/fs/cgroup/.../io.max` without spawning shells.
-4. **Idempotent Packet Filtering**:
-   Maintains dedicated `STRIFE` iptables chain. Duplicate rules are discarded; teardown cleanly flushes rules.
+   Replaces `pkill -STOP` and `pkill -9` with direct `/proc` scanning and `syscall.Kill(pid, sig)` (including Kubernetes `pod:<ns>/<name>`, `k8s:<name>`, and `container:<id>` target discovery).
+3. **Direct cgroup v2 File Writes & Telemetry (`/probes`)**:
+   Writes directly to `/sys/fs/cgroup/.../cgroup.freeze` and `/sys/fs/cgroup/.../io.max`, and exposes PSI, OOM, `fsync` canary, and clock-jump telemetry on `GET /probes`.
+4. **Idempotent `iptables` Fallback**:
+   When kernel FIB policy routing is unavailable, falls back automatically to a dedicated `STRIFE` `iptables` chain and flushes rules cleanly on heal/teardown.
 
 ---
 
@@ -98,8 +100,11 @@ Output:
     "os": "linux",
     "arch": "amd64",
     "netlink": true,
+    "netlink_fib_rule": true,
     "cgroup_v2": true,
+    "kubernetes": false,
     "direct_signals": true,
+    "nftables": false,
     "iptables": true,
     "tc": true
   }
