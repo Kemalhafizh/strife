@@ -582,6 +582,11 @@ func (k *Kafka) Invoke(ctx context.Context, op history.Op) history.Op {
 	var err error
 	switch m.F {
 	case history.MicroAppend:
+		if m.Value == nil {
+			out := complete(op, history.Fail)
+			out.Error = "kafka: append missing value"
+			return out
+		}
 		err = k.produce(ctx, topic, *m.Value)
 	case history.MicroRead:
 		var vals []int64

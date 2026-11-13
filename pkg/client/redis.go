@@ -262,6 +262,9 @@ func (r *Redis) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 		}
 		return out, nil
 	case history.FWrite:
+		if op.Value == nil {
+			return history.Op{}, &redisError{"write missing value"}
+		}
 		v, err := r.do(ctx, "SET", key, strconv.FormatInt(*op.Value, 10))
 		if err != nil {
 			return history.Op{}, err
@@ -271,6 +274,9 @@ func (r *Redis) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 		}
 		return complete(op, history.OK), nil
 	case history.FCas:
+		if op.Old == nil || op.Value == nil {
+			return history.Op{}, &redisError{"cas requires non-nil old and new values"}
+		}
 		v, err := r.do(ctx, "EVAL", casScript, "1", key, strconv.FormatInt(*op.Old, 10), strconv.FormatInt(*op.Value, 10))
 		if err != nil {
 			return history.Op{}, err
@@ -406,6 +412,9 @@ func (r *Redis) txn(ctx context.Context, op history.Op) (history.Op, error) {
 		args = append(args, r.prefix+m.Key)
 		switch m.F {
 		case history.MicroAppend:
+			if m.Value == nil {
+				return history.Op{}, &redisError{"append missing value"}
+			}
 			argv = append(argv, "a", strconv.FormatInt(*m.Value, 10))
 		case history.MicroRead:
 			argv = append(argv, "r", "")

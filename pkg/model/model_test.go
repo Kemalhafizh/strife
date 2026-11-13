@@ -357,4 +357,57 @@ func TestTxnModelAndDiagnoser(t *testing.T) {
 	if diag == "" {
 		t.Fatal("empty diagnosis")
 	}
+
+	// Step validates observed read values from out.Txn and ignores Fail ops.
+	inReadNoVal := history.Op{
+		F:   history.FTxn,
+		Txn: []history.MicroOp{{F: "r", Key: "x"}},
+	}
+	ok, _ = tm.Step(st, inReadNoVal, history.Op{
+		Type: history.OK,
+		Txn:  []history.MicroOp{{F: "r", Key: "x", Value: v(10)}},
+	})
+	if !ok {
+		t.Fatal("expected Step to accept matching read value from out.Txn")
+	}
+	ok, _ = tm.Step(st, inReadNoVal, history.Op{
+		Type: history.OK,
+		Txn:  []history.MicroOp{{F: "r", Key: "x", Value: v(999)}},
+	})
+	if ok {
+		t.Fatal("expected Step to reject mismatched read value from out.Txn")
+	}
+	ok, nextSt := tm.Step(st, inWrite, history.Op{Type: history.Fail})
+	if !ok || !nextSt.Equal(st) {
+		t.Fatal("expected Fail op to leave TxnModel state unchanged")
+	}
+}
+
+func TestQueueDiagnoserSoundnessEdgeCases(t *testing.T) {
+	q := Queue{}
+
+	t.Run("FailedEnqueueDoesNotTriggerFIFO", func(t *testing.T) {
+		// Linearizable order: enqueue(2) [0..12], enqueue(1) [0..10], then dequeue(2).
+		// The later failed enqueue(2) [15..20] must not trigger a false FIFO inversion.
+		ops := []history.Operation{
+			{ID: 0, Call: 0, Return: 10, Input: history.Op{Process: 0, F: "enqueue", Value: v(1)}, Output: history.Op{Type: history.OK}},
+			{ID: 1, Call: 0, Return: 12, Input: history.Op{Process: 1, F: "enqueue", Value: v(2)}, Output: history.Op{Type: history.OK}},
+			{ID: 2, Call: 15, Return: 20, Input: history.Op{Process: 2, F: "enqueue", Value: v(2)}, Output: history.Op{Type: history.Fail}},
+			{ID: 3, Call: 25, Return: 30, Input: history.Op{Process: 3, F: "dequeue"}, Output: history.Op{Type: history.OK, Value: v(2)}},
+		}
+		if witness, diag, ok := q.Diagnose(ops); ok {
+			t.Fatalf("false positive FIFO diagnosis: witness=%v diag=%s", witness, diag)
+		}
+	})
+
+	t.Run("InfoDequeueSuppressesFalsePrematureEmpty", func(t *testing.T) {
+		ops := []history.Operation{
+			{ID: 0, Call: 0, Return: 10, Input: history.Op{Process: 0, F: "enqueue", Value: v(1)}, Output: history.Op{Type: history.OK}},
+			{ID: 1, Call: 12, Return: 18, Input: history.Op{Process: 1, F: "dequeue"}, Output: history.Op{Type: history.Info}},
+			{ID: 2, Call: 20, Return: 30, Input: history.Op{Process: 2, F: "dequeue"}, Output: history.Op{Type: history.OK, Value: nil}},
+		}
+		if witness, diag, ok := q.Diagnose(ops); ok {
+			t.Fatalf("false positive premature empty diagnosis across Info dequeue: witness=%v diag=%s", witness, diag)
+		}
+	})
 }

@@ -5,9 +5,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -96,7 +98,7 @@ func run(args []string) error {
 		defer cancel()
 		return srv.Shutdown(ctx)
 	case err := <-serverErr:
-		if err != nil && err != net.ErrClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			return fmt.Errorf("server error: %w", err)
 		}
 		return nil

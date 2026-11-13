@@ -415,8 +415,10 @@ func ExplorationSuite(system, faults string, seeds []SeedResult, expectViolation
 			c.Message = fmt.Sprintf("expected a violation in %d seeds, found none", len(seeds))
 		}
 		for _, r := range seeds {
-			if r.Error != "" || r.Verdict == checker.Unknown {
+			if r.Error != "" {
 				c.Output += fmt.Sprintf("\nseed %d inconclusive: %s", r.Seed, r.Error)
+			} else if r.Verdict == checker.Unknown {
+				c.Output += fmt.Sprintf("\nseed %d inconclusive: %s", r.Seed, r.Verdict)
 			}
 		}
 		s.Cases = []Case{c}

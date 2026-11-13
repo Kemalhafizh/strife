@@ -141,7 +141,11 @@ func Witness(m model.Model, part []history.Operation, o WitnessOptions) ([]histo
 	}
 	var fixed, reads []history.Operation
 	for _, op := range part {
-		if op.Input.F == history.FRead {
+		isRead := op.Input.F == history.FRead
+		if ro, ok := m.(model.ReadOnly); ok {
+			isRead = ro.ReadOnly(op.Input)
+		}
+		if isRead {
 			reads = append(reads, op)
 		} else {
 			fixed = append(fixed, op)

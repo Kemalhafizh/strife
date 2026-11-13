@@ -207,6 +207,9 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	if rep == nil {
 		return nil, fmt.Errorf("serve: report is nil")
 	}
+	if strings.TrimSpace(rep.Target) == "" {
+		return nil, fmt.Errorf("serve: report target is required")
+	}
 	recomputed := report.Fingerprint(rep)
 	if rep.Fingerprint != "" && rep.Fingerprint != recomputed {
 		return nil, fmt.Errorf("serve: report fingerprint mismatch: recorded %s vs recomputed %s", rep.Fingerprint, recomputed)
@@ -216,9 +219,9 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.seq++
+	seq := s.seq + 1
 	now := time.Now().UTC()
-	id := fmt.Sprintf("run-%04d-%s", s.seq, shortFP(rep.Fingerprint))
+	id := fmt.Sprintf("run-%04d-%s", seq, shortFP(rep.Fingerprint))
 	runDir := filepath.Join(s.dir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
@@ -280,8 +283,13 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 		if len(b.Signatures) > 0 {
 			entry.KeyID = b.Signatures[0].KeyID
 		}
-		bBytes, _ := json.MarshalIndent(b, "", "  ")
-		_ = os.WriteFile(filepath.Join(runDir, "bundle.json"), append(bBytes, '\n'), 0o644)
+		bBytes, err := json.MarshalIndent(b, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "bundle.json"), append(bBytes, '\n'), 0o644); err != nil {
+			return nil, err
+		}
 	}
 
 	rBytes, err := json.MarshalIndent(rep, "", "  ")
@@ -295,6 +303,7 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	if err := s.appendEntry(entry); err != nil {
 		return nil, err
 	}
+	s.seq = seq
 	return &IngestResult{Entry: entry, Bundle: bundle}, nil
 }
 
@@ -303,6 +312,9 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestResult, error) {
 	if m == nil {
 		return nil, fmt.Errorf("serve: campaign manifest is nil")
+	}
+	if strings.TrimSpace(m.System) == "" {
+		return nil, fmt.Errorf("serve: campaign system is required")
 	}
 	recomputed := m.ComputeFingerprint()
 	if m.Fingerprint != "" && m.Fingerprint != recomputed {
@@ -326,11 +338,10 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 	} else if m.Comparison != nil {
 		comp = m.Comparison
 	}
-	s.baselines[bKey] = m
 
-	s.seq++
+	seq := s.seq + 1
 	now := time.Now().UTC()
-	id := fmt.Sprintf("camp-%04d-%s", s.seq, shortFP(m.Fingerprint))
+	id := fmt.Sprintf("camp-%04d-%s", seq, shortFP(m.Fingerprint))
 	runDir := filepath.Join(s.dir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
@@ -381,6 +392,8 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 	if err := s.appendEntry(entry); err != nil {
 		return nil, err
 	}
+	s.seq = seq
+	s.baselines[bKey] = m
 	return &IngestResult{Entry: entry, Comparison: comp}, nil
 }
 

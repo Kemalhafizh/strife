@@ -124,10 +124,13 @@ func (a *Agent) InjectFault(ctx context.Context, n Node, f nemesis.Fault, env ne
 		// Determine which partition side n belongs to:
 		nodeIdx := -1
 		for idx, target := range env.Nodes {
-			if target.Name == n.Name || target.IP == n.IP {
+			if (n.Name != "" && target.Name == n.Name) || (n.IP != "" && target.IP == n.IP) {
 				nodeIdx = idx
 				break
 			}
+		}
+		if nodeIdx < 0 {
+			return "", fmt.Errorf("agent inject on %s: node not found in env.Nodes", n.Name)
 		}
 		inSideA := false
 		for _, idx := range f.Nodes {
@@ -143,7 +146,7 @@ func (a *Agent) InjectFault(ctx context.Context, n Node, f nemesis.Fault, env ne
 			targetsToDrop = f.Nodes
 		}
 		for _, o := range targetsToDrop {
-			if o >= 0 && o < len(env.Nodes) {
+			if o >= 0 && o < len(env.Nodes) && env.Nodes[o].IP != "" {
 				req.TargetIPs = append(req.TargetIPs, env.Nodes[o].IP)
 			}
 		}

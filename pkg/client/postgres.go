@@ -206,6 +206,9 @@ func (p *Postgres) handshake(ctx context.Context) error {
 					return err
 				}
 			case 5: // MD5: "md5" + md5(md5(password + user) + salt)
+				if len(body) < 8 {
+					return fmt.Errorf("postgres: short md5 salt message (%d bytes)", len(body))
+				}
 				inner := md5.Sum([]byte(p.opt.Password + p.opt.User)) //nolint:gosec
 				outer := md5.Sum(append([]byte(hex.EncodeToString(inner[:])), body[4:8]...))
 				if err := p.writeMsg('p', append([]byte("md5"+hex.EncodeToString(outer[:])), 0)); err != nil {
@@ -500,12 +503,18 @@ func (p *Postgres) invoke(ctx context.Context, op history.Op) (history.Op, error
 		}
 		return out, nil
 	case history.FWrite:
+		if op.Value == nil {
+			return history.Op{}, &notSent{fmt.Errorf("postgres: write missing value")}
+		}
 		_, err := p.exec(ctx, fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v", kv, key, *op.Value))
 		if err != nil {
 			return history.Op{}, err
 		}
 		return complete(op, history.OK), nil
 	case history.FCas:
+		if op.Old == nil || op.Value == nil {
+			return history.Op{}, &notSent{fmt.Errorf("postgres: cas requires non-nil old and new values")}
+		}
 		res, err := p.exec(ctx, fmt.Sprintf("UPDATE %s SET v = %d WHERE k = '%s' AND v = %d", kv, *op.Value, key, *op.Old))
 		if err != nil {
 			return history.Op{}, err
@@ -533,6 +542,13 @@ func (p *Postgres) invoke(ctx context.Context, op history.Op) (history.Op, error
 	return history.Op{}, &notSent{fmt.Errorf("postgres: unsupported operation %q", op.F)}
 }
 
+func lastStmtTag(res []stmtResult) string {
+	if len(res) == 0 {
+		return ""
+	}
+	return res[len(res)-1].tag
+}
+
 // ledgerTxn executes either a multi-account ledger balance audit or a
 // two-account double-entry transfer (read both accounts, check non-negativity,
 // write updated balances, and commit).
@@ -549,7 +565,7 @@ func (p *Postgres) ledgerTxn(ctx context.Context, op history.Op, kv string) (his
 			return history.Op{}, err
 		}
 		if len(res) != len(op.Txn)+2 || res[len(res)-1].tag != "COMMIT" {
-			return history.Op{}, &postgresError{code: "40000", msg: fmt.Sprintf("transaction did not commit (%d results, last %q)", len(res), res[len(res)-1].tag)}
+			return history.Op{}, &postgresError{code: "40000", msg: fmt.Sprintf("transaction did not commit (%d results, last %q)", len(res), lastStmtTag(res))}
 		}
 		out := complete(op, history.OK)
 		out.Txn = make([]history.MicroOp, len(op.Txn))
@@ -613,7 +629,7 @@ func (p *Postgres) ledgerTxn(ctx context.Context, op history.Op, kv string) (his
 	}
 	if len(wres) != 3 || wres[len(wres)-1].tag != "COMMIT" {
 		p.rollbackOpen()
-		return history.Op{}, &postgresError{code: "40000", msg: fmt.Sprintf("transaction did not commit (%d results, last %q)", len(wres), wres[len(wres)-1].tag)}
+		return history.Op{}, &postgresError{code: "40000", msg: fmt.Sprintf("transaction did not commit (%d results, last %q)", len(wres), lastStmtTag(wres))}
 	}
 	out := complete(op, history.OK)
 	out.Txn = []history.MicroOp{
@@ -656,6 +672,9 @@ func (p *Postgres) txn(ctx context.Context, op history.Op, lists string) (histor
 		k := escapeSQL(m.Key)
 		switch m.F {
 		case history.MicroAppend:
+			if m.Value == nil {
+				return history.Op{}, &notSent{fmt.Errorf("postgres: append missing value")}
+			}
 			fmt.Fprintf(&b, " INSERT INTO %[1]s (k, v) VALUES ('%[2]s', '%[3]d') ON CONFLICT (k) DO UPDATE SET v = %[1]s.v || ',' || EXCLUDED.v;", lists, k, *m.Value)
 		case history.MicroRead:
 			fmt.Fprintf(&b, " SELECT v FROM %s WHERE k = '%s';", lists, k)
@@ -670,7 +689,7 @@ func (p *Postgres) txn(ctx context.Context, op history.Op, lists string) (histor
 	}
 	if len(res) != len(op.Txn)+2 || res[len(res)-1].tag != "COMMIT" {
 		// COMMIT of an aborted transaction answers ROLLBACK.
-		return history.Op{}, &postgresError{code: "40000", msg: fmt.Sprintf("transaction did not commit (%d results, last %q)", len(res), res[len(res)-1].tag)}
+		return history.Op{}, &postgresError{code: "40000", msg: fmt.Sprintf("transaction did not commit (%d results, last %q)", len(res), lastStmtTag(res))}
 	}
 	out := complete(op, history.OK)
 	for i, m := range op.Txn {

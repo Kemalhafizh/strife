@@ -249,3 +249,37 @@ func TestWasmMemoryAndHelperCall(t *testing.T) {
 		t.Fatalf("got %d, want 1", got)
 	}
 }
+
+func TestWasmMalformedBoundsRejected(t *testing.T) {
+	// 1. Truncated section claiming uint32 length near MaxInt/MaxUint32
+	hugeSec := append([]byte{}, wasmMagic...)
+	hugeSec = append(hugeSec, secType, 0xff, 0xff, 0xff, 0xff, 0x0f)
+	if _, err := ParseWasm(hugeSec); err == nil {
+		t.Fatal("expected error for truncated huge section length")
+	}
+
+	// 2. Data segment with negative/huge i64.const offset (-1 -> 0xffffffffffffffff)
+	dataSec := []byte{
+		0x01,             // 1 data segment
+		0x00,             // active mode 0
+		opI64Const, 0x7f, // -1 (uint64 max)
+		opEnd,
+		0x01, 'x', // size 1
+	}
+	badOffset := append([]byte{}, wasmMagic...)
+	badOffset = appendSection(badOffset, secType, []byte{
+		0x01, 0x60,
+		0x05, valTypeI32, valTypeI32, valTypeI64, valTypeI32, valTypeI32,
+		0x01, valTypeI64,
+	})
+	badOffset = appendSection(badOffset, secFunction, []byte{0x01, 0x00})
+	badOffset = appendSection(badOffset, secMemory, []byte{0x01, 0x00, 0x01})
+	badOffset = appendSection(badOffset, secExport, []byte{
+		0x01, 0x07, 'n', 'e', 'x', 't', '_', 'o', 'p', 0x00, 0x00,
+	})
+	badOffset = appendSection(badOffset, secCode, []byte{0x01, 0x04, 0x00, opI64Const, 0x00, opEnd})
+	badOffset = appendSection(badOffset, secData, dataSec)
+	if _, err := ParseWasm(badOffset); err == nil {
+		t.Fatal("expected out of memory bounds error for negative/huge data offset")
+	}
+}

@@ -98,3 +98,14 @@ func TestWriteAndReadEDNRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip history hash mismatch:\norig=%+v\ngot =%+v\nEDN:\n%s", orig, roundTrip, buf.String())
 	}
 }
+
+func TestReadEDNMaxDepth(t *testing.T) {
+	deep := strings.Repeat("[", 512)
+	if _, err := ReadEDN(strings.NewReader(deep)); err == nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("expected maximum nesting depth error for brackets, got %v", err)
+	}
+	discards := strings.Repeat("#_", 512) + "{}"
+	if _, err := ReadEDN(strings.NewReader(discards)); err == nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("expected maximum nesting depth error for discards, got %v", err)
+	}
+}

@@ -630,7 +630,7 @@ func (Queue) Partition(ops []history.Operation) ([]string, [][]history.Operation
 // Diagnose implements Diagnoser for Queue.
 func (Queue) Diagnose(ops []history.Operation) ([]int, string, bool) {
 	// 1. Phantom elements: a dequeue returned a value that was never enqueued
-	// or where all enqueues of that value began strictly after the dequeue returned.
+	// or where all non-failed enqueues of that value began strictly after the dequeue returned.
 	for di, d := range ops {
 		if !isDequeue(d.Input.F) || d.Status() != history.OK || d.Output.Value == nil {
 			continue
@@ -639,14 +639,15 @@ func (Queue) Diagnose(ops []history.Operation) ([]int, string, bool) {
 		foundEnqueue := false
 		earliestEnqueue := -1
 		for ei, e := range ops {
-			if isEnqueue(e.Input.F) && e.Input.Value != nil && *e.Input.Value == val {
-				if e.Call <= d.Return {
-					foundEnqueue = true
-					break
-				}
-				if earliestEnqueue < 0 || e.Call < ops[earliestEnqueue].Call {
-					earliestEnqueue = ei
-				}
+			if e.Status() == history.Fail || !isEnqueue(e.Input.F) || e.Input.Value == nil || *e.Input.Value != val {
+				continue
+			}
+			if e.Call <= d.Return {
+				foundEnqueue = true
+				break
+			}
+			if earliestEnqueue < 0 || e.Call < ops[earliestEnqueue].Call {
+				earliestEnqueue = ei
 			}
 		}
 		if !foundEnqueue {
@@ -663,8 +664,8 @@ func (Queue) Diagnose(ops []history.Operation) ([]int, string, bool) {
 	}
 
 	// 2. FIFO order inversion:
-	// If enqueue(A) completed before enqueue(B) began, then A is strictly ahead of B in FIFO order.
-	// If dequeue(B) completed, but no dequeue of A occurred before dequeue(B) finished, then B was dequeued before A.
+	// If enqueue(A) completed before every non-failed enqueue of B began, then A is strictly ahead of B in FIFO order.
+	// If dequeue(B) completed, but no dequeue could have consumed A before dequeue(B) finished, then B was dequeued before A.
 	for eaIdx, ea := range ops {
 		if !isEnqueue(ea.Input.F) || ea.Status() != history.OK || ea.Input.Value == nil {
 			continue
@@ -672,31 +673,48 @@ func (Queue) Diagnose(ops []history.Operation) ([]int, string, bool) {
 		valA := *ea.Input.Value
 
 		for ebIdx, eb := range ops {
-			if !isEnqueue(eb.Input.F) || eb.Input.Value == nil || ea.Return >= eb.Call {
+			if !isEnqueue(eb.Input.F) || eb.Status() == history.Fail || eb.Input.Value == nil || ea.Return >= eb.Call {
 				continue
 			}
 			valB := *eb.Input.Value
 			if valA == valB {
 				continue
 			}
-			// ea completed strictly before eb began.
+			// If any non-failed enqueue of valB could have linearized before or concurrently with ea,
+			// valB could legitimately sit ahead of ea in the queue.
+			earlierB := false
+			for _, eb0 := range ops {
+				if !isEnqueue(eb0.Input.F) || eb0.Status() == history.Fail || eb0.Input.Value == nil || *eb0.Input.Value != valB {
+					continue
+				}
+				if eb0.Call <= ea.Return {
+					earlierB = true
+					break
+				}
+			}
+			if earlierB {
+				continue
+			}
+			// ea completed strictly before every possible enqueue of valB began.
 			for dbIdx, db := range ops {
 				if !isDequeue(db.Input.F) || db.Status() != history.OK || db.Output.Value == nil || *db.Output.Value != valB {
 					continue
 				}
-				// db is a dequeue of B. Did A get dequeued before db finished?
+				// db is a dequeue of B. Could A have been dequeued before db finished?
 				dequeuedABefore := false
 				daAfter := -1
 				for daIdx, da := range ops {
-					if !isDequeue(da.Input.F) || da.Status() != history.OK || da.Output.Value == nil || *da.Output.Value != valA {
+					if !isDequeue(da.Input.F) {
 						continue
 					}
-					if da.Call <= db.Return {
-						dequeuedABefore = true
-						break
-					}
-					if daAfter < 0 || da.Call < ops[daAfter].Call {
-						daAfter = daIdx
+					if (da.Status() == history.OK && da.Output.Value != nil && *da.Output.Value == valA) || da.Status() == history.Info {
+						if da.Call <= db.Return && da.Return >= ea.Call {
+							dequeuedABefore = true
+							break
+						}
+						if da.Status() == history.OK && (daAfter < 0 || da.Call < ops[daAfter].Call) {
+							daAfter = daIdx
+						}
 					}
 				}
 				if !dequeuedABefore {
@@ -730,7 +748,10 @@ func (Queue) Diagnose(ops []history.Operation) ([]int, string, bool) {
 			}
 			anyDequeue := false
 			for _, d := range ops {
-				if isDequeue(d.Input.F) && d.Output.Value != nil && d.Call <= de.Return && d.Return >= ea.Call {
+				if !isDequeue(d.Input.F) {
+					continue
+				}
+				if ((d.Status() == history.OK && d.Output.Value != nil) || d.Status() == history.Info) && d.Call <= de.Return && d.Return >= ea.Call {
 					anyDequeue = true
 					break
 				}
@@ -1051,7 +1072,19 @@ func (s txnState) Equal(o State) bool {
 }
 
 func (s txnState) String() string {
-	return fmt.Sprint(s.kvs)
+	var keys []string
+	for k := range s.kvs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%s=%d", k, s.kvs[k])
+	}
+	return b.String()
 }
 
 // Name implements Model.
@@ -1068,27 +1101,34 @@ func (TxnModel) Relevant(o history.Operation) bool {
 // Step implements Model.
 func (TxnModel) Step(s State, in, out history.Op) (bool, State) {
 	st := s.(txnState)
+	if out.Type == history.Fail {
+		return true, st
+	}
 	if in.F != history.FTxn {
 		return true, st
+	}
+	reads := in.Txn
+	if out.Type == history.OK && len(out.Txn) == len(in.Txn) {
+		reads = out.Txn
 	}
 	next := txnState{kvs: make(map[string]int64, len(st.kvs))}
 	for k, v := range st.kvs {
 		next.kvs[k] = v
 	}
 
-	for _, m := range in.Txn {
+	for i, m := range in.Txn {
 		if m.F == "w" || m.F == "write" {
 			if m.Value != nil {
 				next.kvs[m.Key] = *m.Value
 			}
 		} else {
-			if out.Type == history.OK && m.Value != nil {
+			if out.Type == history.OK && reads[i].Value != nil {
 				cur, exists := next.kvs[m.Key]
 				if !exists {
-					if *m.Value != 0 && *m.Value != -1 {
+					if *reads[i].Value != 0 && *reads[i].Value != -1 {
 						return false, st
 					}
-				} else if cur != *m.Value {
+				} else if cur != *reads[i].Value {
 					return false, st
 				}
 			}

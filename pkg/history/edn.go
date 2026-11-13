@@ -73,7 +73,9 @@ func ReadEDN(r io.Reader) ([]Op, error) {
 	p := &ednParser{src: string(raw)}
 	var vals []ednValue
 	for {
-		p.skipWS()
+		if err := p.skipWS(); err != nil {
+			return nil, err
+		}
 		if p.eof() {
 			break
 		}
@@ -271,16 +273,19 @@ func applyEdnScalarOrSet(op *Op, val ednValue) {
 	}
 }
 
+const maxEDNDepth = 256
+
 type ednParser struct {
-	src string
-	pos int
+	src   string
+	pos   int
+	depth int
 }
 
 func (p *ednParser) eof() bool {
 	return p.pos >= len(p.src)
 }
 
-func (p *ednParser) skipWS() {
+func (p *ednParser) skipWS() error {
 	for p.pos < len(p.src) {
 		ch := p.src[p.pos]
 		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == ',' {
@@ -295,16 +300,26 @@ func (p *ednParser) skipWS() {
 		}
 		if ch == '#' && p.pos+1 < len(p.src) && p.src[p.pos+1] == '_' {
 			p.pos += 2
-			p.skipWS()
-			_, _ = p.parseValue()
+			if _, err := p.parseValue(); err != nil {
+				return err
+			}
 			continue
 		}
 		break
 	}
+	return nil
 }
 
 func (p *ednParser) parseValue() (ednValue, error) {
-	p.skipWS()
+	if p.depth >= maxEDNDepth {
+		return ednValue{}, fmt.Errorf("edn: maximum nesting depth (%d) exceeded", maxEDNDepth)
+	}
+	p.depth++
+	defer func() { p.depth-- }()
+
+	if err := p.skipWS(); err != nil {
+		return ednValue{}, err
+	}
 	if p.eof() {
 		return ednValue{}, fmt.Errorf("edn: unexpected EOF")
 	}
@@ -332,7 +347,6 @@ func (p *ednParser) parseValue() (ednValue, error) {
 		}
 		// Reader tag like #inst "..." or #uuid "..."
 		_ = p.readToken()
-		p.skipWS()
 		return p.parseValue()
 	default:
 		tok := p.readToken()
@@ -353,7 +367,9 @@ func (p *ednParser) parseMap() (ednValue, error) {
 	p.pos++ // skip '{'
 	m := make(map[string]ednValue)
 	for {
-		p.skipWS()
+		if err := p.skipWS(); err != nil {
+			return ednValue{}, err
+		}
 		if p.eof() {
 			return ednValue{}, fmt.Errorf("edn: unterminated map")
 		}
@@ -377,7 +393,9 @@ func (p *ednParser) parseVec(closeCh byte, kind ednKind) (ednValue, error) {
 	p.pos++ // skip opening delimiter
 	var vec []ednValue
 	for {
-		p.skipWS()
+		if err := p.skipWS(); err != nil {
+			return ednValue{}, err
+		}
 		if p.eof() {
 			return ednValue{}, fmt.Errorf("edn: unterminated sequence (want %q)", closeCh)
 		}

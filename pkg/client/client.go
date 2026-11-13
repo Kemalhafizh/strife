@@ -262,9 +262,19 @@ func (c *memClient) Invoke(ctx context.Context, op history.Op) history.Op {
 			out.Value = history.Int(v)
 		}
 	case history.FWrite:
+		if op.Value == nil {
+			out.Type = history.Fail
+			out.Error = "memory: write missing value"
+			return out
+		}
 		c.s.data[op.Key] = *op.Value
 	case history.FCas:
-		if v, ok := c.s.data[op.Key]; ok && op.Old != nil && v == *op.Old {
+		if op.Old == nil || op.Value == nil {
+			out.Type = history.Fail
+			out.Error = "memory: cas requires non-nil old and new values"
+			return out
+		}
+		if v, ok := c.s.data[op.Key]; ok && v == *op.Old {
 			c.s.data[op.Key] = *op.Value
 		} else {
 			out.Type = history.Fail
@@ -275,6 +285,13 @@ func (c *memClient) Invoke(ctx context.Context, op history.Op) history.Op {
 			return c.ledgerTxn(op)
 		}
 		idemp := isSettlementTxn(op)
+		for _, m := range op.Txn {
+			if m.F == history.MicroAppend && m.Value == nil {
+				out.Type = history.Fail
+				out.Error = "memory: append missing value"
+				return out
+			}
+		}
 		out.Txn = make([]history.MicroOp, len(op.Txn))
 		for i, m := range op.Txn {
 			out.Txn[i] = m

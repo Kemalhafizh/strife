@@ -116,6 +116,9 @@ func (e *Etcd) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 		}
 		return out, nil
 	case history.FWrite:
+		if op.Value == nil {
+			return history.Op{}, &statusError{code: 400, body: "etcd: write missing value"}
+		}
 		var resp map[string]any
 		body := map[string]any{"key": key, "value": b64(strconv.FormatInt(*op.Value, 10))}
 		if err := e.post(ctx, "/v3/kv/put", body, &resp); err != nil {
@@ -123,6 +126,9 @@ func (e *Etcd) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 		}
 		return complete(op, history.OK), nil
 	case history.FCas:
+		if op.Old == nil || op.Value == nil {
+			return history.Op{}, &statusError{code: 400, body: "etcd: cas requires non-nil old and new values"}
+		}
 		var resp struct {
 			Succeeded bool `json:"succeeded"`
 		}
@@ -321,6 +327,9 @@ func (e *Etcd) txn(ctx context.Context, op history.Op) (history.Op, error) {
 		for i, m := range op.Txn {
 			switch m.F {
 			case history.MicroAppend:
+				if m.Value == nil {
+					return history.Op{}, &statusError{code: 400, body: "etcd: append missing value"}
+				}
 				lists[m.Key] = append(lists[m.Key], *m.Value)
 				written = true
 			case history.MicroRead:

@@ -36,11 +36,16 @@ func ParseK8sTarget(spec string) (K8sTarget, bool) {
 				return K8sTarget{}, false
 			}
 			if ns, name, hasSlash := strings.Cut(rest, "/"); hasSlash {
+				ns = strings.TrimSpace(ns)
+				name = strings.TrimSpace(name)
+				if name == "" {
+					return K8sTarget{}, false
+				}
 				return K8sTarget{
 					Kind:      "pod",
-					Namespace: strings.TrimSpace(ns),
-					PodName:   strings.TrimSpace(name),
-				}, name != ""
+					Namespace: ns,
+					PodName:   name,
+				}, true
 			}
 			return K8sTarget{
 				Kind:    "pod",

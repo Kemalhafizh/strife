@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kemalhafizh/strife/internal/stats"
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/client"
 	"github.com/kemalhafizh/strife/pkg/history"
@@ -371,9 +372,9 @@ func TestLedgerCatchesOverdraftAndConservationViolation(t *testing.T) {
 	}
 	cfg.Defaults()
 	store := client.NewMemoryStore()
-	varcorrupted := &atomic.Int32{}
+	corrupted := &atomic.Int32{}
 	faulty := func(i int) (client.Client, error) {
-		return &overdraftLedgerClient{Client: store.Client(), n: varcorrupted}, nil
+		return &overdraftLedgerClient{Client: store.Client(), n: corrupted}, nil
 	}
 	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}, Clients: faulty})
 	if err != nil {
@@ -447,5 +448,47 @@ func TestLiveSettlementWorkload(t *testing.T) {
 	}
 	if writes == 0 || audits == 0 || finalAudits == 0 {
 		t.Fatalf("expected settlement writes (%d), audits (%d), and post-heal final audit (%d)", writes, audits, finalAudits)
+	}
+}
+
+type failingFaultApplier struct {
+	transport.DryRun
+	teardownCalls int
+}
+
+func (f *failingFaultApplier) InjectFault(context.Context, transport.Node, nemesis.Fault, nemesis.Env) (string, error) {
+	return "", nil
+}
+
+func (f *failingFaultApplier) HealFault(context.Context, transport.Node, nemesis.Fault, nemesis.Env) (string, error) {
+	return "", nil
+}
+
+func (f *failingFaultApplier) TeardownNode(context.Context, transport.Node) error {
+	f.teardownCalls++
+	return fmt.Errorf("agent unreachable")
+}
+
+func (f *failingFaultApplier) LatencySummary() stats.Summary { return stats.Summary{} }
+
+var _ transport.FaultApplier = (*failingFaultApplier)(nil)
+
+func TestInjectorBoundsAndTeardownErrors(t *testing.T) {
+	nodes := []transport.Node{{Name: "n0", IP: "10.0.0.1"}}
+	fa := &failingFaultApplier{}
+	in := &Injector{
+		Transport: fa,
+		Nodes:     nodes,
+		Env:       nemesis.Env{Nodes: []nemesis.Target{{Name: "n0", IP: "10.0.0.1"}}},
+	}
+
+	if errs := in.Exec(context.Background(), []nemesis.Command{{Node: -1}, {Node: 5}}); len(errs) != 2 {
+		t.Fatalf("expected 2 bounds errors from Exec, got %v", errs)
+	}
+	if errs := in.Apply(context.Background(), nemesis.Fault{Kind: nemesis.Kill, Nodes: []int{-1, 3}}, true); len(errs) != 2 {
+		t.Fatalf("expected 2 bounds errors from Apply, got %v", errs)
+	}
+	if errs := in.Teardown(context.Background(), nil); len(errs) != 1 || fa.teardownCalls != 1 {
+		t.Fatalf("expected 1 teardown error and 1 TeardownNode call, got errs=%v calls=%d", errs, fa.teardownCalls)
 	}
 }

@@ -52,6 +52,12 @@ func (in *Injector) Exec(ctx context.Context, cmds []nemesis.Command) []string {
 		wg.Add(1)
 		go func(c nemesis.Command) {
 			defer wg.Done()
+			if c.Node < 0 || c.Node >= len(in.Nodes) {
+				mu.Lock()
+				errs = append(errs, fmt.Sprintf("node index %d out of range [0, %d)", c.Node, len(in.Nodes)))
+				mu.Unlock()
+				return
+			}
 			n := in.Nodes[c.Node]
 			cctx, cancel := context.WithTimeout(ctx, in.timeout())
 			defer cancel()
@@ -97,8 +103,15 @@ func (in *Injector) Apply(ctx context.Context, f nemesis.Fault, start bool) []st
 	)
 	for _, i := range targets {
 		wg.Add(1)
-		go func(n transport.Node) {
+		go func(idx int) {
 			defer wg.Done()
+			if idx < 0 || idx >= len(in.Nodes) {
+				mu.Lock()
+				errs = append(errs, fmt.Sprintf("node index %d out of range [0, %d)", idx, len(in.Nodes)))
+				mu.Unlock()
+				return
+			}
+			n := in.Nodes[idx]
 			cctx, cancel := context.WithTimeout(ctx, in.timeout())
 			defer cancel()
 			var err error
@@ -112,7 +125,7 @@ func (in *Injector) Apply(ctx context.Context, f nemesis.Fault, start bool) []st
 				errs = append(errs, fmt.Sprintf("%s: %v", n.Name, err))
 				mu.Unlock()
 			}
-		}(in.Nodes[i])
+		}(i)
 	}
 	wg.Wait()
 	return errs
@@ -121,13 +134,20 @@ func (in *Injector) Apply(ctx context.Context, f nemesis.Fault, start bool) []st
 // Teardown heals everything Strife may have touched for the given kinds. It
 // is safe to call more than once.
 func (in *Injector) Teardown(ctx context.Context, kinds []nemesis.Kind) []string {
+	var errs []string
 	if fa, ok := in.Transport.(transport.FaultApplier); ok {
 		for _, n := range in.Nodes {
-			_ = fa.TeardownNode(ctx, n)
+			cctx, cancel := context.WithTimeout(ctx, in.timeout())
+			err := fa.TeardownNode(cctx, n)
+			cancel()
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", n.Name, err))
+			}
 		}
 		if in.Transport.Name() == "proxy" {
-			return nil
+			return errs
 		}
 	}
-	return in.Exec(ctx, in.Env.Teardown(kinds))
+	errs = append(errs, in.Exec(ctx, in.Env.Teardown(kinds))...)
+	return errs
 }

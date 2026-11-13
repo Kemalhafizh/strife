@@ -422,6 +422,10 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid json: %v", err)})
 			return
 		}
+		if len(rawMap) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty json payload"})
+			return
+		}
 		if _, hasSeeds := rawMap["seeds"]; hasSeeds {
 			var m campaign.Manifest
 			if err := json.Unmarshal(body, &m); err != nil {

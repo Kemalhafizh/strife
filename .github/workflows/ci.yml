@@ -18,7 +18,7 @@ jobs:
         run: go vet ./...
       - name: lint the GitHub Action and workflows
         run: |
-          shellcheck scripts/*.sh
+          shellcheck scripts/*.sh scripts/live/*.sh scripts/release/*.sh
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck "$(command -v shellcheck)"
       - name: unit tests (race)
         run: go test -race -short ./...

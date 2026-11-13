@@ -440,6 +440,9 @@ func encryptPassword(password string, nonce, pemKey []byte) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("mysql: server public key is not RSA")
 	}
+	if len(nonce) == 0 {
+		return nil, fmt.Errorf("mysql: empty auth nonce")
+	}
 	plain := append([]byte(password), 0)
 	for i := range plain {
 		plain[i] ^= nonce[i%len(nonce)]
@@ -626,11 +629,17 @@ func (m *MySQL) invoke(ctx context.Context, op history.Op) (history.Op, error) {
 		}
 		return out, nil
 	case history.FWrite:
+		if op.Value == nil {
+			return history.Op{}, &notSent{fmt.Errorf("mysql: write missing value")}
+		}
 		if _, err := m.query(ctx, fmt.Sprintf("INSERT INTO %s (k, v) VALUES ('%s', %d) ON DUPLICATE KEY UPDATE v = VALUES(v)", kv, key, *op.Value)); err != nil {
 			return history.Op{}, err
 		}
 		return complete(op, history.OK), nil
 	case history.FCas:
+		if op.Old == nil || op.Value == nil {
+			return history.Op{}, &notSent{fmt.Errorf("mysql: cas requires non-nil old and new values")}
+		}
 		// CLIENT_FOUND_ROWS: affected counts matched rows, so a cas to the
 		// same value still reports 1.
 		res, err := m.query(ctx, fmt.Sprintf("UPDATE %s SET v = %d WHERE k = '%s' AND v = %d", kv, *op.Value, key, *op.Old))
@@ -784,6 +793,9 @@ func (m *MySQL) txn(ctx context.Context, op history.Op, lists string) (history.O
 		k := escapeMySQL(mo.Key)
 		switch mo.F {
 		case history.MicroAppend:
+			if mo.Value == nil {
+				return history.Op{}, &notSent{fmt.Errorf("mysql: append missing value")}
+			}
 			fmt.Fprintf(&b, "; INSERT INTO %s (k, v) VALUES ('%s', '%d') ON DUPLICATE KEY UPDATE v = CONCAT(v, ',', VALUES(v))", lists, k, *mo.Value)
 		case history.MicroRead:
 			fmt.Fprintf(&b, "; SELECT v FROM %s WHERE k = '%s'", lists, k)

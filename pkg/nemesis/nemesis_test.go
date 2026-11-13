@@ -135,3 +135,15 @@ func TestTeardownRestartsKilledProcessOnce(t *testing.T) {
 		t.Fatalf("got %d node and %d host commands", inNode, onHost)
 	}
 }
+
+func TestClockSkewNegativeOffset(t *testing.T) {
+	e := env()
+	inj := e.Inject(Fault{Kind: ClockSkew, Nodes: []int{0}, Offset: -5 * time.Second})
+	if len(inj) != 1 || !strings.Contains(inj[0].Script, "- 5") || strings.Contains(inj[0].Script, "+ -") {
+		t.Fatalf("unexpected negative ClockSkew inject script: %+v", inj)
+	}
+	heal := e.Heal(Fault{Kind: ClockSkew, Nodes: []int{0}, Offset: -5 * time.Second})
+	if len(heal) != 1 || !strings.Contains(heal[0].Script, "+ 5") || strings.Contains(heal[0].Script, "- -") {
+		t.Fatalf("unexpected negative ClockSkew heal script: %+v", heal)
+	}
+}

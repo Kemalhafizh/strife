@@ -197,7 +197,7 @@ func ParseWasm(data []byte) (mod *WasmModule, err error) {
 		if err != nil {
 			return nil, fmt.Errorf("wasm: reading section %d length: %w", secID, err)
 		}
-		if r.pos+int(secLen) > len(r.buf) {
+		if uint64(secLen) > uint64(len(r.buf)-r.pos) {
 			return nil, fmt.Errorf("wasm: section %d truncated (need %d bytes)", secID, secLen)
 		}
 		secEnd := r.pos + int(secLen)
@@ -237,7 +237,7 @@ func ParseWasm(data []byte) (mod *WasmModule, err error) {
 				if err != nil {
 					return nil, err
 				}
-				if int(tidx) >= len(mod.types) {
+				if uint64(tidx) >= uint64(len(mod.types)) {
 					return nil, fmt.Errorf("wasm: function %d references unknown type index %d", i, tidx)
 				}
 				funcTypeIndices = append(funcTypeIndices, tidx)
@@ -321,7 +321,7 @@ func ParseWasm(data []byte) (mod *WasmModule, err error) {
 			if err != nil {
 				return nil, err
 			}
-			if int(count) != len(funcTypeIndices) {
+			if uint64(count) != uint64(len(funcTypeIndices)) {
 				return nil, fmt.Errorf("wasm: code section count (%d) does not match function section count (%d)", count, len(funcTypeIndices))
 			}
 			for i := uint32(0); i < count; i++ {
@@ -329,10 +329,10 @@ func ParseWasm(data []byte) (mod *WasmModule, err error) {
 				if err != nil {
 					return nil, err
 				}
-				bodyEnd := r.pos + int(bodySize)
-				if bodyEnd > secEnd {
+				if r.pos > secEnd || uint64(bodySize) > uint64(secEnd-r.pos) {
 					return nil, fmt.Errorf("wasm: function %d body exceeds code section", i)
 				}
+				bodyEnd := r.pos + int(bodySize)
 				fn, err := parseFuncBody(r, bodyEnd, funcTypeIndices[i])
 				if err != nil {
 					return nil, fmt.Errorf("wasm: function %d: %w", i, err)
@@ -368,10 +368,10 @@ func ParseWasm(data []byte) (mod *WasmModule, err error) {
 				if err != nil {
 					return nil, err
 				}
-				if r.pos+int(size) > secEnd {
+				if r.pos > secEnd || uint64(size) > uint64(secEnd-r.pos) {
 					return nil, fmt.Errorf("wasm: data segment %d truncated", i)
 				}
-				if int(offset)+int(size) > len(mod.initialMem) {
+				if offset > uint64(len(mod.initialMem)) || uint64(size) > uint64(len(mod.initialMem))-offset {
 					return nil, fmt.Errorf("wasm: data segment %d out of memory bounds", i)
 				}
 				copy(mod.initialMem[offset:], r.buf[r.pos:r.pos+int(size)])
@@ -395,7 +395,7 @@ func ParseWasm(data []byte) (mod *WasmModule, err error) {
 	if !ok {
 		return nil, fmt.Errorf("wasm: module must export function \"next_op\"")
 	}
-	if int(idx) >= len(mod.funcs) {
+	if uint64(idx) >= uint64(len(mod.funcs)) {
 		return nil, fmt.Errorf("wasm: exported \"next_op\" references invalid function index %d", idx)
 	}
 	ft := mod.types[mod.funcs[idx].typeIdx]
@@ -426,7 +426,7 @@ func parseFuncBody(r *wasmReader, bodyEnd int, typeIdx uint32) (wasmFunc, error)
 		if vt != valTypeI32 && vt != valTypeI64 {
 			return wasmFunc{}, fmt.Errorf("unsupported local value type 0x%02x", vt)
 		}
-		if len(locals)+int(n) > 256 {
+		if uint64(n) > 256-uint64(len(locals)) {
 			return wasmFunc{}, fmt.Errorf("too many locals in function (max 256)")
 		}
 		for j := uint32(0); j < n; j++ {
@@ -695,7 +695,7 @@ func (m *WasmModule) execFunc(funcIdx int, args []uint64, fuel *int, mem []byte,
 				}
 			}
 			label := int(ins.immU32)
-			if label >= len(ctrls) {
+			if label < 0 || label >= len(ctrls) {
 				return 0, fmt.Errorf("wasm: branch label %d out of range", label)
 			}
 			targetIdx := len(ctrls) - 1 - label
@@ -759,7 +759,7 @@ func (m *WasmModule) execFunc(funcIdx int, args []uint64, fuel *int, mem []byte,
 
 		case opLocalGet:
 			idx := int(ins.immU32)
-			if idx >= len(locals) {
+			if idx < 0 || idx >= len(locals) {
 				return 0, fmt.Errorf("wasm: local.get index %d out of range", idx)
 			}
 			push(locals[idx])
@@ -767,7 +767,7 @@ func (m *WasmModule) execFunc(funcIdx int, args []uint64, fuel *int, mem []byte,
 
 		case opLocalSet:
 			idx := int(ins.immU32)
-			if idx >= len(locals) {
+			if idx < 0 || idx >= len(locals) {
 				return 0, fmt.Errorf("wasm: local.set index %d out of range", idx)
 			}
 			locals[idx] = pop()
@@ -775,15 +775,18 @@ func (m *WasmModule) execFunc(funcIdx int, args []uint64, fuel *int, mem []byte,
 
 		case opLocalTee:
 			idx := int(ins.immU32)
-			if idx >= len(locals) {
+			if idx < 0 || idx >= len(locals) {
 				return 0, fmt.Errorf("wasm: local.tee index %d out of range", idx)
+			}
+			if len(stack) == 0 {
+				return 0, fmt.Errorf("wasm: stack underflow on local.tee")
 			}
 			locals[idx] = stack[len(stack)-1]
 			pc++
 
 		case opGlobalGet:
 			idx := int(ins.immU32)
-			if idx >= len(globals) {
+			if idx < 0 || idx >= len(globals) {
 				return 0, fmt.Errorf("wasm: global.get index %d out of range", idx)
 			}
 			push(globals[idx])
@@ -791,7 +794,7 @@ func (m *WasmModule) execFunc(funcIdx int, args []uint64, fuel *int, mem []byte,
 
 		case opGlobalSet:
 			idx := int(ins.immU32)
-			if idx >= len(globals) {
+			if idx < 0 || idx >= len(globals) {
 				return 0, fmt.Errorf("wasm: global.set index %d out of range", idx)
 			}
 			globals[idx] = pop()
@@ -1149,7 +1152,7 @@ func (r *wasmReader) readValTypeVec() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if r.pos+int(n) > len(r.buf) {
+	if r.pos > len(r.buf) || uint64(n) > uint64(len(r.buf)-r.pos) {
 		return nil, fmt.Errorf("unexpected EOF reading type vector")
 	}
 	out := make([]byte, n)
@@ -1171,7 +1174,7 @@ func (r *wasmReader) readString() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if r.pos+int(n) > len(r.buf) {
+	if r.pos > len(r.buf) || uint64(n) > uint64(len(r.buf)-r.pos) {
 		return "", fmt.Errorf("unexpected EOF reading string")
 	}
 	s := string(r.buf[r.pos : r.pos+int(n)])
