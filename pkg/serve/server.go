@@ -159,12 +159,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpSrv.Shutdown(ctx)
 }
 
-func (s *Server) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+func (s *Server) hasValidAuth(r *http.Request) bool {
 	if s.cfg.Token == "" {
 		return true
 	}
 	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) != 1 {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+}
+
+func (s *Server) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !s.hasValidAuth(r) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return false
 	}

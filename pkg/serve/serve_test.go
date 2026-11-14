@@ -782,4 +782,53 @@ func TestWorkerPullJobQueueAndTrends(t *testing.T) {
 	if trData.Points[0].OverallAvailability <= 0 {
 		t.Fatalf("expected positive OverallAvailability in trend point, got %+v", trData.Points[0])
 	}
+
+	// 5. Verify re-completing an already-completed job is rejected with 409 Conflict
+	replayReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs/"+created.ID+"/complete", strings.NewReader(`{"worker_id":"staging-vpc-worker-1"}`))
+	replayReq.Header.Set("Authorization", "Bearer vpc-worker-secret")
+	replayResp, err := http.DefaultClient.Do(replayReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayResp.Body.Close()
+	if replayResp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict when re-completing job, got %d", replayResp.StatusCode)
+	}
+
+	// 6. Verify unauthenticated GET /api/v1/jobs/<id> redacts live_config when --token is enabled
+	runJobPayload := []byte(`{"kind":"run","tenant":"payments","live_config":{"name":"pg-ha","protocol":"postgres","nodes":[{"id":0,"addr":"10.0.0.1:5432"}]}}`)
+	runReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs", bytes.NewReader(runJobPayload))
+	runReq.Header.Set("Authorization", "Bearer vpc-worker-secret")
+	runResp, err := http.DefaultClient.Do(runReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runBody, _ := io.ReadAll(runResp.Body)
+	runResp.Body.Close()
+	var createdRunJob Job
+	if err := json.Unmarshal(runBody, &createdRunJob); err != nil {
+		t.Fatal(err)
+	}
+
+	unauthResp, err := http.Get(baseURL + "/api/v1/jobs/" + createdRunJob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthBody, _ := io.ReadAll(unauthResp.Body)
+	unauthResp.Body.Close()
+	if strings.Contains(string(unauthBody), "10.0.0.1:5432") {
+		t.Fatalf("expected unauthenticated GET /api/v1/jobs/<id> to redact live_config, got %s", string(unauthBody))
+	}
+
+	authGetReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/jobs/"+createdRunJob.ID, nil)
+	authGetReq.Header.Set("Authorization", "Bearer vpc-worker-secret")
+	authGetResp, err := http.DefaultClient.Do(authGetReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authGetBody, _ := io.ReadAll(authGetResp.Body)
+	authGetResp.Body.Close()
+	if !strings.Contains(string(authGetBody), "10.0.0.1:5432") {
+		t.Fatalf("expected authenticated GET /api/v1/jobs/<id> to include live_config, got %s", string(authGetBody))
+	}
 }

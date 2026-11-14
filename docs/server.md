@@ -151,20 +151,20 @@ curl -fsSL "http://127.0.0.1:8080/api/v1/trends?tenant=payments&target=outbox-se
 
 For private VPCs and isolated staging networks that cannot expose inbound ports to the control plane, `strife serve` provides a pull-based job queue persisted in `jobs.json`:
 
-- **`POST /api/v1/jobs`** — Enqueue a `sim`, `campaign`, or `run` job (`spec.kind`, `spec.system`, `spec.seed` / `spec.seeds`, `spec.faults`, `spec.workload`, or `spec.run_config`, plus optional `tenant`, `commit`, `branch`).
-- **`GET /api/v1/jobs`** & **`GET /api/v1/jobs/<id>`** — List or inspect queued, running, completed, or failed jobs (filterable by `?tenant=` and `?status=`).
+- **`POST /api/v1/jobs`** — Enqueue a `sim`, `campaign`, or `run` job (`kind`, `system`, `seed` / `seeds`, `nodes`, `clients`, `duration`, `faults`, or `live_config`, plus optional `tenant`, `commit`, `branch`; capped at 4 MiB).
+- **`GET /api/v1/jobs`** & **`GET /api/v1/jobs/<id>`** — List or inspect queued, claimed, completed, or failed jobs (filterable by `?tenant=` and `?status=`). When `--token` is configured on the server, unauthenticated `GET` requests automatically redact `live_config`.
 - **`POST /api/v1/jobs/claim`** — Atomically claim the oldest `pending` job (optionally filtered by `tenant`) for a remote `worker_id`.
-- **`POST /api/v1/jobs/<id>/complete`** — Submit the completed `report` or `campaign` (automatically verified, ingested into `registry.jsonl`, signed with Ed25519, and checked against SLA/regression webhooks) or record an execution error.
+- **`POST /api/v1/jobs/<id>/complete`** — Submit the completed `report` or `campaign` (automatically verified, ingested into `registry.jsonl`, signed with the tenant's Ed25519 key, and checked against SLA/regression webhooks) or record an execution error. Re-completing an already finished job or completing from a mismatched `worker_id` is rejected with `409 Conflict`.
 
 ```sh
 # 1. Enqueue a simulation or live database chaos job
 curl -fsSL -X POST http://127.0.0.1:8080/api/v1/jobs \
   -H "Authorization: Bearer $STRIFE_REGISTRY_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"tenant":"payments","commit":"a35dc51","spec":{"kind":"sim","system":"outbox-settlement","seed":7}}'
+  -d '{"tenant":"payments","commit":"a35dc51","kind":"sim","system":"outbox-settlement","seed":7}'
 
 # 2. Run a remote worker inside the private staging VPC (continuous polling or single-shot --once)
-strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --tenant payments
+strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --worker-id staging-vpc-worker-1
 ```
 
 ### `POST /api/v1/ingest`

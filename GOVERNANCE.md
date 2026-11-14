@@ -29,7 +29,7 @@ Most changes—bug fixes, regression tests, documentation improvements, fuzz see
 Open an issue describing the motivation, invariants, and compatibility impact before writing large implementations for any of the following:
 
 1. **Output Schemas & External Contracts**
-   - Modifying [`schemas/report.v1.json`](schemas/report.v1.json), [`schemas/history.v1.json`](schemas/history.v1.json), or [`schemas/dossier.v1.json`](schemas/dossier.v1.json).
+   - Modifying [`schemas/report.v1.json`](schemas/report.v1.json), [`schemas/history.v1.json`](schemas/history.v1.json), [`schemas/dossier.v1.json`](schemas/dossier.v1.json), [`schemas/campaign.v1.json`](schemas/campaign.v1.json), or [`schemas/bundle.v1.json`](schemas/bundle.v1.json).
    - Changing CLI exit codes (`0` passed/matches `--expect`, `1` violation/mismatch, `2` usage/config error, `3` `unknown` inconclusive verdict, `4` runtime/transport error).
    - Changing the WebAssembly 1.0 workload plugin ABI (`next_op`) or the `https://strife.dev/attestation/v1` `in-toto` predicate structure.
 2. **Core Dependency Policy**
@@ -55,17 +55,23 @@ Pull requests are rejected if they violate any of the following gates verified i
 
 ---
 
-## Versioning, Compatibility & Releases
+## Versioning, v1.x Long-Term Support (LTS) Policy & Releases
 
-Strife follows [Semantic Versioning](https://semver.org/):
+Strife follows [Semantic Versioning 2.0.0](https://semver.org/):
 
-- **Pre-1.0 (`v0.Y.Z`):**
-  - Additive CLI flags, new simulated systems, new models, and optional JSON fields ship in minor (`v0.Y.0`) releases while preserving backward compatibility for existing CLI workflows and `v1` schemas.
-  - Bug fixes, hardening, and security patches ship in patch (`v0.Y.Z`) or minor releases as appropriate.
-- **Deprecations:** Any planned removal or behavior change of a documented CLI flag or HTTP API field is announced in [`CHANGELOG.md`](CHANGELOG.md) under `[Unreleased]` / release notes at least one release ahead of removal unless required to resolve a critical soundness or security defect.
+- **v1.x Long-Term Support (LTS) Window & End-of-Life (EOL):**
+  - The `v1.x` release line (starting with `v1.0.0`, released November 2026) is designated **Long-Term Support (LTS)** and is actively maintained for a minimum of **24 months** (at least through **November 2028**).
+  - At least **6 months' advance notice** will be published in [`CHANGELOG.md`](CHANGELOG.md), [`SECURITY.md`](SECURITY.md), and [`README.md`](README.md) before the `v1.x` line reaches End-of-Life (EOL).
+- **Backport & Patch Policy (`v1.Y.Z`):**
+  - Security fixes, parser bounds hardening, transport leak fixes, and checker soundness corrections are backported to the active `v1.x` release line and published as patch releases (`v1.0.Z` / `v1.Y.Z`).
+  - New simulated systems, optional CLI flags, additional database targets, and optional JSON fields may ship in minor releases (`v1.Y.0`) provided they preserve backward compatibility.
+- **Breaking Change Policy (`v2.0.0` Boundary):**
+  - **No breaking changes** are permitted within `v1.x` to documented CLI flags, exit codes (`0`–`4`), the `strife serve` / `strife-agent` HTTP v1 endpoints (`/api/v1/*`), the WebAssembly 1.0 workload ABI (`next_op`), or the five frozen v1.0 JSON Schemas (`schemas/report.v1.json`, `history.v1.json`, `dossier.v1.json`, `campaign.v1.json`, `bundle.v1.json`).
+  - Within `v1.x`, JSON Schemas may only gain optional fields (enforced automatically by `TestCompatible` in `schemas/schemas_test.go`). Any incompatible change to a schema or CLI contract requires a major version increment (`v2.0.0`).
+- **Deprecations:** Any planned deprecation of a CLI flag or HTTP API field must remain functional throughout `v1.x` and be announced in [`CHANGELOG.md`](CHANGELOG.md) at least one minor release ahead of `v2.0.0`, unless immediate restriction is required to remediate a critical security vulnerability.
 - **Release Pipeline ([`.github/workflows/release.yml`](.github/workflows/release.yml)):**
   - Triggered by pushing annotated tag `vX.Y.Z` matching an entry `## [X.Y.Z]` in [`CHANGELOG.md`](CHANGELOG.md) and `Version` in [`internal/version/version.go`](internal/version/version.go).
-  - Publishes static binaries (`linux`, `darwin`, `windows` on `amd64`/`arm64`), `SHA256SUMS`, an SPDX SBOM, Ed25519 `in-toto` release attestations (`strife sign --release`), and multi-arch container images on `ghcr.io`.
+  - Unconditionally publishes static binaries (`linux`, `darwin`, `windows` on `amd64`/`arm64`), `SHA256SUMS`, an SPDX 2.3 SBOM, and multi-arch container images on `ghcr.io`, plus an Ed25519 `in-toto` v0.1 release attestation (`strife sign --release`) when the `STRIFE_RELEASE_KEY` secret is configured.
 
 ---
 

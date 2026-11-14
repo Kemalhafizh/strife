@@ -27,6 +27,7 @@ const (
 // execution by a remote or private-VPC strife worker.
 type Job struct {
 	ID          string          `json:"id"`
+	Tenant      string          `json:"tenant,omitempty"`
 	Kind        string          `json:"kind"` // "sim", "campaign", or "run"
 	System      string          `json:"system,omitempty"`
 	Seed        uint64          `json:"seed,omitempty"`
@@ -51,6 +52,7 @@ type Job struct {
 // JobClaimRequest is sent by a worker to claim the next pending job.
 type JobClaimRequest struct {
 	WorkerID string `json:"worker_id"`
+	Tenant   string `json:"tenant,omitempty"`
 }
 
 // JobCompleteRequest is sent by a worker when a claimed job finishes.
@@ -96,24 +98,40 @@ func (s *Server) handleTrends(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := strings.TrimSpace(r.URL.Query().Get("target"))
-	points := s.store.Trends(target)
-	writeJSON(w, http.StatusOK, map[string]any{
+	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	points := s.store.Trends(target, tenant)
+	resp := map[string]any{
 		"target": target,
 		"total":  len(points),
 		"points": points,
-	})
+	}
+	if tenant != "" {
+		resp["tenant"] = normalizeTenant(tenant)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+		tenantFilter := strings.TrimSpace(r.URL.Query().Get("tenant"))
+		if tenantFilter != "" {
+			tenantFilter = normalizeTenant(tenantFilter)
+		}
+		authed := s.hasValidAuth(r)
 		s.jobMu.Lock()
 		var out []Job
 		for i := len(s.jobs) - 1; i >= 0; i-- {
 			j := *s.jobs[i]
 			if statusFilter != "" && j.Status != statusFilter {
 				continue
+			}
+			if tenantFilter != "" && normalizeTenant(j.Tenant) != tenantFilter {
+				continue
+			}
+			if !authed {
+				j.LiveConfig = nil
 			}
 			out = append(out, j)
 		}
@@ -127,15 +145,26 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		if !s.checkAuth(w, r) {
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024*1024))
+		const maxJobBodyBytes = 4 * 1024 * 1024
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxJobBodyBytes+1))
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if len(body) > maxJobBodyBytes {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "job request body exceeds 4 MiB limit"})
 			return
 		}
 		var req Job
 		if err := json.Unmarshal(body, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid json: %v", err)})
 			return
+		}
+		if req.Tenant == "" {
+			req.Tenant = strings.TrimSpace(r.URL.Query().Get("tenant"))
+		}
+		if req.Tenant != "" {
+			req.Tenant = normalizeTenant(req.Tenant)
 		}
 		if req.Kind == "" {
 			req.Kind = "sim"
@@ -159,6 +188,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		s.jobSeq++
 		job := &Job{
 			ID:         fmt.Sprintf("job-%04d", s.jobSeq),
+			Tenant:     req.Tenant,
 			Kind:       req.Kind,
 			System:     req.System,
 			Seed:       req.Seed,
@@ -210,11 +240,15 @@ func (s *Server) handleJobsSubpath(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	authed := s.hasValidAuth(r)
 	s.jobMu.Lock()
 	var found *Job
 	for _, j := range s.jobs {
 		if j.ID == sub {
 			c := *j
+			if !authed {
+				c.LiveConfig = nil
+			}
 			found = &c
 			break
 		}
@@ -243,19 +277,30 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 	if req.WorkerID == "" {
 		req.WorkerID = "strife-worker"
 	}
+	if req.Tenant == "" {
+		req.Tenant = strings.TrimSpace(r.URL.Query().Get("tenant"))
+	}
+	wantTenant := ""
+	if req.Tenant != "" {
+		wantTenant = normalizeTenant(req.Tenant)
+	}
 
 	s.jobMu.Lock()
 	var claimed *Job
 	for _, j := range s.jobs {
-		if j.Status == JobPending {
-			j.Status = JobClaimed
-			j.WorkerID = req.WorkerID
-			j.ClaimedAt = time.Now().UTC().Format(time.RFC3339)
-			_ = s.saveJobsLocked()
-			c := *j
-			claimed = &c
-			break
+		if j.Status != JobPending {
+			continue
 		}
+		if wantTenant != "" && normalizeTenant(j.Tenant) != wantTenant {
+			continue
+		}
+		j.Status = JobClaimed
+		j.WorkerID = req.WorkerID
+		j.ClaimedAt = time.Now().UTC().Format(time.RFC3339)
+		_ = s.saveJobsLocked()
+		c := *j
+		claimed = &c
+		break
 	}
 	s.jobMu.Unlock()
 
@@ -274,9 +319,14 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 	if !s.checkAuth(w, r) {
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024*1024))
+	const maxCompleteBodyBytes = 32 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxCompleteBodyBytes+1))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(body) > maxCompleteBodyBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "job completion body exceeds 32 MiB limit"})
 		return
 	}
 	var req JobCompleteRequest
@@ -298,6 +348,17 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("job %q not found", id)})
 		return
 	}
+	if targetJob.Status == JobCompleted || targetJob.Status == JobFailed {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is already %s", id, targetJob.Status)})
+		return
+	}
+	if targetJob.WorkerID != "" && req.WorkerID != "" && targetJob.WorkerID != req.WorkerID {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is claimed by worker %q, not %q", id, targetJob.WorkerID, req.WorkerID)})
+		return
+	}
+	tenant := targetJob.Tenant
 	commit := targetJob.Commit
 	branch := targetJob.Branch
 	s.jobMu.Unlock()
@@ -310,7 +371,7 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		if branch != "" && req.Campaign.Branch == "" {
 			req.Campaign.Branch = branch
 		}
-		res, err := s.store.IngestCampaign(req.Campaign)
+		res, err := s.store.IngestCampaign(req.Campaign, tenant)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -318,7 +379,8 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		res.Webhooks = s.notifyWebhooks(res, nil)
 		ingestRes = res
 	} else if req.Report != nil {
-		res, err := s.store.IngestReport(req.Report, commit, branch, s.privKey, s.cfg.Signer)
+		priv, signer := s.signingKeyForTenant(tenant)
+		res, err := s.store.IngestReport(req.Report, commit, branch, priv, signer, tenant)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -328,6 +390,11 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 	}
 
 	s.jobMu.Lock()
+	if targetJob.Status == JobCompleted || targetJob.Status == JobFailed {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is already %s", id, targetJob.Status)})
+		return
+	}
 	targetJob.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	if req.WorkerID != "" {
 		targetJob.WorkerID = req.WorkerID

@@ -118,7 +118,7 @@ func claimNextJob(ctx context.Context, client *http.Client, baseURL, token, work
 		return nil, fmt.Errorf("claim HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	var job Job
-	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4*1024*1024)).Decode(&job); err != nil {
 		return nil, err
 	}
 	return &job, nil

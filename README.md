@@ -378,12 +378,12 @@ Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` wh
 
 ---
 
-## Run Registry (`strife serve`) & Remote Worker (`strife worker`)
+## Run Registry (`strife serve`)
 
 `strife serve` ([`pkg/serve`](pkg/serve/server.go), full reference in [`docs/server.md`](docs/server.md)) runs a self-hosted HTTP daemon and embedded web dashboard that keeps every CI run and regression campaign inside your own network:
 
 - **Verified on arrival & multi-tenant isolated:** Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; baselines and time-series rollups (`GET /api/v1/series`, `GET /api/v1/trends`) are isolated by `(tenant, target)`.
-- **Pull-based remote worker queue (`strife worker`):** Isolated staging clusters and private VPCs can run `strife worker --server http://... --token ...` ([`pkg/worker`](pkg/worker/worker.go)) to claim queued simulation, campaign, or live database chaos jobs over outbound HTTP (`POST /api/v1/jobs/claim`) and report verified results back (`POST /api/v1/jobs/<id>/complete`) without opening inbound firewall ports.
+- **Pull-based remote worker queue (`strife worker`):** Isolated staging clusters and private VPCs can run `strife worker --server http://... --token ...` ([`pkg/serve/worker.go`](pkg/serve/worker.go)) to claim queued simulation, campaign, or live database chaos jobs over outbound HTTP (`POST /api/v1/jobs/claim`) and report verified results back (`POST /api/v1/jobs/<id>/complete`) without opening inbound firewall ports.
 - **Automatic baseline regression diffing:** Ingested campaigns are automatically compared against the latest stored campaign for the same `(tenant, target)` pair, recording `regressed`, `fixed`, and `trace_drift` seed transitions.
 - **Per-tenant Ed25519 signing & on-demand dossiers:** Sign ingested reports automatically with `--key` or per-tenant keys (`--tenant-keys tenant=path.key`), discover active public keys via `GET /api/v1/keys`, and generate verified regulatory dossiers on demand (`GET /api/v1/runs/<id>/dossier`).
 - **Consistency & SLA webhook alerting:** When started with `--webhook <urls>`, `strife serve` dispatches Slack, Discord, or generic JSON alerts on consistency violations (`report.violation`), campaign regressions/violations (`campaign.regression` / `campaign.violation`), and recovery SLA breaches (`report.sla_breach` via `--max-mttr` and `--min-availability`).
@@ -397,7 +397,7 @@ strife serve --listen 127.0.0.1:8080 --store ./strife-registry \
   --webhook "https://hooks.slack.com/services/T00/B00/X00"
 
 # Start a pull-based remote worker inside a private staging VPC
-strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --tenant payments
+strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --worker-id staging-worker-1
 
 # Push a checked history directly from CLI, or POST sim/campaign/run JSON to /api/v1/ingest
 strife check --model settlement --history history.jsonl \
@@ -495,8 +495,7 @@ pkg/bench         Fault-injection latency benchmark (strife bench inject)
 pkg/report        Interactive HTML5/Canvas timeline studio, Markdown/JUnit/SARIF 2.1.0 exporters, post-heal MTTR/availability metrics, PR ci-report digest
 pkg/attest        in-toto v0.1 statements, Ed25519 signing/verification, release attestations
 pkg/compliance    Regulatory control evaluator (EU DORA, SOC 2, ISO 27001, OJK, PCI-DSS v4.0, Bank Indonesia PBI-SP) with citations & dossiers
-pkg/serve         Self-hosted continuous verification & run registry HTTP daemon (strife serve), REST API, job queue, per-tenant Ed25519 keys, web UI
-pkg/worker        Pull-based remote execution worker (strife worker) for isolated VPCs and staging environments
+pkg/serve         Self-hosted continuous verification & run registry HTTP daemon (strife serve), pull-based remote worker (strife worker), REST API, web UI
 deploy/kubernetes DaemonSet manifest (strife-agent-daemonset.yaml) with hostPID/hostNetwork and /sys/fs/cgroup mount
 schemas/          Frozen v1.0 JSON Schemas for report.v1.json, history.v1.json, dossier.v1.json, campaign.v1.json, and bundle.v1.json
 docs/             Operational guides and reference specs (benchmarks, GitHub Action, run registry, roadmap)
@@ -523,7 +522,7 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp` (`--max-mttr`, `--min-availability`, `--sarif`, `--strict`) |
 | `strife ci-report [flags]` | Compare candidate and baseline reports, campaigns, or compliance dossiers for PR gating and Markdown digests (`--report`, `--baseline-report`, `--campaign`, `--baseline-campaign`, `--dossier`, `--max-mttr`, `--min-availability`, `--out`, `--json`) |
 | `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--tenant-keys`, `--token`, `--webhook`, `--max-mttr`, `--min-availability`) |
-| `strife worker [flags]` | Run a pull-based remote worker that claims and executes jobs from `strife serve` (`--server`, `--token`, `--tenant`, `--once`, `--poll`) |
+| `strife worker [flags]` | Run a pull-based remote worker that claims and executes jobs from `strife serve` (`--server`, `--token`, `--worker-id`, `--once`, `--poll`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 
@@ -548,7 +547,7 @@ Use the composite GitHub Action (see [`docs/github-action.md`](docs/github-actio
     sarif: strife.sarif.json
 ```
 
-All JSON outputs follow frozen v1.0 JSON Schemas in [`schemas/`](schemas) (`report.v1.json`, `history.v1.json`, `dossier.v1.json`, `campaign.v1.json`, `bundle.v1.json`); CI rejects any change that would break them.
+All JSON outputs follow frozen v1.0 JSON Schemas in [`schemas/`](schemas) (`report.v1.json`, `history.v1.json`, `dossier.v1.json`, `campaign.v1.json`, `bundle.v1.json`); CI rejects any change that would break them. Under the **v1.x LTS Policy** ([`GOVERNANCE.md`](GOVERNANCE.md#versioning-v1x-long-term-support-lts-policy--releases) and [`SECURITY.md`](SECURITY.md)), `v1.x` receives security and soundness patches for at least 24 months (through November 2028, with 6 months' EOL notice), and any breaking change to schemas, CLI flags, exit codes, or the Wasm ABI is deferred to `v2.0.0`.
 
 ## Standards, Specifications & Academic References
 

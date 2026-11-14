@@ -623,6 +623,7 @@ func (s *Store) Series(tenant, target string) []SeriesSummary {
 // TrendPoint represents one chronological data point for resilience and consistency trend analysis.
 type TrendPoint struct {
 	ID                  string          `json:"id"`
+	Tenant              string          `json:"tenant,omitempty"`
 	Kind                string          `json:"kind"`
 	Target              string          `json:"target"`
 	Model               string          `json:"model"`
@@ -640,17 +641,25 @@ type TrendPoint struct {
 }
 
 // Trends returns chronological (oldest-first) resilience and consistency data points,
-// optionally filtered by target.
-func (s *Store) Trends(target string) []TrendPoint {
+// optionally filtered by target and tenant.
+func (s *Store) Trends(target string, tenant ...string) []TrendPoint {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	wantTenant := ""
+	if len(tenant) > 0 && strings.TrimSpace(tenant[0]) != "" {
+		wantTenant = normalizeTenant(tenant[0])
+	}
 	var out []TrendPoint
 	for _, e := range s.entries {
 		if target != "" && e.Target != target {
 			continue
 		}
+		if wantTenant != "" && normalizeTenant(e.Tenant) != wantTenant {
+			continue
+		}
 		out = append(out, TrendPoint{
 			ID:                  e.ID,
+			Tenant:              normalizeTenant(e.Tenant),
 			Kind:                e.Kind,
 			Target:              e.Target,
 			Model:               e.Model,
