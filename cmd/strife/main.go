@@ -1547,7 +1547,7 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 	campaignPath := fs.String("campaign", "", "path to campaign.json")
 	bundlePath := fs.String("bundle", "", "optional path to signed attestation bundle.json")
 	keyPath := fs.String("key", "", "optional path to Ed25519 public key (.pub) to verify --bundle")
-	frameworksStr := fs.String("frameworks", "all", "comma-separated frameworks: dora,soc2,iso27001,bi-ojk,all")
+	frameworksStr := fs.String("frameworks", "all", "comma-separated frameworks: dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp,all")
 	out := fs.String("out", "strife-compliance", "directory to write dossier.json, dossier.md, and dossier.html (\"\" to disable)")
 	strict := fs.Bool("strict", false, "exit with non-zero status if any control is PARTIAL (not just FAIL)")
 	maxMTTR := fs.Duration("max-mttr", 0, "optional SLA gate: fail recovery controls when P95 MTTR exceeds this duration")
@@ -1819,7 +1819,7 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 	reportPath := fs.String("report", "", "path to report.json")
 	campaignPath := fs.String("campaign", "", "path to campaign.json")
 	baselinePath := fs.String("baseline", "", "optional baseline report.json or campaign.json for delta comparison")
-	frameworksStr := fs.String("frameworks", "", "optional compliance frameworks to evaluate (e.g. dora,soc2,iso27001,bi-ojk,all)")
+	frameworksStr := fs.String("frameworks", "", "optional compliance frameworks to evaluate (e.g. dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp,all)")
 	outPath := fs.String("out", "", "optional file path to write the Markdown PR digest")
 	slo := sloFlags(fs)
 	if err := fs.Parse(args); err != nil {

@@ -1,0 +1,474 @@
+{
+  "$defs": {
+    "campaign.Comparison": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_campaign_id": {
+          "type": "string"
+        },
+        "baseline_commit": {
+          "type": "string"
+        },
+        "baseline_timestamp": {
+          "type": "string"
+        },
+        "baseline_total": {
+          "type": "integer"
+        },
+        "fixed": {
+          "items": {
+            "$ref": "#/$defs/campaign.SeedDelta"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "new_failures": {
+          "items": {
+            "$ref": "#/$defs/campaign.SeedDelta"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "persistent_failures": {
+          "items": {
+            "$ref": "#/$defs/campaign.SeedDelta"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "regressed": {
+          "items": {
+            "$ref": "#/$defs/campaign.SeedDelta"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "trace_drifts": {
+          "items": {
+            "$ref": "#/$defs/campaign.SeedDelta"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "unchanged_pass_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "baseline_total",
+        "unchanged_pass_count"
+      ],
+      "type": "object"
+    },
+    "campaign.Manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "avg_availability": {
+          "type": "number"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "campaign_id": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "comparison": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/campaign.Comparison"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config": {
+          "$ref": "#/$defs/explore.Config"
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "errors": {
+          "type": "integer"
+        },
+        "faults": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "mttr_max_ms": {
+          "type": "integer"
+        },
+        "mttr_p50_ms": {
+          "type": "integer"
+        },
+        "mttr_p95_ms": {
+          "type": "integer"
+        },
+        "passed": {
+          "type": "integer"
+        },
+        "seeds": {
+          "items": {
+            "$ref": "#/$defs/campaign.SeedRecord"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "system": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "total_events": {
+          "type": "integer"
+        },
+        "total_ops": {
+          "type": "integer"
+        },
+        "total_seeds": {
+          "type": "integer"
+        },
+        "unknown": {
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        },
+        "violations": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "campaign_id",
+        "config",
+        "duration_ms",
+        "errors",
+        "faults",
+        "fingerprint",
+        "passed",
+        "seeds",
+        "system",
+        "timestamp",
+        "tool",
+        "total_events",
+        "total_ops",
+        "total_seeds",
+        "unknown",
+        "version",
+        "violations"
+      ],
+      "type": "object"
+    },
+    "campaign.SeedDelta": {
+      "additionalProperties": false,
+      "properties": {
+        "curr_trace_hash": {
+          "type": "string"
+        },
+        "curr_verdict": {
+          "type": "string"
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "prev_trace_hash": {
+          "type": "string"
+        },
+        "prev_verdict": {
+          "type": "string"
+        },
+        "reproduce": {
+          "type": "string"
+        },
+        "seed": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "curr_verdict",
+        "kind",
+        "seed"
+      ],
+      "type": "object"
+    },
+    "campaign.SeedRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "availability": {
+          "type": "number"
+        },
+        "elapsed_ms": {
+          "type": "integer"
+        },
+        "error": {
+          "type": "string"
+        },
+        "events": {
+          "type": "integer"
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "faults": {
+          "type": "integer"
+        },
+        "history_hash": {
+          "type": "string"
+        },
+        "minimal_faults": {
+          "type": "integer"
+        },
+        "mttr_p95_ms": {
+          "type": "integer"
+        },
+        "ops": {
+          "type": "integer"
+        },
+        "report_path": {
+          "type": "string"
+        },
+        "reproduce": {
+          "type": "string"
+        },
+        "schedule_hash": {
+          "type": "string"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "trace_hash": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "elapsed_ms",
+        "events",
+        "faults",
+        "history_hash",
+        "ops",
+        "schedule_hash",
+        "seed",
+        "trace_hash",
+        "verdict"
+      ],
+      "type": "object"
+    },
+    "explore.Config": {
+      "additionalProperties": false,
+      "properties": {
+        "cas_ratio": {
+          "type": "number"
+        },
+        "check_timeout": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "clients": {
+          "type": "integer"
+        },
+        "duration": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "fault_interval": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "fault_length": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "faults": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "keys": {
+          "type": "integer"
+        },
+        "max_steps": {
+          "type": "integer"
+        },
+        "nodes": {
+          "type": "integer"
+        },
+        "op_timeout": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nemesis.Schedule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "read_ratio": {
+          "type": "number"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "system": {
+          "type": "string"
+        },
+        "think": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "values": {
+          "type": "integer"
+        },
+        "workload": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cas_ratio",
+        "clients",
+        "duration",
+        "fault_interval",
+        "fault_length",
+        "faults",
+        "keys",
+        "nodes",
+        "op_timeout",
+        "read_ratio",
+        "seed",
+        "system",
+        "think",
+        "values"
+      ],
+      "type": "object"
+    },
+    "nemesis.Fault": {
+      "additionalProperties": false,
+      "properties": {
+        "delay": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "end": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "jitter": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "loss": {
+          "type": "number"
+        },
+        "nodes": {
+          "items": {
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "rate": {
+          "type": "number"
+        },
+        "start": {
+          "description": "nanoseconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "end",
+        "id",
+        "kind",
+        "nodes",
+        "start"
+      ],
+      "type": "object"
+    },
+    "nemesis.Schedule": {
+      "additionalProperties": false,
+      "properties": {
+        "duration": {
+          "description": "nanoseconds",
+          "type": "integer"
+        },
+        "faults": {
+          "items": {
+            "$ref": "#/$defs/nemesis.Fault"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "nodes": {
+          "type": "integer"
+        },
+        "seed": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "duration",
+        "faults",
+        "nodes",
+        "seed"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://strife.dev/schemas/campaign.v1.json",
+  "$ref": "#/$defs/campaign.Manifest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Strife campaign manifest (campaign.json)"
+}

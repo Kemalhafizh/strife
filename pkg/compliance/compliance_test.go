@@ -73,8 +73,8 @@ func TestEvaluateFullPassAndArtifacts(t *testing.T) {
 	if dossier.Overall != StatusPass {
 		t.Fatalf("expected overall status PASS, got %s (controls: %+v)", dossier.Overall, dossier.Controls)
 	}
-	if len(dossier.Controls) != 12 {
-		t.Fatalf("expected 12 controls across 4 frameworks, got %d", len(dossier.Controls))
+	if len(dossier.Controls) != 18 {
+		t.Fatalf("expected 18 controls across 6 frameworks, got %d", len(dossier.Controls))
 	}
 
 	outDir := t.TempDir()
@@ -90,7 +90,13 @@ func TestEvaluateFullPassAndArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"dora.resilience-testing", "Art. 24", "PI1.3", "Annex A, 8.17", "bi-ojk.pemulihan-bencana", "POJK No. 11/POJK.03/2022", "chief-auditor"} {
+	for _, want := range []string{
+		"dora.resilience-testing", "Art. 24", "PI1.3", "Annex A, 8.17",
+		"bi-ojk.pemulihan-bencana", "POJK No. 11/POJK.03/2022",
+		"pcidss.data-integrity", "PCI DSS v4.0",
+		"bi-sp.keandalan-sistem", "PBI No. 23/6/PBI/2021",
+		"chief-auditor",
+	} {
 		if !strings.Contains(string(mdBytes), want) {
 			t.Errorf("dossier.md missing %q", want)
 		}
@@ -151,8 +157,8 @@ func TestEvaluatePartialAndViolation(t *testing.T) {
 	}
 
 	suite := Suite(dFail, true)
-	if len(suite.Cases) != 12 {
-		t.Fatalf("expected 12 JUnit cases, got %d", len(suite.Cases))
+	if len(suite.Cases) != 18 {
+		t.Fatalf("expected 18 JUnit cases, got %d", len(suite.Cases))
 	}
 }
 
@@ -309,5 +315,84 @@ func TestEvaluateSLABreachAndSARIF(t *testing.T) {
 		if !strings.Contains(sarifBuf.String(), want) {
 			t.Errorf("SARIF output missing %q:\n%s", want, sarifBuf.String())
 		}
+	}
+}
+
+func TestEvaluatePCIDSSAndBISPSettlement(t *testing.T) {
+	fws, err := ParseFrameworks("pcidss,pbi-sp")
+	if err != nil {
+		t.Fatalf("ParseFrameworks aliases failed: %v", err)
+	}
+	if len(fws) != 2 || fws[0] != FrameworkPCIDSS || fws[1] != FrameworkBISP {
+		t.Fatalf("unexpected parsed frameworks: %+v", fws)
+	}
+
+	v := int64(500)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FTxn, Key: "settle:tx-1:acct:0->acct:1", Value: &v, Time: 100},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FTxn, Key: "settle:tx-1:acct:0->acct:1", Value: &v, Time: 200},
+	}
+	sched := nemesis.Schedule{
+		Nodes:    5,
+		Duration: 10 * time.Second,
+		Faults: []nemesis.Fault{
+			{ID: 1, Kind: nemesis.Partition, Nodes: []int{0, 1}, Start: time.Second, End: 3 * time.Second},
+			{ID: 2, Kind: nemesis.Kill, Nodes: []int{2}, Start: 2 * time.Second, End: 4 * time.Second},
+		},
+	}
+	rep, err := report.New(
+		report.KindSimulation,
+		"outbox-settlement",
+		11,
+		map[string]any{"nodes": 5},
+		sched,
+		ops,
+		checker.Report{
+			Model:      "settlement",
+			Verdict:    checker.Linearizable,
+			Operations: 1,
+			Checked:    1,
+		},
+		"trace-settlement-11",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := attest.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := attest.Sign(rep, priv, "qsa-auditor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ver, err := attest.Verify(bundle, pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dossier, err := Evaluate(Options{
+		Report:       rep,
+		Verification: ver,
+		Frameworks:   fws,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if dossier.Overall != StatusPass {
+		t.Fatalf("expected PASS for signed settlement run under PCI-DSS & BI-SP, got %s (%+v)", dossier.Overall, dossier.Controls)
+	}
+	// 3 PCI-DSS controls + 4 BI-SP controls (including bi-sp.finalitas-settlement)
+	if len(dossier.Controls) != 7 {
+		t.Fatalf("expected 7 controls (3 PCI-DSS + 4 BI-SP), got %d", len(dossier.Controls))
+	}
+	foundSettlementFinality := false
+	for _, c := range dossier.Controls {
+		if c.ControlID == "bi-sp.finalitas-settlement" && c.Status == StatusPass {
+			foundSettlementFinality = true
+		}
+	}
+	if !foundSettlementFinality {
+		t.Fatalf("expected passing bi-sp.finalitas-settlement control, got %+v", dossier.Controls)
 	}
 }

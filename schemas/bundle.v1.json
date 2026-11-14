@@ -1,0 +1,172 @@
+{
+  "$defs": {
+    "attest.Bundle": {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "type": "string"
+        },
+        "payload_type": {
+          "type": "string"
+        },
+        "signatures": {
+          "items": {
+            "$ref": "#/$defs/attest.Signature"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "statement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attest.Statement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "payload",
+        "payload_type",
+        "signatures"
+      ],
+      "type": "object"
+    },
+    "attest.Predicate": {
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "type": "integer"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "history_hash": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "schedule_hash": {
+          "type": "string"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "signed_at": {
+          "type": "string"
+        },
+        "signer": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "trace_hash": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "history_hash",
+        "kind",
+        "seed",
+        "signed_at",
+        "signer",
+        "target",
+        "tool",
+        "verdict",
+        "version"
+      ],
+      "type": "object"
+    },
+    "attest.ResourceDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "name"
+      ],
+      "type": "object"
+    },
+    "attest.Signature": {
+      "additionalProperties": false,
+      "properties": {
+        "key_id": {
+          "type": "string"
+        },
+        "sig": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key_id",
+        "sig"
+      ],
+      "type": "object"
+    },
+    "attest.Statement": {
+      "additionalProperties": false,
+      "properties": {
+        "_type": {
+          "type": "string"
+        },
+        "predicate": {
+          "$ref": "#/$defs/attest.Predicate"
+        },
+        "predicateType": {
+          "type": "string"
+        },
+        "subject": {
+          "items": {
+            "$ref": "#/$defs/attest.ResourceDescriptor"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "_type",
+        "predicate",
+        "predicateType",
+        "subject"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://strife.dev/schemas/bundle.v1.json",
+  "$ref": "#/$defs/attest.Bundle",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Strife cryptographic attestation bundle (bundle.json)"
+}

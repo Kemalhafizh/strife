@@ -6,15 +6,23 @@ All notable changes to Strife. The format follows
 [`schemas/`](schemas/) are versioned contracts: within a major version they
 only gain optional fields.
 
-## [Unreleased]
+## [1.0.0] - 2026-11-14
 
-### Fixed
+### Added (1.0.0)
+
+- Financial regulatory compliance frameworks in `pkg/compliance` and `strife compliance`:
+  - **PCI-DSS v4.0 (`pci-dss` / `pcidss`)**: evaluates `pcidss.data-integrity` (Req. 6.2.4 / 12.10.5), `pcidss.resilience-change-verification` (Req. 6.5.2 / 11.4), and `pcidss.tamper-evidence` (Req. 10.3.2 / 10.3.4).
+  - **Bank Indonesia Payment Systems (`bi-sp` / `pbi-sp` — PBI No. 23/6/PBI/2021 & PBI No. 23/7/PBI/2021)**: evaluates `bi-sp.keandalan-sistem`, `bi-sp.pencegahan-duplikasi`, `bi-sp.integritas-bukti-audit`, and financial model settlement finality `bi-sp.finalitas-settlement`.
+- Frozen v1.0 LTS JSON Schema contracts for `schemas/campaign.v1.json` (`campaign.Manifest`) and `schemas/bundle.v1.json` (`attest.Bundle`) alongside `report.v1.json`, `history.v1.json`, and `dossier.v1.json`.
+- Continuous fuzzing harnesses (`FuzzReadEDN`, `FuzzReadOTel`, and expanded `FuzzReadJSONL`) in `pkg/history/fuzz_test.go`.
+
+### Fixed (1.0.0)
 
 - Harden checker soundness, input bounds (wire decoders, JSONL/EDN parsers, and Wasm module loader), live client outcome classification guards, and live fault handling ([#13](https://github.com/Kemalhafizh/strife/pull/13)).
 
-### Documentation & Governance
+### Documentation & Governance (1.0.0)
 
-- Add project governance (`GOVERNANCE.md`), `NOTICE`, `.github/CODEOWNERS`, Dependabot configuration, expanded `SECURITY.md`, updated contributor verification workflow (`CONTRIBUTING.md`), and aligned `README.md`, `docs/`, and `examples/` documentation with `v0.7.0`.
+- Add project governance (`GOVERNANCE.md`), `NOTICE`, `.github/CODEOWNERS`, Dependabot configuration, expanded `SECURITY.md`, updated contributor verification workflow (`CONTRIBUTING.md`), and aligned `README.md`, `docs/`, and `examples/` documentation.
 
 ## [0.8.0] - 2026-11-14
 

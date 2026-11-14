@@ -411,8 +411,8 @@ func TestComplianceCLIAndDossier(t *testing.T) {
 		}
 	}
 	d := readJUnit(t, jPath)
-	if d.Tests != 12 || d.Failures != 0 || d.Errors != 0 {
-		t.Fatalf("expected 12 passing JUnit control cases, got %+v", d)
+	if d.Tests != 18 || d.Failures != 0 || d.Errors != 0 {
+		t.Fatalf("expected 18 passing JUnit control cases, got %+v", d)
 	}
 }
 

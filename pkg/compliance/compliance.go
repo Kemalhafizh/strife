@@ -38,6 +38,8 @@ const (
 	FrameworkSOC2     FrameworkID = "soc2"
 	FrameworkISO27001 FrameworkID = "iso27001"
 	FrameworkBIOJK    FrameworkID = "bi-ojk"
+	FrameworkPCIDSS   FrameworkID = "pci-dss"
+	FrameworkBISP     FrameworkID = "bi-sp"
 )
 
 // AllFrameworks returns all supported regulatory framework identifiers.
@@ -47,6 +49,8 @@ func AllFrameworks() []FrameworkID {
 		FrameworkSOC2,
 		FrameworkISO27001,
 		FrameworkBIOJK,
+		FrameworkPCIDSS,
+		FrameworkBISP,
 	}
 }
 
@@ -59,18 +63,25 @@ func ParseFrameworks(s string) ([]FrameworkID, error) {
 	var out []FrameworkID
 	seen := make(map[FrameworkID]bool)
 	for _, part := range strings.Split(s, ",") {
-		id := FrameworkID(strings.ToLower(strings.TrimSpace(part)))
-		if id == "" {
+		raw := strings.ToLower(strings.TrimSpace(part))
+		if raw == "" {
 			continue
 		}
+		switch raw {
+		case "pcidss":
+			raw = string(FrameworkPCIDSS)
+		case "bisp", "pbi-sp":
+			raw = string(FrameworkBISP)
+		}
+		id := FrameworkID(raw)
 		switch id {
-		case FrameworkDORA, FrameworkSOC2, FrameworkISO27001, FrameworkBIOJK:
+		case FrameworkDORA, FrameworkSOC2, FrameworkISO27001, FrameworkBIOJK, FrameworkPCIDSS, FrameworkBISP:
 			if !seen[id] {
 				seen[id] = true
 				out = append(out, id)
 			}
 		default:
-			return nil, fmt.Errorf("unknown compliance framework %q (valid: dora, soc2, iso27001, bi-ojk, all)", part)
+			return nil, fmt.Errorf("unknown compliance framework %q (valid: dora, soc2, iso27001, bi-ojk, pci-dss, bi-sp, all)", part)
 		}
 	}
 	if len(out) == 0 {
@@ -560,6 +571,92 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 			))
 		}
 		return out
+
+	case FrameworkPCIDSS:
+		return []ControlResult{
+			evalControl(
+				FrameworkPCIDSS,
+				"pcidss.data-integrity",
+				"Payment Transaction & Account State Integrity",
+				"Payment and account state transitions must preserve atomic consistency without lost updates, dirty reads, or race-condition state corruption during infrastructure faults.",
+				isClean,
+				sum.TotalOperations > 0,
+				fmt.Sprintf("Model %q verified %d payment/state operations across %d seed(s) on %q; verdict=%s (fingerprint %s).",
+					sum.Model, sum.TotalOperations, sum.SeedsTested, sum.Target, sum.Verdict, shortHash(sum.Fingerprint)),
+				"Execute a non-empty transactional workload and resolve any consistency violations.",
+			),
+			applySLAGate(evalControl(
+				FrameworkPCIDSS,
+				"pcidss.resilience-change-verification",
+				"Pre-Release Fault Injection & Change Resilience Verification",
+				"Changes to critical transaction processing systems must be verified under network partitions and node/storage disruptions with deterministic reproducibility.",
+				isClean,
+				hasNetFault && hasCrashFault && sum.Fingerprint != "",
+				fmt.Sprintf("Target %q tested under fault classes [%s] (%d fault transitions, fingerprint %s); verdict=%s.",
+					sum.Target, formatFaultList(sum.FaultKindsExercised), sum.FaultCount, shortHash(sum.Fingerprint), sum.Verdict),
+				"Exercise both network faults (partition/latency/loss) and node crash faults (kill/pause/freeze) before release.",
+			), sum),
+			evalControl(
+				FrameworkPCIDSS,
+				"pcidss.tamper-evidence",
+				"Tamper-Evident Audit Trails & Signed Verification Evidence",
+				"Audit histories, fault schedules, and verification reports must be bound by SHA-256 digests and cryptographic Ed25519 signatures to prevent undetectable tampering.",
+				true,
+				sum.Attested,
+				attestEvidenceString(sum),
+				"Sign the verification report with 'strife sign --report report.json --key auditor.key' and supply '--bundle bundle.json --key auditor.pub'.",
+			),
+		}
+
+	case FrameworkBISP:
+		out := []ControlResult{
+			applySLAGate(evalControl(
+				FrameworkBISP,
+				"bi-sp.keandalan-sistem",
+				"Keandalan Operasional & Pemulihan Gangguan Sistem Pembayaran (PJP/PIP)",
+				"Infrastruktur penyelenggara sistem pembayaran wajib mempertahankan ketersediaan layanan dan pulih secara deterministik dari gangguan jaringan maupun kegagalan perangkat keras/node.",
+				isClean,
+				hasNetFault && hasCrashFault,
+				fmt.Sprintf("Target %q (%d node) diuji terhadap gangguan [%s] pada %d seed (%d operasi); hasil=%s.",
+					sum.Target, sum.Nodes, formatFaultList(sum.FaultKindsExercised), sum.SeedsTested, sum.TotalOperations, sum.Verdict),
+				"Uji skenario kombinasi partisi jaringan (partition/latency) dan kegagalan proses (kill/pause).",
+			), sum),
+			evalControl(
+				FrameworkBISP,
+				"bi-sp.pencegahan-duplikasi",
+				"Konsistensi Transaksi & Pencegahan Duplikasi / Double-Spend",
+				"Pemrosesan instruksi pembayaran wajib bebas dari anomali eksekusi ganda (double-spend), pembacaan basi (stale read), atau kehilangan mutasi saat terjadi timeout dan pengulangan (retry) jaringan.",
+				isClean,
+				sum.TotalOperations > 0,
+				fmt.Sprintf("Pemeriksa formal model %q memverifikasi %d operasi pada %q: %d seed linearizable, %d pelanggaran.",
+					sum.Model, sum.TotalOperations, sum.Target, sum.SeedsLinearizable, sum.SeedsViolating),
+				"Pastikan seluruh riwayat transaksi memenuhi linearizability/serializability tanpa anomali.",
+			),
+			evalControl(
+				FrameworkBISP,
+				"bi-sp.integritas-bukti-audit",
+				"Bukti Audit Kriptografis & Non-Repudiation Pengujian Sistem Pembayaran",
+				"Bukti pengujian ketahanan dan konsistensi sistem pembayaran wajib memiliki sidik jari SHA-256 dan tanda tangan digital Ed25519 yang dapat diverifikasi ulang oleh pengawas/auditor.",
+				true,
+				sum.Attested,
+				attestEvidenceString(sum),
+				"Tandatangani artefak hasil pengujian dengan kunci privat Ed25519 ('strife sign') untuk menjamin keaslian bukti audit.",
+			),
+		}
+		if sum.Model == "ledger" || sum.Model == "settlement" {
+			out = append(out, evalControl(
+				FrameworkBISP,
+				"bi-sp.finalitas-settlement",
+				"Kepastian Penyelesaian Akhir (Settlement Finality) & Rekonsiliasi Dana",
+				"Setiap instruksi transfer dana dan kliring lintas-sistem wajib memenuhi kepastian penyelesaian akhir (settlement finality), atomisitas outbox, konservasi saldo nol-sum, dan bebas dari kredit yatim (orphan credit).",
+				isClean,
+				sum.TotalOperations > 0,
+				fmt.Sprintf("Model finansial %q memverifikasi %d mutasi/settlement pada %q (%d pelanggaran konservasi/atomisitas/idempotensi).",
+					sum.Model, sum.TotalOperations, sum.Target, sum.SeedsViolating),
+				"Pastikan tidak terdapat pelanggaran SETTLEMENT-ATOMICITY, SETTLEMENT-NO-ORPHAN-CREDIT, SETTLEMENT-IDEMPOTENCY, maupun LEDGER-CONSERVATION.",
+			))
+		}
+		return out
 	}
 	return nil
 }
@@ -568,19 +665,26 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 // They point to the text an auditor should read; they do not claim that a
 // passing check satisfies the provision on its own.
 var Citations = map[string]string{
-	"dora.resilience-testing":        "Regulation (EU) 2022/2554 (DORA), Art. 24 (general requirements for digital operational resilience testing) and Art. 25 (testing of ICT tools and systems)",
-	"dora.data-integrity":            "Regulation (EU) 2022/2554 (DORA), Art. 9(3)(b)-(c) (minimise the risk of corruption or loss of data; prevent the impairment of the integrity of data)",
-	"dora.recovery":                  "Regulation (EU) 2022/2554 (DORA), Art. 11 (response and recovery) and Art. 12 (backup policies and procedures, restoration and recovery procedures)",
-	"soc2.processing-integrity":      "AICPA Trust Services Criteria (2017, revised points of focus 2022), PI1.3 (processing) and PI1.4 (outputs)",
-	"soc2.recovery":                  "AICPA Trust Services Criteria (2017, revised points of focus 2022), A1.2 (recovery infrastructure) and A1.3 (recovery plan testing)",
-	"soc2.test-evidence":             "AICPA Trust Services Criteria (2017, revised points of focus 2022), CC4.1 (ongoing and separate evaluations of controls)",
-	"iso27001.redundancy":            "ISO/IEC 27001:2022 Annex A, 8.13 (information backup) and 8.14 (redundancy of information processing facilities)",
-	"iso27001.clock-sync":            "ISO/IEC 27001:2022 Annex A, 8.17 (clock synchronization)",
-	"iso27001.security-testing":      "ISO/IEC 27001:2022 Annex A, 8.29 (security testing in development and acceptance)",
-	"bi-ojk.pemulihan-bencana":       "POJK No. 11/POJK.03/2022 tentang Penyelenggaraan Teknologi Informasi oleh Bank Umum (rencana pemulihan bencana dan pengujiannya)",
-	"bi-ojk.integritas-data":         "POJK No. 11/POJK.03/2022 (pengamanan dan integritas data) dan SEOJK No. 29/SEOJK.03/2022 tentang Ketahanan dan Keamanan Siber bagi Bank Umum",
-	"bi-ojk.jejak-audit":             "POJK No. 11/POJK.03/2022 (jejak audit atas penyelenggaraan teknologi informasi)",
-	"bi-ojk.rekonsiliasi-buku-besar": "POJK No. 11/POJK.03/2022 (integritas pemrosesan transaksi keuangan & rekonsiliasi buku besar) dan PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran",
+	"dora.resilience-testing":                 "Regulation (EU) 2022/2554 (DORA), Art. 24 (general requirements for digital operational resilience testing) and Art. 25 (testing of ICT tools and systems)",
+	"dora.data-integrity":                     "Regulation (EU) 2022/2554 (DORA), Art. 9(3)(b)-(c) (minimise the risk of corruption or loss of data; prevent the impairment of the integrity of data)",
+	"dora.recovery":                           "Regulation (EU) 2022/2554 (DORA), Art. 11 (response and recovery) and Art. 12 (backup policies and procedures, restoration and recovery procedures)",
+	"soc2.processing-integrity":               "AICPA Trust Services Criteria (2017, revised points of focus 2022), PI1.3 (processing) and PI1.4 (outputs)",
+	"soc2.recovery":                           "AICPA Trust Services Criteria (2017, revised points of focus 2022), A1.2 (recovery infrastructure) and A1.3 (recovery plan testing)",
+	"soc2.test-evidence":                      "AICPA Trust Services Criteria (2017, revised points of focus 2022), CC4.1 (ongoing and separate evaluations of controls)",
+	"iso27001.redundancy":                     "ISO/IEC 27001:2022 Annex A, 8.13 (information backup) and 8.14 (redundancy of information processing facilities)",
+	"iso27001.clock-sync":                     "ISO/IEC 27001:2022 Annex A, 8.17 (clock synchronization)",
+	"iso27001.security-testing":               "ISO/IEC 27001:2022 Annex A, 8.29 (security testing in development and acceptance)",
+	"bi-ojk.pemulihan-bencana":                "POJK No. 11/POJK.03/2022 tentang Penyelenggaraan Teknologi Informasi oleh Bank Umum (rencana pemulihan bencana dan pengujiannya)",
+	"bi-ojk.integritas-data":                  "POJK No. 11/POJK.03/2022 (pengamanan dan integritas data) dan SEOJK No. 29/SEOJK.03/2022 tentang Ketahanan dan Keamanan Siber bagi Bank Umum",
+	"bi-ojk.jejak-audit":                      "POJK No. 11/POJK.03/2022 (jejak audit atas penyelenggaraan teknologi informasi)",
+	"bi-ojk.rekonsiliasi-buku-besar":          "POJK No. 11/POJK.03/2022 (integritas pemrosesan transaksi keuangan & rekonsiliasi buku besar) dan PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran",
+	"pcidss.data-integrity":                   "PCI DSS v4.0 (March 2022), Req. 6.2.4 (software engineering techniques to prevent race conditions and state corruption) and Req. 12.10.5 (integrity monitoring)",
+	"pcidss.resilience-change-verification":   "PCI DSS v4.0 (March 2022), Req. 6.5.2 (confirming security and integrity controls after significant change) and Req. 11.4 (resilience/penetration testing)",
+	"pcidss.tamper-evidence":                  "PCI DSS v4.0 (March 2022), Req. 10.3.2 (audit logs protected from modification) and Req. 10.3.4 (cryptographic change-detection mechanism on audit logs)",
+	"bi-sp.keandalan-sistem":                  "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (manajemen risiko operasional & keandalan sistem) dan PBI No. 23/7/PBI/2021 tentang Penyelenggara Infrastruktur Sistem Pembayaran",
+	"bi-sp.pencegahan-duplikasi":              "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (keamanan dan keandalan pemrosesan transaksi pembayaran)",
+	"bi-sp.integritas-bukti-audit":            "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (pengawasan, pelaporan, dan jejak audit sistem informasi)",
+	"bi-sp.finalitas-settlement":              "PBI No. 23/7/PBI/2021 tentang Penyelenggara Infrastruktur Sistem Pembayaran (kepastian penyelesaian akhir / settlement finality) dan PBI No. 23/6/PBI/2021",
 }
 
 func evalControl(fw FrameworkID, id, title, req string, safetyOK, coverageOK bool, evidence, gapHint string) ControlResult {

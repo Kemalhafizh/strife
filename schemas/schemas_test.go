@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/internal/jsonschema"
+	"github.com/kemalhafizh/strife/pkg/attest"
+	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/compliance"
 	"github.com/kemalhafizh/strife/pkg/explore"
 	"github.com/kemalhafizh/strife/pkg/history"
@@ -32,6 +34,8 @@ var contracts = []struct {
 	{"report.v1.json", "https://strife.dev/schemas/report.v1.json", "Strife report (report.json)", reflect.TypeOf(report.Report{})},
 	{"history.v1.json", "https://strife.dev/schemas/history.v1.json", "One line of a Strife history (history.jsonl)", reflect.TypeOf(history.Op{})},
 	{"dossier.v1.json", "https://strife.dev/schemas/dossier.v1.json", "Strife compliance dossier (dossier.json)", reflect.TypeOf(compliance.Dossier{})},
+	{"campaign.v1.json", "https://strife.dev/schemas/campaign.v1.json", "Strife campaign manifest (campaign.json)", reflect.TypeOf(campaign.Manifest{})},
+	{"bundle.v1.json", "https://strife.dev/schemas/bundle.v1.json", "Strife cryptographic attestation bundle (bundle.json)", reflect.TypeOf(attest.Bundle{})},
 }
 
 func load(t *testing.T, file string) jsonschema.Schema {
@@ -117,4 +121,44 @@ func TestRealOutputsValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("dossier.v1.json", d)
+
+	_, priv, err := attest.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := attest.Sign(rep, priv, "schema-test-auditor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("bundle.v1.json", bundle)
+
+	camp := &campaign.Manifest{
+		Tool:        "strife",
+		Version:     report.Version,
+		CampaignID:  "camp-1",
+		Timestamp:   "2026-11-14T00:00:00Z",
+		System:      cfg.System,
+		Faults:      cfg.Faults,
+		Config:      cfg,
+		TotalSeeds:  1,
+		Violations:  1,
+		TotalEvents: res.Events,
+		TotalOps:    len(res.History),
+		DurationMs:  12,
+		Seeds: []campaign.SeedRecord{
+			{
+				Seed:         cfg.Seed,
+				Verdict:      res.Check.Verdict,
+				Ops:          len(res.History),
+				Faults:       len(res.Schedule.Faults),
+				Events:       res.Events,
+				TraceHash:    res.TraceHash,
+				HistoryHash:  rep.HistoryHash,
+				ScheduleHash: rep.ScheduleHash,
+				ElapsedMs:    12,
+			},
+		},
+	}
+	camp.Fingerprint = camp.ComputeFingerprint()
+	check("campaign.v1.json", camp)
 }
