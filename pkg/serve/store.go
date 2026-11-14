@@ -620,6 +620,56 @@ func (s *Store) Series(tenant, target string) []SeriesSummary {
 	return out
 }
 
+// TrendPoint represents one chronological data point for resilience and consistency trend analysis.
+type TrendPoint struct {
+	ID                  string          `json:"id"`
+	Kind                string          `json:"kind"`
+	Target              string          `json:"target"`
+	Model               string          `json:"model"`
+	Commit              string          `json:"commit,omitempty"`
+	Branch              string          `json:"branch,omitempty"`
+	Timestamp           string          `json:"timestamp"`
+	Verdict             checker.Verdict `json:"verdict"`
+	Passed              int             `json:"passed"`
+	Violations          int             `json:"violations"`
+	Regressions         int             `json:"regressions"`
+	OverallAvailability float64         `json:"overall_availability,omitempty"`
+	FaultAvailability   float64         `json:"fault_availability,omitempty"`
+	MTTRP95Ms           float64         `json:"mttr_p95_ms,omitempty"`
+	MTTRMaxMs           float64         `json:"mttr_max_ms,omitempty"`
+}
+
+// Trends returns chronological (oldest-first) resilience and consistency data points,
+// optionally filtered by target.
+func (s *Store) Trends(target string) []TrendPoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []TrendPoint
+	for _, e := range s.entries {
+		if target != "" && e.Target != target {
+			continue
+		}
+		out = append(out, TrendPoint{
+			ID:                  e.ID,
+			Kind:                e.Kind,
+			Target:              e.Target,
+			Model:               e.Model,
+			Commit:              e.Commit,
+			Branch:              e.Branch,
+			Timestamp:           e.Timestamp,
+			Verdict:             e.Verdict,
+			Passed:              e.Passed,
+			Violations:          e.Violations,
+			Regressions:         e.Regressions,
+			OverallAvailability: e.OverallAvailability,
+			FaultAvailability:   e.FaultWindowAvailability,
+			MTTRP95Ms:           float64(e.MTTRP95Ms),
+			MTTRMaxMs:           float64(e.MTTRMaxMs),
+		})
+	}
+	return out
+}
+
 func shortFP(h string) string {
 	if len(h) >= 8 {
 		return h[:8]

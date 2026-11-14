@@ -16,6 +16,15 @@ only gain optional fields.
 
 - Add project governance (`GOVERNANCE.md`), `NOTICE`, `.github/CODEOWNERS`, Dependabot configuration, expanded `SECURITY.md`, updated contributor verification workflow (`CONTRIBUTING.md`), and aligned `README.md`, `docs/`, and `examples/` documentation with `v0.7.0`.
 
+## [0.8.0] - 2026-11-14
+
+### Added (0.8.0)
+
+- Pull-based remote worker (`strife worker`) and job queue API (`POST /api/v1/jobs`, `POST /api/v1/jobs/claim`, `POST /api/v1/jobs/{id}/complete`, `GET /api/v1/jobs`) on `strife serve`, enabling private-VPC and isolated staging clusters to execute simulation, multi-seed campaign, and live database runs without inbound network ports.
+- Zero-dependency OpenTelemetry Span JSON trace importer (`pkg/history/otel.go`), automatically detected by `strife check` alongside Strife JSONL and Jepsen EDN histories.
+- Quantitative resilience SLO gates (`--max-mttr`, `--min-availability`) on `strife sim`, `strife check`, `strife run`, and `strife ci-report`, plus time-series resilience trend tracking (`GET /api/v1/trends`) in `strife serve`.
+- Native CI Pull Request gate and comparative Markdown digest generator (`strife ci-report`) comparing consistency verdicts, MTTR/availability deltas, campaign regressions, and regulatory compliance controls.
+
 ## [0.7.0] - 2026-11-07
 
 ### Added (0.7.0)

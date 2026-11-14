@@ -691,3 +691,95 @@ func TestServeIngestValidation(t *testing.T) {
 		t.Fatal("expected error for campaign missing System")
 	}
 }
+
+func TestWorkerPullJobQueueAndTrends(t *testing.T) {
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   t.TempDir(),
+		Token:      "vpc-worker-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	// 1. Enqueue a simulation job via POST /api/v1/jobs
+	jobPayload := []byte(`{"kind":"sim","system":"raft","seed":7,"duration":"2s","faults":"partition","commit":"abc1234","branch":"main"}`)
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs", bytes.NewReader(jobPayload))
+	req.Header.Set("Authorization", "Bearer vpc-worker-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created for job enqueue, got %d: %s", resp.StatusCode, string(body))
+	}
+	var created Job
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || created.Status != JobPending {
+		t.Fatalf("unexpected created job: %+v", created)
+	}
+
+	// 2. Run pull-based worker once
+	n, err := RunWorker(context.Background(), WorkerConfig{
+		ServerURL: baseURL,
+		Token:     "vpc-worker-secret",
+		WorkerID:  "staging-vpc-worker-1",
+		Once:      true,
+	})
+	if err != nil {
+		t.Fatalf("RunWorker: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected worker to process 1 job, got %d", n)
+	}
+
+	// 3. Verify job status is completed and linked to ingested RunID
+	jobResp, err := http.Get(baseURL + "/api/v1/jobs/" + created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobBody, _ := io.ReadAll(jobResp.Body)
+	jobResp.Body.Close()
+	var completed Job
+	if err := json.Unmarshal(jobBody, &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != JobCompleted || completed.RunID == "" || completed.Verdict != checker.Linearizable {
+		t.Fatalf("expected completed linearizable job with RunID, got %+v", completed)
+	}
+
+	// 4. Verify GET /api/v1/trends returns the ingested run with resilience metrics
+	trResp, err := http.Get(baseURL + "/api/v1/trends?target=raft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trBody, _ := io.ReadAll(trResp.Body)
+	trResp.Body.Close()
+	var trData struct {
+		Total  int          `json:"total"`
+		Points []TrendPoint `json:"points"`
+	}
+	if err := json.Unmarshal(trBody, &trData); err != nil {
+		t.Fatal(err)
+	}
+	if trData.Total != 1 || len(trData.Points) != 1 || trData.Points[0].ID != completed.RunID {
+		t.Fatalf("unexpected trends response: %+v", trData)
+	}
+	if trData.Points[0].OverallAvailability <= 0 {
+		t.Fatalf("expected positive OverallAvailability in trend point, got %+v", trData.Points[0])
+	}
+}

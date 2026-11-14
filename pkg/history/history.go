@@ -302,16 +302,21 @@ func WriteJSONL(w io.Writer, ops []Op) error {
 	return bw.Flush()
 }
 
-// ReadJSONL parses a history in either Strife's JSONL format or Jepsen's EDN
-// format (auto-detected). Indices are reassigned in file order and the result
-// is sorted by time (stable) to tolerate histories merged from several clients.
+// ReadJSONL parses a history in Strife's JSONL format, Jepsen's EDN format, or
+// OpenTelemetry trace JSON format (auto-detected). Indices are reassigned in
+// file order and the result is sorted by time (stable) to tolerate histories
+// merged from several clients.
 func ReadJSONL(r io.Reader) ([]Op, error) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	if looksLikeEDN(string(raw)) {
-		return ReadEDN(strings.NewReader(string(raw)))
+	s := string(raw)
+	if looksLikeOTel(s) {
+		return ReadOTel(strings.NewReader(s))
+	}
+	if looksLikeEDN(s) {
+		return ReadEDN(strings.NewReader(s))
 	}
 	var ops []Op
 	sc := bufio.NewScanner(strings.NewReader(string(raw)))

@@ -160,7 +160,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	b.WriteString(html.EscapeString(s.store.Dir()))
 	b.WriteString(`</div>
   </div>
-  <div class="sub"><a href="/api/v1/runs">/api/v1/runs</a> · <a href="/api/v1/health">/api/v1/health</a></div>
+  <div class="sub"><a href="/api/v1/runs">/api/v1/runs</a> · <a href="/api/v1/trends">/api/v1/trends</a> · <a href="/api/v1/jobs">/api/v1/jobs</a> · <a href="/api/v1/health">/api/v1/health</a></div>
 </header>
 <main>
   <div class="kpis">

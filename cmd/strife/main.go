@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/internal/rng"
+	"github.com/kemalhafizh/strife/internal/secret"
 	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
@@ -51,7 +53,7 @@ Usage:
   strife sim        [flags]   run systems in the deterministic simulator
   strife campaign   [flags]   run parallel seed campaigns & track regressions across commits
   strife shrink     [flags]   minimise a failing simulation to its essential faults
-  strife check      [flags]   check a recorded history (JSONL) for linearizability
+  strife check      [flags]   check a recorded history (JSONL, EDN, or OTel) for linearizability
   strife plan       [flags]   print a seeded fault schedule and its shell commands
   strife run        [flags]   run a live test against a real cluster
   strife workload   [flags]   list, inspect, or compile custom Wasm workload plugins
@@ -60,7 +62,9 @@ Usage:
   strife sign       [flags]   cryptographically sign a report artifact (in-toto attestation)
   strife verify     [flags]   verify a signed compliance bundle against a public key
   strife compliance [flags]   generate a regulatory compliance & resilience audit dossier
+  strife ci-report  [flags]   generate a Pull Request Markdown digest & evaluate SLO gates
   strife serve      [flags]   run the continuous verification & run registry HTTP daemon
+  strife worker     [flags]   run a pull-based verification worker against strife serve
   strife doctor     [flags]   inspect host capabilities, transports, and cluster reachability
   strife systems              list the built-in simulated systems
   strife version
@@ -105,8 +109,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code, err = cmdVerify(rest, stdout, stderr)
 	case "compliance":
 		code, err = cmdCompliance(rest, stdout, stderr)
+	case "ci-report":
+		code, err = cmdCIReport(rest, stdout, stderr)
 	case "serve", "server":
 		code, err = cmdServe(rest, stdout, stderr)
+	case "worker":
+		code, err = cmdWorker(rest, stdout, stderr)
 	case "doctor":
 		code, err = cmdDoctor(rest, stdout, stderr)
 	case "systems":
@@ -210,6 +218,7 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
 	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the outcome matches (for CI)")
 	shrinkIt := fs.Bool("shrink", false, "minimise the (first) violating scenario and report it")
+	slo := sloFlags(fs)
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -222,7 +231,7 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitUsage, fmt.Errorf("--expect must be linearizable or violation")
 	}
 
-	o := simOptions{out: *out, keep: *keep, workers: *workers, determinism: *determinism, expect: *expect, ci: *ci}
+	o := simOptions{out: *out, keep: *keep, workers: *workers, determinism: *determinism, expect: *expect, slo: *slo, ci: *ci}
 	if *shrinkIt {
 		o.shrink = &shrink.Options{Workers: *workers}
 	}
@@ -244,7 +253,38 @@ type simOptions struct {
 	determinism bool
 	expect      string
 	shrink      *shrink.Options
+	slo         report.SLOGate
 	ci          report.Outputs
+}
+
+// sloFlags binds --max-mttr and --min-availability for resilience SLO gates.
+func sloFlags(fs *flag.FlagSet) *report.SLOGate {
+	g := &report.SLOGate{}
+	fs.DurationVar(&g.MaxMTTR, "max-mttr", 0, "maximum allowed post-fault recovery latency (MTTR SLO gate, e.g. 2s)")
+	fs.Float64Var(&g.MinAvailability, "min-availability", 0, "minimum overall availability ratio or percentage (SLO gate, e.g. 99.5 or 0.995)")
+	return g
+}
+
+func applySLOGate(stdout io.Writer, rep *report.Report, gate report.SLOGate, suite *report.Suite, code int, err error) (int, error) {
+	if !gate.Enabled() {
+		return code, err
+	}
+	res := report.EvaluateSLO(rep.Resilience, gate)
+	class := rep.Target
+	if len(suite.Cases) > 0 {
+		class = suite.Cases[0].Class
+	}
+	suite.Cases = append(suite.Cases, report.SLOCase(res, class))
+	if res.Passed {
+		fmt.Fprintf(stdout, "slo-gate: PASS (availability %.2f%%, max MTTR %v)\n", 100*res.ObservedAvailability, res.ObservedMaxMTTR.Round(time.Millisecond))
+		return code, err
+	}
+	msg := strings.Join(res.Violations, "; ")
+	fmt.Fprintf(stdout, "slo-gate: FAIL (%s)\n", msg)
+	if code == exitOK {
+		return exitViolation, fmt.Errorf("SLO gate failed: %s", msg)
+	}
+	return code, err
 }
 
 // ciFlags binds --junit and --summary, shared by every command that reaches
@@ -396,6 +436,7 @@ func simOne(cfg explore.Config, o simOptions, stdout io.Writer) (int, error) {
 		c.Output = fmt.Sprintf("verdict: %s", res.Check.Verdict)
 		suite.Cases = []report.Case{c}
 	}
+	code, verr = applySLOGate(stdout, rep, o.slo, &suite, code, verr)
 	return emitCI(o.ci, code, verr, suite)
 }
 
@@ -914,6 +955,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	tenant := fs.String("tenant", "", "optional tenant namespace for --push")
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
 	timeout := fs.Duration("check-timeout", 0, "wall-clock budget per key (0 = none)")
+	slo := sloFlags(fs)
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -1009,7 +1051,9 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 		}
 		fmt.Fprintf(stdout, "pushed:  %s (tenant %s)\n", ing.Entry.ID, ing.Entry.Tenant)
 	}
-	return emitCI(*ci, verdictCode(rep.Verdict), nil, report.SuiteFromReport(rr, time.Since(start)))
+	suite := report.SuiteFromReport(rr, time.Since(start))
+	code, verr := applySLOGate(stdout, rr, *slo, &suite, verdictCode(rep.Verdict), nil)
+	return emitCI(*ci, code, verr, suite)
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1161,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the verdict matches (for CI)")
 	faults := fs.String("faults", "", "override the config's fault kinds (comma separated, \"none\" for a baseline)")
 	schedPath := fs.String("schedule", "", "replay this fault schedule (JSON, e.g. from strife shrink --live) instead of the seeded one")
+	slo := sloFlags(fs)
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
@@ -1230,6 +1275,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 		// A clean outcome means little if the planned faults never happened.
 		code, rerr = exitError, fmt.Errorf("%d fault commands failed: the cluster did not see the planned schedule (see report)", failed)
 	}
+	code, rerr = applySLOGate(stdout, rep, *slo, &suite, code, rerr)
 	return emitCI(*ci, code, rerr, suite)
 }
 
@@ -1673,7 +1719,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	fs.SetOutput(stderr)
 	listen := fs.String("listen", "127.0.0.1:8080", "TCP address to listen on")
 	storeDir := fs.String("store", "strife-registry", "directory for persistent run registry and artifacts")
-	token := fs.String("token", "", "optional Bearer token required for POST /api/v1/ingest")
+	token := fs.String("token", "", "optional Bearer token required for POST endpoints (supports env:VAR or file:PATH)")
 	keyPath := fs.String("key", "", "optional Ed25519 private key (.key) to sign ingested reports automatically")
 	tenantKeysStr := fs.String("tenant-keys", "", "optional comma-separated tenant=path.key pairs for per-tenant Ed25519 signing")
 	signer := fs.String("signer", "strife-serve", "signer identity recorded in automatic in-toto attestations")
@@ -1681,6 +1727,10 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	maxMTTR := fs.Duration("max-mttr", 0, "optional post-heal MTTR P95 threshold (e.g. 500ms) that triggers report.sla_breach webhook alerts")
 	minAvail := fs.Float64("min-availability", 0, "optional minimum availability ratio in [0,1] (e.g. 0.99) that triggers report.sla_breach webhook alerts")
 	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	resolvedToken, err := secret.Resolve(*token)
+	if err != nil {
 		return exitUsage, err
 	}
 
@@ -1700,7 +1750,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	srv, err := serve.NewServer(serve.Config{
 		ListenAddr:      *listen,
 		StoreDir:        *storeDir,
-		Token:           *token,
+		Token:           resolvedToken,
 		SigningKeyPath:  *keyPath,
 		TenantKeyPaths:  tenantKeyPaths,
 		Signer:          *signer,
@@ -1725,6 +1775,163 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	fmt.Fprintf(stdout, "strife serve listening on http://%s (store: %s)\n", *listen, *storeDir)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return exitError, err
+	}
+	return exitOK, nil
+}
+
+func cmdWorker(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	serverURL := fs.String("server", "http://127.0.0.1:8080", "strife serve registry URL")
+	token := fs.String("token", "", "optional Bearer token (supports env:VAR or file:PATH)")
+	workerID := fs.String("id", "", "worker identifier (default: worker-<hostname>-<pid>)")
+	pollInterval := fs.Duration("poll-interval", 2*time.Second, "polling interval when job queue is empty")
+	once := fs.Bool("once", false, "claim and execute at most one pending job then exit")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	resolvedToken, err := secret.Resolve(*token)
+	if err != nil {
+		return exitUsage, err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	n, err := serve.RunWorker(ctx, serve.WorkerConfig{
+		ServerURL:    *serverURL,
+		Token:        resolvedToken,
+		WorkerID:     *workerID,
+		PollInterval: *pollInterval,
+		Once:         *once,
+		Logf:         func(format string, a ...any) { fmt.Fprintf(stdout, format+"\n", a...) },
+	})
+	if err != nil {
+		return exitError, err
+	}
+	fmt.Fprintf(stdout, "worker: processed %d job(s)\n", n)
+	return exitOK, nil
+}
+
+func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
+	fs := flag.NewFlagSet("ci-report", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	reportPath := fs.String("report", "", "path to report.json")
+	campaignPath := fs.String("campaign", "", "path to campaign.json")
+	baselinePath := fs.String("baseline", "", "optional baseline report.json or campaign.json for delta comparison")
+	frameworksStr := fs.String("frameworks", "", "optional compliance frameworks to evaluate (e.g. dora,soc2,iso27001,bi-ojk,all)")
+	outPath := fs.String("out", "", "optional file path to write the Markdown PR digest")
+	slo := sloFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if *reportPath == "" && *campaignPath == "" {
+		return exitUsage, fmt.Errorf("either --report or --campaign is required")
+	}
+
+	var opts report.PRDigestOptions
+	if *reportPath != "" {
+		data, err := os.ReadFile(*reportPath)
+		if err != nil {
+			return exitError, err
+		}
+		var rep report.Report
+		if err := json.Unmarshal(data, &rep); err != nil {
+			return exitError, fmt.Errorf("%s: %w", *reportPath, err)
+		}
+		opts.Report = &rep
+		if slo.Enabled() {
+			opts.SLO = report.EvaluateSLO(rep.Resilience, *slo)
+		}
+	}
+
+	var camp *campaign.Manifest
+	if *campaignPath != "" {
+		m, err := campaign.LoadManifest(*campaignPath)
+		if err != nil {
+			return exitError, err
+		}
+		camp = m
+	}
+
+	if *baselinePath != "" {
+		if camp != nil && camp.Comparison == nil {
+			if baseCamp, err := campaign.LoadManifest(*baselinePath); err == nil {
+				camp.Comparison = campaign.Compare(baseCamp, camp)
+			}
+		} else if opts.Report != nil {
+			if data, err := os.ReadFile(*baselinePath); err == nil {
+				var baseRep report.Report
+				if err := json.Unmarshal(data, &baseRep); err == nil {
+					opts.BaselineReport = &baseRep
+				}
+			}
+		}
+	}
+
+	if camp != nil {
+		cs := &report.PRCampaignSummary{
+			CampaignID: camp.CampaignID,
+			System:     camp.System,
+			TotalSeeds: camp.TotalSeeds,
+			Passed:     camp.Passed,
+			Violations: camp.Violations,
+		}
+		if comp := camp.Comparison; comp != nil {
+			for _, d := range comp.Regressed {
+				cs.RegressedSeeds = append(cs.RegressedSeeds, d.Seed)
+				if cs.Reproduce == "" {
+					cs.Reproduce = d.Reproduce
+				}
+			}
+			for _, d := range comp.Fixed {
+				cs.FixedSeeds = append(cs.FixedSeeds, d.Seed)
+			}
+			for _, d := range comp.NewFailures {
+				cs.NewFailures = append(cs.NewFailures, d.Seed)
+				if cs.Reproduce == "" {
+					cs.Reproduce = d.Reproduce
+				}
+			}
+			cs.TraceDrifts = len(comp.TraceDrifts)
+		}
+		opts.Campaign = cs
+	}
+
+	if *frameworksStr != "" {
+		fws, err := compliance.ParseFrameworks(*frameworksStr)
+		if err != nil {
+			return exitUsage, err
+		}
+		dossier, err := compliance.Evaluate(compliance.Options{
+			Report:     opts.Report,
+			Campaign:   camp,
+			Frameworks: fws,
+		})
+		if err != nil {
+			return exitError, err
+		}
+		pass := dossier.Overall != compliance.StatusFail
+		opts.CompliancePass = &pass
+		opts.ComplianceNote = fmt.Sprintf("overall %s (%d controls evaluated)", strings.ToUpper(string(dossier.Overall)), len(dossier.Controls))
+	}
+
+	var buf bytes.Buffer
+	passed, err := report.WritePRDigest(&buf, opts)
+	if err != nil {
+		return exitError, err
+	}
+	_, _ = io.WriteString(stdout, buf.String())
+	if *outPath != "" {
+		if err := os.MkdirAll(filepath.Dir(*outPath), 0o755); err != nil {
+			return exitError, err
+		}
+		if err := os.WriteFile(*outPath, buf.Bytes(), 0o644); err != nil {
+			return exitError, err
+		}
+	}
+	if !passed {
+		return exitViolation, fmt.Errorf("CI gate checks failed")
 	}
 	return exitOK, nil
 }

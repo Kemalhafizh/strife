@@ -58,6 +58,9 @@ type Server struct {
 	httpSrv    *http.Server
 	webhookMu  sync.Mutex
 	deliveries []WebhookDelivery
+	jobMu      sync.Mutex
+	jobs       []*Job
+	jobSeq     uint64
 }
 
 // IngestPayload accepts either a wrapped ingest envelope, a raw report.Report,
@@ -112,6 +115,7 @@ func NewServer(cfg Config) (*Server, error) {
 		tenantKeys: tenantKeys,
 		startTime:  time.Now().UTC(),
 	}
+	_ = s.loadJobs()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleUI)
@@ -122,6 +126,9 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/v1/series", s.handleSeries)
 	mux.HandleFunc("/api/v1/ingest", s.handleIngest)
 	mux.HandleFunc("/api/v1/webhooks", s.handleWebhooks)
+	mux.HandleFunc("/api/v1/trends", s.handleTrends)
+	mux.HandleFunc("/api/v1/jobs", s.handleJobs)
+	mux.HandleFunc("/api/v1/jobs/", s.handleJobsSubpath)
 
 	s.httpSrv = &http.Server{
 		Addr:         cfg.ListenAddr,

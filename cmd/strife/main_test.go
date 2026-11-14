@@ -502,3 +502,42 @@ func TestDoctorAndSettlementAndEDNCheck(t *testing.T) {
 		t.Fatalf("expected doctor with unreachable endpoint to exit with exitError (%d), got code %d:\n%s", exitError, code, out)
 	}
 }
+
+func TestOTelCheckSLOGatesAndCIReport(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. strife check on an OpenTelemetry trace JSON file
+	otelFile := filepath.Join(dir, "trace.otel.json")
+	otelData := `{"resourceSpans":[{"scopeSpans":[{"spans":[
+		{"name":"SET","startTimeUnixNano":"1000","endTimeUnixNano":"2000","attributes":[{"key":"db.key","value":{"stringValue":"k1"}},{"key":"db.value","value":{"intValue":"7"}}],"status":{"code":1}},
+		{"name":"GET","startTimeUnixNano":"3000","endTimeUnixNano":"4000","attributes":[{"key":"db.key","value":{"stringValue":"k1"}},{"key":"db.result","value":{"intValue":"7"}}],"status":{"code":1}}
+	]}]}]}`
+	if err := os.WriteFile(otelFile, []byte(otelData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := runCLI(t, "check", "--history", otelFile, "--model", "kv", "--min-availability", "95")
+	if code != exitOK || !strings.Contains(out, "verdict: LINEARIZABLE") || !strings.Contains(out, "slo-gate: PASS") {
+		t.Fatalf("check on OTel trace with SLO gate failed (%d):\n%s", code, out)
+	}
+
+	// 2. strife sim writing a report, followed by strife ci-report
+	simDir := filepath.Join(dir, "sim-out")
+	code, out = runCLI(t, "sim", "--system", "raft", "--seed", "1", "--duration", "2s", "--out", simDir)
+	if code != exitOK {
+		t.Fatalf("sim failed (%d):\n%s", code, out)
+	}
+	repFile := filepath.Join(simDir, "raft-seed1", "report.json")
+	mdOut := filepath.Join(dir, "pr-comment.md")
+
+	// Passing CI report
+	code, out = runCLI(t, "ci-report", "--report", repFile, "--frameworks", "dora,bi-ojk", "--max-mttr", "10s", "--out", mdOut)
+	if code != exitOK || !strings.Contains(out, "Strife CI Gate") || !strings.Contains(out, "PASS") {
+		t.Fatalf("ci-report expected pass (%d):\n%s", code, out)
+	}
+
+	// Failing CI report when impossible availability threshold is required (if any op timed out/failed) or strict MTTR=1ns
+	code, out = runCLI(t, "ci-report", "--report", repFile, "--max-mttr", "1ns")
+	if code != exitViolation || !strings.Contains(out, "FAIL") {
+		t.Fatalf("ci-report with 1ns max-mttr expected exitViolation (%d):\n%s", code, out)
+	}
+}
