@@ -86,6 +86,7 @@ jobs:
           - FuzzKafkaRecords ./pkg/client
           - FuzzReadJSONL ./pkg/history
           - FuzzReadEDN ./pkg/history
+          - FuzzReadOTel ./pkg/history
           - FuzzParseWasm ./pkg/workload
           - FuzzCheckAppendSound ./pkg/txn
     steps:

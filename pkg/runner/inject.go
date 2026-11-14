@@ -50,17 +50,14 @@ func (in *Injector) Exec(ctx context.Context, cmds []nemesis.Command) []string {
 	)
 	for _, c := range cmds {
 		if c.Node < 0 || c.Node >= len(in.Nodes) {
+			mu.Lock()
+			errs = append(errs, fmt.Sprintf("node index %d out of range [0, %d)", c.Node, len(in.Nodes)))
+			mu.Unlock()
 			continue
 		}
 		wg.Add(1)
 		go func(c nemesis.Command) {
 			defer wg.Done()
-			if c.Node < 0 || c.Node >= len(in.Nodes) {
-				mu.Lock()
-				errs = append(errs, fmt.Sprintf("node index %d out of range [0, %d)", c.Node, len(in.Nodes)))
-				mu.Unlock()
-				return
-			}
 			n := in.Nodes[c.Node]
 			cctx, cancel := context.WithTimeout(ctx, in.timeout())
 			defer cancel()
@@ -106,17 +103,14 @@ func (in *Injector) Apply(ctx context.Context, f nemesis.Fault, start bool) []st
 	)
 	for _, i := range targets {
 		if i < 0 || i >= len(in.Nodes) {
+			mu.Lock()
+			errs = append(errs, fmt.Sprintf("node index %d out of range [0, %d)", i, len(in.Nodes)))
+			mu.Unlock()
 			continue
 		}
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			if idx < 0 || idx >= len(in.Nodes) {
-				mu.Lock()
-				errs = append(errs, fmt.Sprintf("node index %d out of range [0, %d)", idx, len(in.Nodes)))
-				mu.Unlock()
-				return
-			}
 			n := in.Nodes[idx]
 			cctx, cancel := context.WithTimeout(ctx, in.timeout())
 			defer cancel()
