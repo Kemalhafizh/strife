@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: kemalhafizh/strife@v0.7.0   # pin a release tag or commit SHA
+      - uses: kemalhafizh/strife@v1.0.0   # pin a release tag or commit SHA
         with:
           command: sim --system raft --seeds 1..500 --determinism --expect linearizable
 ```
@@ -65,7 +65,7 @@ jobs:
 linearizable, and every replay must be identical:
 
 ```yaml
-- uses: kemalhafizh/strife@v0.7.0
+- uses: kemalhafizh/strife@v1.0.0
   with:
     command: sim --system raft --seeds 1..1000 --determinism --expect linearizable
 ```
@@ -74,7 +74,7 @@ linearizable, and every replay must be identical:
 seed violates. `--shrink` attaches a minimal reproducer to the reports:
 
 ```yaml
-- uses: kemalhafizh/strife@v0.7.0
+- uses: kemalhafizh/strife@v1.0.0
   with:
     command: sim --system raft-unsafe-fsync --faults kill,io-stall --seeds 1..300 --expect violation --shrink
 ```
@@ -82,39 +82,51 @@ seed violates. `--shrink` attaches a minimal reproducer to the reports:
 **Multi-seed campaign gate with baseline regression diff:**
 
 ```yaml
-- uses: kemalhafizh/strife@v0.7.0
+- uses: kemalhafizh/strife@v1.0.0
   with:
     command: campaign --system raft --seeds 1..200 --baseline baseline.json --expect no-regression
 ```
 
-**Check a history your own test suite recorded:**
+**Check a Strife `.jsonl`, Jepsen `.edn`, or OpenTelemetry Span `.json` trace your own test suite recorded:**
 
 ```yaml
-- run: ./run-my-jepsen-style-test --history-out ops.jsonl
-- uses: kemalhafizh/strife@v0.7.0
+- run: ./run-my-test-suite --otel-out traces.json
+- uses: kemalhafizh/strife@v1.0.0
   with:
-    command: check --model kv ops.jsonl
+    command: check --model kv --max-mttr 500ms --min-availability 0.99 traces.json
 ```
 
-**Generate a compliance dossier with SLA gates and SARIF rules:**
+**Generate a compliance dossier (`dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp`) with SLA gates and SARIF rules:**
 
 ```yaml
-- uses: kemalhafizh/strife@v0.7.0
+- uses: kemalhafizh/strife@v1.0.0
   with:
     command: sim --system outbox-settlement --seed 7 --expect linearizable
     out: settle-out
-- uses: kemalhafizh/strife@v0.7.0
+- uses: kemalhafizh/strife@v1.0.0
   with:
-    command: compliance --report settle-out/outbox-settlement-seed7/report.json --frameworks dora,soc2,iso27001,bi-ojk --max-mttr 500ms --min-availability 0.95
+    command: compliance --report settle-out/outbox-settlement-seed7/report.json --frameworks dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp --max-mttr 500ms --min-availability 0.95
     out: settle-compliance
     sarif: compliance.sarif.json
+```
+
+**Comparative Pull Request Gate & Digest (`strife ci-report`):**
+
+```yaml
+- run: |
+    strife ci-report \
+      --report candidate/report.json \
+      --baseline-report baseline/report.json \
+      --dossier settle-compliance/dossier.json \
+      --max-mttr 500ms --min-availability 0.99 \
+      --out "$GITHUB_STEP_SUMMARY" --json pr-verdict.json
 ```
 
 **React to the verdict yourself:**
 
 ```yaml
 - id: strife
-  uses: kemalhafizh/strife@v0.7.0
+  uses: kemalhafizh/strife@v1.0.0
   with:
     command: sim --system raft-stale-reads --faults partition --seeds 1..50
     fail: "false"
@@ -135,7 +147,7 @@ reporter action, for example:
 **Publish SARIF 2.1.0 findings to GitHub Code Scanning:**
 
 ```yaml
-- uses: kemalhafizh/strife@v0.7.0
+- uses: kemalhafizh/strife@v1.0.0
   with:
     command: sim --system outbox-settlement --seeds 1..100 --expect linearizable
     sarif: strife.sarif.json

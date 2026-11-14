@@ -81,7 +81,7 @@ curl -fsSL http://127.0.0.1:8080/api/v1/health
   "tenant_keys": 1,
   "tenants": ["default", "payments"],
   "uptime_seconds": 3620,
-  "version": "0.7.0",
+  "version": "1.0.0",
   "webhooks_configured": 2
 }
 ```
@@ -124,24 +124,47 @@ curl -fsSL http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4
 
 ### `GET /api/v1/runs/<id>/dossier`
 
-Evaluates and returns a regulatory compliance dossier (`dora`, `soc2`, `iso27001`, `bi-ojk`) for the stored run or campaign. If the run was signed with Ed25519 (`bundle.json`), the signature is verified against the tenant's signing key (falling back to the default `--key`) and recorded in the dossier.
+Evaluates and returns a regulatory compliance dossier (`dora`, `soc2`, `iso27001`, `bi-ojk`, `pci-dss`, `bi-sp`) for the stored run or campaign. If the run was signed with Ed25519 (`bundle.json`), the signature is verified against the tenant's signing key (falling back to the default `--key`) and recorded in the dossier.
 
-- `?frameworks=dora,bi-ojk` — filter evaluated frameworks (default `all`)
+- `?frameworks=dora,bi-ojk,pci-dss,bi-sp` — filter evaluated frameworks (default `all`)
 - `?format=html` — render the self-contained print-ready HTML5 compliance dossier instead of JSON (also selected automatically when `Accept: text/html` is sent)
 - `?max_mttr=<duration>` — override the server's `--max-mttr` SLA gate for this evaluation (for example, `500ms`)
 - `?min_availability=<ratio>` — override the server's `--min-availability` SLA gate in `[0,1]` (for example, `0.99`)
 
 ```sh
-curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?frameworks=dora,bi-ojk&max_mttr=500ms"
+curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?frameworks=dora,bi-ojk,pci-dss,bi-sp&max_mttr=500ms"
 curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?format=html" -o dossier.html
 ```
 
-### `GET /api/v1/series`
+### `GET /api/v1/series` & `GET /api/v1/trends`
 
-Returns aggregated time-series reliability and post-heal MTTR trends per `(tenant, target)` across all stored runs and campaigns (`pass_rate`, `avg_availability`, `latest_mttr_p95_ms`, `max_mttr_p95_ms`, and chronological `points`). Supports `?tenant=<name>` and `?target=<name>` filters.
+`GET /api/v1/series` returns aggregated time-series reliability and post-heal MTTR rollups per `(tenant, target)` across all stored runs and campaigns (`pass_rate`, `avg_availability`, `latest_mttr_p95_ms`, `max_mttr_p95_ms`, and chronological `points`).
+
+`GET /api/v1/trends` returns chronological resilience trend points (`run_id`, `target`, `tenant`, `commit`, `verdict`, `overall_availability`, `mttr_p50_ms`, `mttr_p95_ms`, `mttr_max_ms`, `sla_breached`) together with aggregate averages (`avg_availability`, `avg_mttr_p95_ms`, `max_mttr_p95_ms`, `sla_breaches`). Supports `?tenant=<name>` and `?target=<name>` filters.
 
 ```sh
 curl -fsSL "http://127.0.0.1:8080/api/v1/series?tenant=default"
+curl -fsSL "http://127.0.0.1:8080/api/v1/trends?tenant=payments&target=outbox-settlement"
+```
+
+### Pull-Based Remote Worker Queue (`/api/v1/jobs` & `strife worker`)
+
+For private VPCs and isolated staging networks that cannot expose inbound ports to the control plane, `strife serve` provides a pull-based job queue persisted in `jobs.json`:
+
+- **`POST /api/v1/jobs`** — Enqueue a `sim`, `campaign`, or `run` job (`spec.kind`, `spec.system`, `spec.seed` / `spec.seeds`, `spec.faults`, `spec.workload`, or `spec.run_config`, plus optional `tenant`, `commit`, `branch`).
+- **`GET /api/v1/jobs`** & **`GET /api/v1/jobs/<id>`** — List or inspect queued, running, completed, or failed jobs (filterable by `?tenant=` and `?status=`).
+- **`POST /api/v1/jobs/claim`** — Atomically claim the oldest `pending` job (optionally filtered by `tenant`) for a remote `worker_id`.
+- **`POST /api/v1/jobs/<id>/complete`** — Submit the completed `report` or `campaign` (automatically verified, ingested into `registry.jsonl`, signed with Ed25519, and checked against SLA/regression webhooks) or record an execution error.
+
+```sh
+# 1. Enqueue a simulation or live database chaos job
+curl -fsSL -X POST http://127.0.0.1:8080/api/v1/jobs \
+  -H "Authorization: Bearer $STRIFE_REGISTRY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant":"payments","commit":"a35dc51","spec":{"kind":"sim","system":"outbox-settlement","seed":7}}'
+
+# 2. Run a remote worker inside the private staging VPC (continuous polling or single-shot --once)
+strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --tenant payments
 ```
 
 ### `POST /api/v1/ingest`

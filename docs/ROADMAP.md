@@ -355,11 +355,13 @@ correlation** alongside the client history (`pkg/probe`):
 ### 4.2 Regulatory Audit Mapping & Compliance Dossier (`pkg/compliance` & `strife compliance`) ✅ done
 
 - **Empirical Technical Control Mapping (`pkg/compliance/compliance.go`)**:
-  - Maps provable technical resilience and consistency properties (network partition survival, crash/`fsync` durability, clock-skew tolerance, linearizability/isolation verification, and Ed25519 `in-toto` non-repudiation) to four regulatory and audit standards:
+  - Maps provable technical resilience and consistency properties (network partition survival, crash/`fsync` durability, clock-skew tolerance, linearizability/isolation verification, double-entry ledger & settlement finality, and Ed25519 `in-toto` non-repudiation) to six regulatory and audit standards:
     - **EU DORA** (`dora`): `dora.resilience-testing` (Art. 24–25), `dora.data-integrity` (Art. 9(3)(b)–(c)), `dora.recovery` (Art. 11–12).
     - **AICPA SOC 2** (`soc2`): `soc2.processing-integrity` (PI1.3–PI1.4), `soc2.recovery` (A1.2–A1.3), `soc2.test-evidence` (CC4.1).
     - **ISO/IEC 27001:2022** (`iso27001`): `iso27001.redundancy` (Annex A 8.13–8.14), `iso27001.clock-sync` (8.17), `iso27001.security-testing` (8.29).
-    - **OJK** (`bi-ojk`): `bi-ojk.pemulihan-bencana`, `bi-ojk.integritas-data`, `bi-ojk.jejak-audit` (POJK No. 11/POJK.03/2022; SEOJK No. 29/SEOJK.03/2022).
+    - **OJK** (`bi-ojk`): `bi-ojk.pemulihan-bencana`, `bi-ojk.integritas-data`, `bi-ojk.jejak-audit`, `bi-ojk.rekonsiliasi-buku-besar` (POJK No. 11/POJK.03/2022; SEOJK No. 29/SEOJK.03/2022).
+    - **PCI DSS v4.0 / v4.0.1** (`pci-dss` / `pcidss`): `pcidss.data-integrity` (Req. 6.2.4 & 12.10.5), `pcidss.resilience-change-verification` (Req. 6.5.2 & 11.4), `pcidss.tamper-evidence` (Req. 10.3.2 & 10.3.4 / 11.5.2).
+    - **Bank Indonesia Sistem Pembayaran** (`bi-sp` / `pbi-sp`): `bi-sp.keandalan-sistem` (PBI No. 23/6/PBI/2021 Pasal 12, 15, 19 & PBI No. 23/7/PBI/2021), `bi-sp.pencegahan-duplikasi` (Pasal 19), `bi-sp.integritas-bukti-audit` (Pasal 19), `bi-sp.finalitas-settlement` (PBI No. 23/7/PBI/2021 Pasal 2).
   - Control IDs are Strife's labels; each control carries a `citation` of the provision it supports (since Phase 5).
   - Evaluates each control as `PASS`, `PARTIAL` (with explicit remediation hints when fault coverage or cryptographic signing is incomplete), or `FAIL`.
 - **Documented Methodology & Scope Boundaries**:
@@ -408,9 +410,9 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
   multi-arch `ghcr.io` images for `strife` and `strife-agent`.
 - The Action downloads and checksum-verifies the release binary when pinned
   to a tag, and builds from source otherwise.
-- `schemas/report.v1.json`, `history.v1.json`, `dossier.v1.json` with
-  validation of real outputs and a compatibility test that refuses breaking
-  changes (it caught one during this phase).
+- `schemas/report.v1.json`, `history.v1.json`, `dossier.v1.json`,
+  `campaign.v1.json`, and `bundle.v1.json` with validation of real outputs and
+  a compatibility test that refuses breaking changes.
 - `CHANGELOG.md`; `strife version` stamped at build time.
 
 ### 5.3 Engine depth ✅
@@ -432,7 +434,8 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
 ### 5.4 Correctness safety net ✅
 
 - Fuzz targets for RESP, PostgreSQL, MySQL and Kafka decoders, the Wasm
-  decoder, `history.jsonl`, and the list-append checker's soundness, run in
+  decoder, `history.jsonl`, Jepsen `.edn` (`FuzzReadEDN`), OpenTelemetry Span
+  JSON (`FuzzReadOTel`), and the list-append checker's soundness, run in
   CI; they found a Wasm stack-underflow panic and a MySQL integer overflow.
 - Brute-force cross-checks: list-append 0 / 150,030 valid histories flagged,
   99.81 % of 49,970 invalid ones caught; register transactions 0 / 40,000.
@@ -440,7 +443,7 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
   real-time edges at plain serializability.
 - Wasm workload determinism is checked in CI.
 
-### 5.5 Signature Engineering Pillars ✅ (v0.2.0 – v0.3.0)
+### 5.5 Signature Engineering Pillars ✅ (v0.2.0 – v1.0.0)
 
 - **Double-entry financial ledger & conservation-of-money checker** (`--model ledger`, live `workload.model: "ledger"`, simulated `raft-ledger`, `raft-ledger-overdraft`, `2pc-ledger`, `2pc-ledger-torn-commit`):
   proves `LEDGER-CONSERVATION` ($\sum B_i = M_0$), `LEDGER-OVERDRAFT` ($B_i < 0$ & concurrent `G2-item` write skew), `LEDGER-DOUBLE-SPEND` (idempotency violation across timeout retries), and `LEDGER-UNBALANCED` ($\sum \Delta_k \ne 0$) across both simulated and live PostgreSQL, MySQL/TiDB, etcd, and Redis/Valkey clusters, integrated with `bi-ojk.rekonsiliasi-buku-besar` compliance controls.
@@ -451,23 +454,22 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
 - **Kubernetes host-level cgroup v2 & Pod netns discovery** (`pkg/agent/k8s.go`, `deploy/kubernetes/strife-agent-daemonset.yaml`):
   resolves `pod:<ns>/<name>`, `k8s:<name>`, and `container:<id>` directly from `/proc` and `/sys/fs/cgroup`.
 - **Self-hosted continuous verification & run registry daemon** (`strife serve`, `pkg/serve`):
-  append-only run & campaign store, multi-tenant baseline isolation (`?tenant=`), per-tenant Ed25519 signing keys (`--tenant-keys`) and public key discovery (`GET /api/v1/keys`), REST API (`/api/v1/ingest`, `/api/v1/runs`, `/api/v1/runs/<id>/dossier`, `/api/v1/series`, `/api/v1/webhooks`), automatic seed-level baseline regression diffing, automatic Slack/Discord/JSON webhook alerting (`--webhook`, including `report.sla_breach` via `--max-mttr` and `--min-availability`), and embedded multi-tenant web dashboard.
+  append-only run & campaign store, multi-tenant baseline isolation (`?tenant=`), per-tenant Ed25519 signing keys (`--tenant-keys`) and public key discovery (`GET /api/v1/keys`), REST API (`/api/v1/ingest`, `/api/v1/runs`, `/api/v1/runs/<id>/dossier`, `/api/v1/series`, `/api/v1/trends`, `/api/v1/jobs`, `/api/v1/webhooks`), automatic seed-level baseline regression diffing, automatic Slack/Discord/JSON webhook alerting (`--webhook`, including `report.sla_breach` via `--max-mttr` and `--min-availability`), and embedded multi-tenant web dashboard.
+- **Pull-based remote worker (`strife worker`, `pkg/worker`, v0.8.0):**
+  enables isolated staging networks and private VPCs to claim and execute queued `sim`, `campaign`, and `run` jobs from `strife serve` over outbound HTTP without opening inbound firewall ports.
+- **Zero-dependency OpenTelemetry Span JSON trace importer & CI PR reporter (`pkg/history/otel.go`, `pkg/report/cireport.go`, v0.8.0):**
+  imports standard `ExportTraceServiceRequest` OTLP/HTTP JSON and Jaeger span exports directly into `strife check`, and generates comparative Markdown/JSON Pull Request gates via `strife ci-report`.
 - **User-space L4 TCP fault proxy & `strife doctor`** (`pkg/transport/proxy.go`, `pkg/transport/doctor.go`, v0.4.0 – v0.7.0):
   zero-privilege L4 fault injection (`partition`, `latency`, `loss`, `kill`, `pause`, `freeze`, `io-stall`, plus half-duplex response drops) across Linux, macOS, and Windows without root or kernel modules.
-- **Cross-system settlement & transactional-outbox verification** (`--model settlement`, `outbox-settlement`, `outbox-dual-write`, live `workload.model: "settlement"`, v0.4.0 – v0.7.0):
-  verifies `SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, and `SETTLEMENT-IDEMPOTENCY` across simulated and live clusters, bidirectional Jepsen `.edn` history import/export (`pkg/history/edn.go`, `--export-edn`), SARIF 2.1.0 output (`--sarif` across all CI subcommands and `action.yml`), and quantitative post-heal MTTR & availability metrics (`pkg/report/report.go`, `pkg/campaign`, `pkg/compliance`).
-- Tagged `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, and `v0.7.0`.
+- **Cross-system settlement & transactional-outbox verification** (`--model settlement`, `outbox-settlement`, `outbox-dual-write`, live `workload.model: "settlement"`, v0.4.0 – v1.0.0):
+  verifies `SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, and `SETTLEMENT-IDEMPOTENCY` across simulated and live clusters, bidirectional Jepsen `.edn` history import/export (`pkg/history/edn.go`, `--export-edn`), SARIF 2.1.0 output (`--sarif` across all CI subcommands and `action.yml`), quantitative post-heal MTTR & availability SLO gates (`--max-mttr`, `--min-availability`), PCI DSS v4.0.1 (`pci-dss`) and Bank Indonesia Payment Systems (`bi-sp`) regulatory compliance dossiers, and frozen v1.0 JSON Schemas (`schemas/*.v1.json`).
+- Tagged `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, and `v1.0.0`.
 
 ## Phase 6: Commercial layer (next)
 
-- **Design partners:** 2–3 Indonesian fintechs or banks (the `bi-ojk`
-  mapping is the hook) running Strife on staging. Success means one dossier
-  used in a real audit.
-- **Cloud runner (3.3, not built yet):** hosted campaigns against a
-  customer's staging, with a run history, regression alerts and dossiers
-  signed with a per-tenant key. Start single-tenant, and with the
-  customer's own runner (like a self-hosted GitHub runner) so their data
-  never leaves their network.
+- **Design partners:** 2–3 Indonesian fintechs or banks (`bi-ojk`, `bi-sp`, and
+  `pci-dss` mappings) running Strife on staging with `strife serve` + `strife worker`.
+  Success means one dossier used in a real audit.
 - **Pricing experiment:** free CLI and Action. Paid plans cover hosted
   campaigns, signed dossiers and support SLAs.
 

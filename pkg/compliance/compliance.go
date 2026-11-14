@@ -678,13 +678,13 @@ var Citations = map[string]string{
 	"bi-ojk.integritas-data":                "POJK No. 11/POJK.03/2022 (pengamanan dan integritas data) dan SEOJK No. 29/SEOJK.03/2022 tentang Ketahanan dan Keamanan Siber bagi Bank Umum",
 	"bi-ojk.jejak-audit":                    "POJK No. 11/POJK.03/2022 (jejak audit atas penyelenggaraan teknologi informasi)",
 	"bi-ojk.rekonsiliasi-buku-besar":        "POJK No. 11/POJK.03/2022 (integritas pemrosesan transaksi keuangan & rekonsiliasi buku besar) dan PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran",
-	"pcidss.data-integrity":                 "PCI DSS v4.0 (March 2022), Req. 6.2.4 (software engineering techniques to prevent race conditions and state corruption) and Req. 12.10.5 (integrity monitoring)",
-	"pcidss.resilience-change-verification": "PCI DSS v4.0 (March 2022), Req. 6.5.2 (confirming security and integrity controls after significant change) and Req. 11.4 (resilience/penetration testing)",
-	"pcidss.tamper-evidence":                "PCI DSS v4.0 (March 2022), Req. 10.3.2 (audit logs protected from modification) and Req. 10.3.4 (cryptographic change-detection mechanism on audit logs)",
-	"bi-sp.keandalan-sistem":                "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (manajemen risiko operasional & keandalan sistem) dan PBI No. 23/7/PBI/2021 tentang Penyelenggara Infrastruktur Sistem Pembayaran",
-	"bi-sp.pencegahan-duplikasi":            "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (keamanan dan keandalan pemrosesan transaksi pembayaran)",
-	"bi-sp.integritas-bukti-audit":          "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (pengawasan, pelaporan, dan jejak audit sistem informasi)",
-	"bi-sp.finalitas-settlement":            "PBI No. 23/7/PBI/2021 tentang Penyelenggara Infrastruktur Sistem Pembayaran (kepastian penyelesaian akhir / settlement finality) dan PBI No. 23/6/PBI/2021",
+	"pcidss.data-integrity":                 "PCI DSS v4.0 / v4.0.1 (June 2024), Req. 6.2.4 (software engineering techniques to prevent or mitigate race conditions, shared-data manipulation, and business-logic flaws) and Req. 12.10.5 (monitoring and responding to integrity alerts)",
+	"pcidss.resilience-change-verification": "PCI DSS v4.0 / v4.0.1 (June 2024), Req. 6.5.2 (confirming security and integrity controls after significant change) and Req. 11.4 (regular resilience and penetration testing of critical systems)",
+	"pcidss.tamper-evidence":                "PCI DSS v4.0 / v4.0.1 (June 2024), Req. 10.3.2 (audit logs protected from modification) and Req. 10.3.4 / Req. 11.5.2 (cryptographic file-integrity and change-detection mechanisms on audit logs)",
+	"bi-sp.keandalan-sistem":                "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (Pasal 12, Pasal 15, dan Pasal 19: kewajiban manajemen risiko operasional, kapabilitas, dan standar keamanan sistem informasi) serta PBI No. 23/7/PBI/2021 tentang Penyelenggara Infrastruktur Sistem Pembayaran",
+	"bi-sp.pencegahan-duplikasi":            "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (Pasal 19: keamanan, keandalan, dan integritas pemrosesan transaksi pembayaran terhadap risiko eksekusi ganda)",
+	"bi-sp.integritas-bukti-audit":          "PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (Pasal 19: pengawasan, pelaporan, dan rekam jejak audit sistem informasi yang dapat diverifikasi)",
+	"bi-sp.finalitas-settlement":            "PBI No. 23/7/PBI/2021 tentang Penyelenggara Infrastruktur Sistem Pembayaran (Pasal 2: penyelenggaraan kliring dan kepastian penyelesaian akhir / settlement finality) serta PBI No. 23/6/PBI/2021",
 }
 
 func evalControl(fw FrameworkID, id, title, req string, safetyOK, coverageOK bool, evidence, gapHint string) ControlResult {

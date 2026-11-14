@@ -53,7 +53,7 @@ Install a release (archives for Linux, macOS and Windows with `SHA256SUMS`, an S
 ```sh
 # Release binaries: https://github.com/Kemalhafizh/strife/releases
 sha256sum -c --ignore-missing SHA256SUMS
-strife verify --bundle strife_v0.7.0.intoto.json --key release.pub --release-dir .
+strife verify --bundle strife_v1.0.0.intoto.json --key release.pub --release-dir .
 
 # Container images (linux/amd64, linux/arm64)
 docker run --rm ghcr.io/kemalhafizh/strife:latest version
@@ -74,8 +74,9 @@ strife sim --system raft --seed 7
 # Sweep 100 seeds against a Raft variant that serves local leader reads without a quorum round
 strife sim --system raft-stale-reads --faults partition --seeds 1..100
 
-# Verify bit-for-bit simulator determinism across 500 seeds in CI
-strife sim --system raft --seeds 1..500 --determinism --expect linearizable
+# Verify bit-for-bit simulator determinism across 500 seeds in CI with SLO gates
+strife sim --system raft --seeds 1..500 --determinism --expect linearizable \
+  --max-mttr 500ms --min-availability 0.95
 ```
 
 Each violating run writes a self-contained artifact directory (`strife-out/<system>-seed<N>/`) containing:
@@ -84,7 +85,7 @@ Each violating run writes a self-contained artifact directory (`strife-out/<syst
 | :--- | :--- |
 | `report.html` | Offline HTML5/Canvas timeline studio (60fps pan/zoom, anomaly auto-focus, key/process filters, operation inspector, `<noscript>` SVG fallback) |
 | `report.md` | Markdown summary suitable for pull requests and `$GITHUB_STEP_SUMMARY` |
-| `report.json` | Machine-readable verdict, counterexample witnesses, root-cause findings, and SHA-256 fingerprint |
+| `report.json` | Machine-readable verdict, counterexample witnesses, root-cause findings, post-heal MTTR/availability metrics, and SHA-256 fingerprint |
 | `history.jsonl` | Complete operation log (`invoke`, `ok`, `fail`, `info`) with nanosecond timestamps |
 | `schedule.json` | Replayable fault schedule (`strife sim --plan schedule.json`) |
 
@@ -160,13 +161,14 @@ Here the stale reads from PostgreSQL's asynchronous standbys need no fault at al
 
 ## Consistency Models & Anomaly Detection
 
-`strife check` verifies any recorded native `.jsonl` or Jepsen `.edn` history against nine built-in models (and `--export-edn` exports parsed histories into canonical Jepsen EDN format):
+`strife check` verifies any recorded **Strife JSONL (`.jsonl`)**, **Jepsen EDN (`.edn`)**, or **OpenTelemetry Span JSON (`ExportTraceServiceRequest` OTLP/HTTP JSON & Jaeger collector exports)** history against nine built-in models (and `--export-edn` exports parsed histories into canonical Jepsen EDN format):
 
 ```sh
 strife check --history ops.jsonl --model kv --out report/
 strife check --history txn.jsonl --model txn --isolation snapshot-isolation
 strife check --history ledger.jsonl --model ledger --out report/
 strife check --history settlement.edn --model settlement --out report/
+strife check --history otlp-traces.json --model kv --max-mttr 500ms --min-availability 0.99
 ```
 
 | Model | Operations | Verification Engine & Complexity |
@@ -355,7 +357,7 @@ strife verify --bundle strife-out/raft-seed7/bundle.json \
 # 4. Generate a regulatory compliance dossier (JSON, Markdown, HTML) with SLA gates & SARIF
 strife compliance --report strife-out/raft-seed7/report.json \
   --bundle strife-out/raft-seed7/bundle.json --key audit-key.pub \
-  --frameworks dora,soc2,iso27001,bi-ojk --max-mttr 500ms --min-availability 0.99 \
+  --frameworks dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp --max-mttr 500ms --min-availability 0.99 \
   --sarif compliance.sarif.json --out strife-compliance --strict
 ```
 
@@ -366,7 +368,9 @@ strife compliance --report strife-out/raft-seed7/report.json \
 | **EU DORA** (Regulation (EU) 2022/2554) | `dora` | `dora.resilience-testing` (Art. 24–25), `dora.data-integrity` (Art. 9(3)(b)–(c)), `dora.recovery` (Art. 11–12) |
 | **AICPA SOC 2** (Trust Services Criteria) | `soc2` | `soc2.processing-integrity` (PI1.3–PI1.4), `soc2.recovery` (A1.2–A1.3), `soc2.test-evidence` (CC4.1) |
 | **ISO/IEC 27001:2022** | `iso27001` | `iso27001.redundancy` (Annex A 8.13–8.14), `iso27001.clock-sync` (8.17), `iso27001.security-testing` (8.29) |
-| **OJK** (Indonesia) | `bi-ojk` | `bi-ojk.pemulihan-bencana`, `bi-ojk.integritas-data`, `bi-ojk.jejak-audit`, `bi-ojk.rekonsiliasi-buku-besar` (POJK No. 11/POJK.03/2022; SEOJK No. 29/SEOJK.03/2022; PBI No. 23/6/PBI/2021) |
+| **OJK** (Perbankan Indonesia) | `bi-ojk` | `bi-ojk.pemulihan-bencana`, `bi-ojk.integritas-data`, `bi-ojk.jejak-audit`, `bi-ojk.rekonsiliasi-buku-besar` (POJK No. 11/POJK.03/2022; SEOJK No. 29/SEOJK.03/2022; PBI No. 23/6/PBI/2021) |
+| **PCI DSS v4.0 / v4.0.1** (Payment Card Industry) | `pci-dss` (`pcidss`) | `pcidss.data-integrity` (Req. 6.2.4 & 12.10.5), `pcidss.resilience-change-verification` (Req. 6.5.2 & 11.4), `pcidss.tamper-evidence` (Req. 10.3.2 & 10.3.4 / 11.5.2) |
+| **Bank Indonesia Sistem Pembayaran** (PJP & PIP) | `bi-sp` (`pbi-sp`) | `bi-sp.keandalan-sistem` (PBI No. 23/6/PBI/2021 Pasal 12, 15, 19 & PBI No. 23/7/PBI/2021), `bi-sp.pencegahan-duplikasi` (Pasal 19), `bi-sp.integritas-bukti-audit` (Pasal 19), `bi-sp.finalitas-settlement` (PBI No. 23/7/PBI/2021 Pasal 2) |
 
 Control IDs are Strife's own labels for its technical checks, not identifiers issued by a regulator or standard body; every control in a dossier cites the provision it supports. A dossier is technical evidence for an auditor, not a certification or a legal opinion.
 
@@ -374,11 +378,12 @@ Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` wh
 
 ---
 
-## Run Registry (`strife serve`)
+## Run Registry (`strife serve`) & Remote Worker (`strife worker`)
 
 `strife serve` ([`pkg/serve`](pkg/serve/server.go), full reference in [`docs/server.md`](docs/server.md)) runs a self-hosted HTTP daemon and embedded web dashboard that keeps every CI run and regression campaign inside your own network:
 
-- **Verified on arrival & multi-tenant isolated:** Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; baselines and time-series rollups (`GET /api/v1/series`) are isolated by `(tenant, target)`.
+- **Verified on arrival & multi-tenant isolated:** Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; baselines and time-series rollups (`GET /api/v1/series`, `GET /api/v1/trends`) are isolated by `(tenant, target)`.
+- **Pull-based remote worker queue (`strife worker`):** Isolated staging clusters and private VPCs can run `strife worker --server http://... --token ...` ([`pkg/worker`](pkg/worker/worker.go)) to claim queued simulation, campaign, or live database chaos jobs over outbound HTTP (`POST /api/v1/jobs/claim`) and report verified results back (`POST /api/v1/jobs/<id>/complete`) without opening inbound firewall ports.
 - **Automatic baseline regression diffing:** Ingested campaigns are automatically compared against the latest stored campaign for the same `(tenant, target)` pair, recording `regressed`, `fixed`, and `trace_drift` seed transitions.
 - **Per-tenant Ed25519 signing & on-demand dossiers:** Sign ingested reports automatically with `--key` or per-tenant keys (`--tenant-keys tenant=path.key`), discover active public keys via `GET /api/v1/keys`, and generate verified regulatory dossiers on demand (`GET /api/v1/runs/<id>/dossier`).
 - **Consistency & SLA webhook alerting:** When started with `--webhook <urls>`, `strife serve` dispatches Slack, Discord, or generic JSON alerts on consistency violations (`report.violation`), campaign regressions/violations (`campaign.regression` / `campaign.violation`), and recovery SLA breaches (`report.sla_breach` via `--max-mttr` and `--min-availability`).
@@ -390,6 +395,9 @@ strife serve --listen 127.0.0.1:8080 --store ./strife-registry \
   --tenant-keys "payments=payments.key" --signer "ci-registry" \
   --max-mttr 500ms --min-availability 0.99 \
   --webhook "https://hooks.slack.com/services/T00/B00/X00"
+
+# Start a pull-based remote worker inside a private staging VPC
+strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --tenant payments
 
 # Push a checked history directly from CLI, or POST sim/campaign/run JSON to /api/v1/ingest
 strife check --model settlement --history history.jsonl \
@@ -435,7 +443,7 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 | Valkey 8 | partition, pause, kill -9 | **stale replica reads** caught; single primary with `appendfsync always` linearizable |
 | Kafka 3.9.1 and 4.1.0 (KRaft) | partition, kill -9, pause | no acknowledged record lost or reordered; stale reads after leader changes reported |
 
-**Checker correctness:** in brute-force cross-checks the list-append checker flagged none of 150,030 valid histories and caught 99.81 % of 49,970 invalid ones; the register-transaction checker flagged none of 40,000. Every parser of untrusted bytes (wire protocols, JSONL, Jepsen EDN, Wasm) is fuzzed in CI.
+**Checker correctness:** in brute-force cross-checks the list-append checker flagged none of 150,030 valid histories and caught 99.81 % of 49,970 invalid ones; the register-transaction checker flagged none of 40,000. Every parser of untrusted bytes (wire protocols, JSONL, Jepsen EDN, OpenTelemetry Span JSON, Wasm) is fuzzed in CI.
 
 ---
 
@@ -449,25 +457,25 @@ flowchart LR
   wl --> simw
   sched --> live["pkg/runner + strife-agent<br/>RTNETLINK · cgroup v2 · Proxy"]
   wl --> live
-  simw --> hist[("history.jsonl / .edn")]
+  simw --> hist[("history.jsonl / .edn / OTel")]
   live --> hist
   live --> probes[("probes.jsonl")]
   hist --> chk["pkg/checker + pkg/txn<br/>WGL + Elle DSG Cycles"]
   probes --> corr["pkg/probe<br/>Root-Cause Correlator"]
   chk --> corr
-  corr --> rep["pkg/report<br/>HTML5 Studio · JUnit · SARIF · MTTR"]
-  rep --> att["pkg/attest + pkg/compliance<br/>Ed25519 in-toto · Audit Dossier"]
+  corr --> rep["pkg/report<br/>HTML5 Studio · JUnit · SARIF · MTTR · CI-Report"]
+  rep --> att["pkg/attest + pkg/compliance<br/>Ed25519 in-toto · 6 Audit Frameworks"]
 ```
 
 ```text
-cmd/strife        CLI: sim, campaign, shrink, check, plan, run, doctor, bench, workload, keygen, sign, verify, compliance, serve, systems, version
+cmd/strife        CLI: sim, campaign, shrink, check, plan, run, doctor, bench, workload, keygen, sign, verify, compliance, ci-report, serve, worker, systems, version
 cmd/strife-agent  Per-node daemon: Linux AF_NETLINK (netem + FIB blackhole rules), K8s pod/container cgroup v2 discovery, direct signals, /probes telemetry
 internal/rng      Pinned, forkable xoshiro256** PRNG seeded with SplitMix64
 internal/stats    Nearest-rank percentiles and latency summaries
 internal/secret   env:/file: secret references and redaction
 internal/version  Build-time semantic version metadata
 internal/jsonschema  JSON Schema generation, validation and compatibility checks for schemas/
-pkg/history       Jepsen-style operation histories, JSONL & Jepsen EDN codecs, SHA-256 hashing
+pkg/history       Jepsen-style operation histories, JSONL, Jepsen EDN, and OpenTelemetry OTLP Span JSON codecs, SHA-256 hashing
 pkg/model         Sequential & transactional specifications: kv, set, queue, counter, idgen, txn, append, ledger, settlement
 pkg/txn           Dependency-graph checkers: register txns and Elle-style list-append (G0, G1a/b/c, G-single, G2, G-realtime, lost appends)
 pkg/checker       Wing & Gong / Lowe linearizability solver, value-interval pruning (kvPruner), P-compositionality, witness diagnosis
@@ -484,12 +492,13 @@ pkg/probe         Server-side telemetry collector (fsync canary, Linux PSI, OOM,
 pkg/client        Zero-dependency clients: etcd v3, Redis/Valkey, PostgreSQL (SCRAM, TLS), Kafka, MySQL/TiDB (caching_sha2, TLS)
 pkg/runner        Live cluster test orchestrator, fault injector & per-run namespace isolation
 pkg/bench         Fault-injection latency benchmark (strife bench inject)
-pkg/report        Interactive HTML5/Canvas timeline studio, Markdown/JUnit/SARIF 2.1.0 exporters, post-heal MTTR/availability metrics, fingerprints
+pkg/report        Interactive HTML5/Canvas timeline studio, Markdown/JUnit/SARIF 2.1.0 exporters, post-heal MTTR/availability metrics, PR ci-report digest
 pkg/attest        in-toto v0.1 statements, Ed25519 signing/verification, release attestations
-pkg/compliance    Regulatory control evaluator (EU DORA, SOC 2, ISO 27001, OJK + double-entry ledger reconciliation) with citations & dossiers
-pkg/serve         Self-hosted continuous verification & run registry HTTP daemon (strife serve), REST API, per-tenant Ed25519 keys, auto-regression diffing, web UI
+pkg/compliance    Regulatory control evaluator (EU DORA, SOC 2, ISO 27001, OJK, PCI-DSS v4.0, Bank Indonesia PBI-SP) with citations & dossiers
+pkg/serve         Self-hosted continuous verification & run registry HTTP daemon (strife serve), REST API, job queue, per-tenant Ed25519 keys, web UI
+pkg/worker        Pull-based remote execution worker (strife worker) for isolated VPCs and staging environments
 deploy/kubernetes DaemonSet manifest (strife-agent-daemonset.yaml) with hostPID/hostNetwork and /sys/fs/cgroup mount
-schemas/          Versioned JSON Schemas for report.json, history.jsonl and dossier.json
+schemas/          Frozen v1.0 JSON Schemas for report.v1.json, history.v1.json, dossier.v1.json, campaign.v1.json, and bundle.v1.json
 docs/             Operational guides and reference specs (benchmarks, GitHub Action, run registry, roadmap)
 examples/         Runnable Docker Compose and Kubernetes suites (etcd, agent, PostgreSQL, MySQL, TiDB, Valkey, Kafka)
 site/             Interactive product showcase & standalone HTML5 demos (timeline, campaign, dossier, Wasm playground)
@@ -499,27 +508,29 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 
 | Command | Description |
 | :--- | :--- |
-| `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`, `--junit`, `--sarif`) |
+| `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`, `--max-mttr`, `--min-availability`, `--junit`, `--sarif`) |
 | `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect no-regression`, `--junit`, `--sarif`) |
 | `strife shrink [flags]` | Minimize a failing simulation (`--seed` / `--report`) or recorded trace (`--history FILE`) to 1-minimality, or a live schedule (`--live --config`) to a candidate reproducer |
-| `strife check [flags]` | Verify a recorded `history.jsonl` / `.edn` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`), export EDN (`--export-edn`), emit `--sarif`, or push to `strife serve` (`--push`) |
+| `strife check [flags]` | Verify a recorded `history.jsonl` / `.edn` / OTel `.json` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`), export EDN (`--export-edn`), enforce SLOs (`--max-mttr`, `--min-availability`), emit `--sarif`, or push to `strife serve` (`--push`) |
 | `strife plan [flags]` | Print the seeded fault schedule and exact host/container commands without executing them |
-| `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`, `--sarif`) |
+| `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`, `--max-mttr`, `--min-availability`, `--sarif`) |
 | `strife doctor [flags]` | Inspect host OS/cgroup capabilities, transports, and cluster endpoint reachability (`--config`, `--json`) |
 | `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent`, `--json`, `--markdown`) |
 | `strife workload [flags]` | List presets (`--list`), compile specs to `.wasm` (`--compile --out`), or inspect `.wasm` plugins (`--inspect`) |
 | `strife keygen [flags]` | Generate an Ed25519 signing keypair (`<prefix>.key` and `<prefix>.pub`) |
 | `strife sign [flags]` | Sign a `report.json` into an `in-toto` v0.1 attestation bundle, or release artifacts (`--release`) |
 | `strife verify [flags]` | Verify a signed `bundle.json` (and optional `history.jsonl`) or a release directory (`--release-dir`) against an Ed25519 public key |
-| `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk` (`--max-mttr`, `--min-availability`, `--sarif`, `--strict`) |
+| `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp` (`--max-mttr`, `--min-availability`, `--sarif`, `--strict`) |
+| `strife ci-report [flags]` | Compare candidate and baseline reports, campaigns, or compliance dossiers for PR gating and Markdown digests (`--report`, `--baseline-report`, `--campaign`, `--baseline-campaign`, `--dossier`, `--max-mttr`, `--min-availability`, `--out`, `--json`) |
 | `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--tenant-keys`, `--token`, `--webhook`, `--max-mttr`, `--min-availability`) |
+| `strife worker [flags]` | Run a pull-based remote worker that claims and executes jobs from `strife serve` (`--server`, `--token`, `--tenant`, `--once`, `--poll`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 
 **Exit Codes:**
 
-- `0` — `linearizable` (or matches `--expect` / all compliance controls pass)
-- `1` — `violation` (or regression / compliance failure / signature mismatch)
+- `0` — `linearizable` (or matches `--expect` / all compliance & SLO controls pass)
+- `1` — `violation` (or regression / SLO breach / compliance failure / signature mismatch)
 - `2` — invalid CLI usage or configuration error
 - `3` — `unknown` (checker search budget or timeout reached without a conclusive verdict)
 - `4` — runtime or transport execution error
@@ -528,16 +539,32 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 
 ## CI Integration
 
-Use the composite GitHub Action (see [`docs/github-action.md`](docs/github-action.md) for inputs, `junit` / `sarif` / `push` options, and GitLab/Jenkins recipes):
+Use the composite GitHub Action (see [`docs/github-action.md`](docs/github-action.md) for inputs, `junit` / `sarif` / `push` options, `strife ci-report` PR digests, and GitLab/Jenkins recipes):
 
 ```yaml
-- uses: kemalhafizh/strife@v0.7.0   # a release tag downloads the checksum-verified binary
+- uses: kemalhafizh/strife@v1.0.0   # a release tag downloads the checksum-verified binary
   with:
-    command: sim --system raft --seeds 1..500 --determinism --expect linearizable
+    command: sim --system raft --seeds 1..500 --determinism --expect linearizable --max-mttr 500ms --min-availability 0.95
     sarif: strife.sarif.json
 ```
 
-Reports follow versioned JSON Schemas in [`schemas/`](schemas) (`report.v1.json`, `history.v1.json`, `dossier.v1.json`); CI rejects any change that would break them.
+All JSON outputs follow frozen v1.0 JSON Schemas in [`schemas/`](schemas) (`report.v1.json`, `history.v1.json`, `dossier.v1.json`, `campaign.v1.json`, `bundle.v1.json`); CI rejects any change that would break them.
+
+## Standards, Specifications & Academic References
+
+Strife's verification algorithms, telemetry codecs, and compliance control mappings are grounded in the following peer-reviewed literature and technical standards:
+
+- **Linearizability & P-Compositionality:** M. P. Herlihy and J. M. Wing, *"Linearizability: A Correctness Condition for Concurrent Objects,"* ACM TOPLAS 12(3), 1990; J. M. Wing and C. Gong, *"Testing and Verifying Concurrent Objects,"* Journal of Parallel and Distributed Computing 17(1–2), 1993; G. Lowe, *"Testing for Linearizability,"* Concurrency and Computation: Practice and Experience 29(4), 2017.
+- **Transactional Isolation & Direct Serialization Graphs (DSG):** A. Adya, *"Weak Consistency: A Generalized Theory and Optimistic Implementations for Distributed Transactions,"* Ph.D. Thesis, MIT, 1999; K. Kingsbury and P. Alvaro, *"Elle: Inferring Isolation Anomalies from Experimental Observations,"* VLDB 14(3), 2020.
+- **Deterministic Simulation Testing & Delta Debugging:** J. Zhou et al., *"FoundationDB: A Distributed Unbundled Transactional Key Value Store,"* ACM SIGMOD, 2021; A. Zeller and R. Hildebrandt, *"Simplifying and Isolating Failure-Inducing Input,"* IEEE TSE 28(2), 2002 (`ddmin`).
+- **Telemetry, Attestation & Static Analysis Formats:** [OpenTelemetry Protocol (OTLP) Specification v1.x](https://opentelemetry.io/docs/specs/otlp/) (`ExportTraceServiceRequest` JSON encoding); [in-toto Attestation Framework v0.1](https://github.com/in-toto/attestation); [OASIS SARIF Version 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html).
+- **Regulatory & Information Security Frameworks:**
+  - **EU DORA:** Regulation (EU) 2022/2554 on digital operational resilience for the financial sector (Articles 9, 11, 12, 24, 25).
+  - **AICPA SOC 2:** 2017 Trust Services Criteria for Security, Availability, Processing Integrity, Confidentiality, and Privacy (with 2022 Revised Points of Focus: PI1.3, PI1.4, A1.2, A1.3, CC4.1).
+  - **ISO/IEC 27001:2022:** Information security, cybersecurity and privacy protection — Information security management systems (Annex A Controls 8.13, 8.14, 8.17, 8.29).
+  - **PCI DSS v4.0 / v4.0.1:** Payment Card Industry Data Security Standard (June 2024: Requirements 6.2.4, 6.5.2, 10.3.2, 10.3.4, 11.4, 11.5.2, 12.10.5).
+  - **OJK (Indonesia):** POJK No. 11/POJK.03/2022 tentang Penyelenggaraan Teknologi Informasi oleh Bank Umum & SEOJK No. 29/SEOJK.03/2022 tentang Ketahanan dan Keamanan Siber bagi Bank Umum.
+  - **Bank Indonesia Payment Systems:** PBI No. 23/6/PBI/2021 tentang Penyedia Jasa Pembayaran (Pasal 12, 15, 19) & PBI No. 23/7/PBI/2021 tentang Penyelenggara Infrastruktur Sistem Pembayaran (Pasal 2: Kliring & Penyelesaian Akhir / *Settlement Finality*).
 
 ## Development
 
