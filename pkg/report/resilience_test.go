@@ -138,4 +138,69 @@ func TestWritePRDigestCampaignAndDossierModes(t *testing.T) {
 			t.Fatalf("reportless PR digest missing %q:\n%s", want, reportless.String())
 		}
 	}
+
+	// Sound-incomplete report and campaign pass under Expect="no-anomaly" and fail otherwise.
+	incReport := &Report{
+		Target:  "raft-ledger",
+		Seed:    1,
+		Verdict: checker.Unknown,
+		Check: checker.Report{
+			Model:   "ledger",
+			Verdict: checker.Unknown,
+			Keys:    []checker.KeyResult{{Key: "ledger", Verdict: checker.Unknown, Reason: checker.ReasonIncomplete}},
+		},
+	}
+	incCamp := &PRCampaignSummary{
+		System:     "raft-ledger",
+		TotalSeeds: 2,
+		Unknown:    2,
+		Incomplete: true,
+	}
+	var incPass bytes.Buffer
+	ok, err = WritePRDigest(&incPass, PRDigestOptions{
+		Expect:   "no-anomaly",
+		Report:   incReport,
+		Campaign: incCamp,
+	})
+	if err != nil {
+		t.Fatalf("WritePRDigest no-anomaly: %v", err)
+	}
+	if !ok || !strings.Contains(incPass.String(), "PASS") || !strings.Contains(incPass.String(), "UNKNOWN (no anomaly found; incomplete)") {
+		t.Fatalf("expected no-anomaly incomplete digest to pass, got ok=%v\n%s", ok, incPass.String())
+	}
+
+	var incStrict bytes.Buffer
+	ok, err = WritePRDigest(&incStrict, PRDigestOptions{
+		Expect:   "linearizable",
+		Report:   incReport,
+		Campaign: incCamp,
+	})
+	if err != nil {
+		t.Fatalf("WritePRDigest strict: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected linearizable digest on incomplete run to fail:\n%s", incStrict.String())
+	}
+
+	budgetReport := &Report{
+		Target:  "raft",
+		Seed:    1,
+		Verdict: checker.Unknown,
+		Check: checker.Report{
+			Model:   "kv",
+			Verdict: checker.Unknown,
+			Keys:    []checker.KeyResult{{Key: "k0", Verdict: checker.Unknown, Reason: checker.ReasonSteps}},
+		},
+	}
+	var budgetOut bytes.Buffer
+	ok, err = WritePRDigest(&budgetOut, PRDigestOptions{
+		Expect: "no-anomaly",
+		Report: budgetReport,
+	})
+	if err != nil {
+		t.Fatalf("WritePRDigest budget: %v", err)
+	}
+	if ok {
+		t.Fatalf("no-anomaly must still fail when report hit step budget:\n%s", budgetOut.String())
+	}
 }

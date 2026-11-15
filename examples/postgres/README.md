@@ -12,10 +12,10 @@ export STRIFE_PG_PASSWORD=$(openssl rand -hex 16)
 cd examples/postgres
 docker compose up -d --build
 
-strife run --config strife.json            # primary, SERIALIZABLE list-append, kill -9 + pause
-strife run --config strife-ledger.json     # primary, SERIALIZABLE double-entry ledger audit
-strife run --config strife-snapshot.json   # primary, checked as snapshot isolation
-strife run --config strife-replicas.json   # reads spread across the standbys
+strife run --config strife.json --expect no-anomaly          # primary, SERIALIZABLE list-append, kill -9 + pause
+strife run --config strife-ledger.json --expect no-anomaly   # primary, SERIALIZABLE double-entry ledger audit
+strife run --config strife-snapshot.json --expect no-anomaly # primary, checked as snapshot isolation
+strife run --config strife-replicas.json --expect violation  # reads spread across the standbys
 
 docker compose down -v
 ```
@@ -26,15 +26,18 @@ is resolved at run time and reports show the reference, not the value.
 `strife-settlement.json` is an additional two-leg `settlement` workload template
 configured with the zero-privilege `proxy` transport against a standalone
 PostgreSQL cluster (`172.30.0.11:5432`, user/database `strife`); adjust
-`nodes` and `db.endpoints` if running it against the local compose network.
+`nodes` and `db.endpoints` if running it against the local compose network, and
+pass `--expect no-anomaly` in CI (because the transactional checkers for `append`,
+`ledger`, and `settlement` report `unknown (sound incomplete)` rather than a
+complete linearizability proof when a history exceeds bounded complete search).
 
 ## What CI asserts (`postgres` job in `.github/workflows/live.yml`)
 
 | Config | Isolation asked of PostgreSQL | Checked as | Faults | Expected |
 |---|---|---|---|---|
-| `strife.json` | `SERIALIZABLE` | strict serializable (`append`) | `kill`, `pause` | pass |
-| `strife-ledger.json` | `SERIALIZABLE` | strict serializable (`ledger`) | `kill`, `pause` | pass |
-| `strife-snapshot.json` | default | snapshot isolation (`append`) | `kill`, `pause` | pass |
+| `strife.json` | `SERIALIZABLE` | strict serializable (`append`) | `kill`, `pause` | no anomaly (`--expect no-anomaly`) |
+| `strife-ledger.json` | `SERIALIZABLE` | strict serializable (`ledger`) | `kill`, `pause` | no anomaly (`--expect no-anomaly`) |
+| `strife-snapshot.json` | default | snapshot isolation (`append`) | `kill`, `pause` | no anomaly (`--expect no-anomaly`) |
 | same history | | serializable | | **violation**: write skew (G2) |
 | `strife-replicas.json` | `REPEATABLE READ` per standby | strict serializable (`append`) | `partition` | **violation**: stale reads (G-realtime) |
 

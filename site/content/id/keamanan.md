@@ -10,7 +10,7 @@ translationKey: security
 
 - **Berjalan di infrastruktur Anda.** CLI dan `strife-agent` berjalan di mesin dan jaringan Anda sendiri. Strife hanya menghubungi target yang Anda konfigurasikan: endpoint database, agen, Docker, SSH, atau Kubernetes. Tidak ada telemetri dan tidak ada koneksi ke server kami.
 - **Kredensial target** ditulis sebagai rujukan `env:NAMA` atau `file:PATH`, sehingga tidak pernah tersimpan di berkas konfigurasi maupun laporan.
-- **Agen** menolak mendengarkan di luar loopback tanpa token, dan token dibandingkan dalam waktu konstan.
+- **Agen dan registri** menegakkan autentikasi token dalam waktu konstan: `strife-agent` menolak mendengarkan di luar loopback tanpa token, sedangkan `strife serve` menegakkan autentikasi Bearer *fail-closed* (`--token`, `--tenant-tokens`), isolasi tenant `403` pada seluruh run dan antrean pekerjaan, lease pekerjaan bertoken acak (`claim_token`, `--job-lease`) lengkap dengan heartbeat worker, dan penyimpanan berkas atomik.
 - **Alat di situs ini** (playground, studio, verifikasi) menjalankan engine sebagai WebAssembly di browser Anda. Berkas yang Anda pilih tidak diunggah ke mana pun.
 - **Situs ini** tidak memakai cookie maupun pelacak pihak ketiga.
 

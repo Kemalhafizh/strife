@@ -8,8 +8,8 @@ Satu server TiDB tunggal dengan mesin penyimpanan tersemat `unistore`: cukup unt
 cd examples/tidb
 docker compose up -d
 
-strife run --config strife-optimistic.json          # mode optimistik, dibekukan & dicairkan
-strife run --config strife.json --faults none       # mode pesimistis (default TiDB)
+strife run --config strife-optimistic.json --expect no-anomaly   # mode optimistik, dibekukan & dicairkan
+strife run --config strife.json --faults none --expect violation # mode pesimistis (default TiDB)
 
 docker compose down -v
 ```
@@ -18,7 +18,7 @@ docker compose down -v
 
 | Konfigurasi | Mode transaksi | Diperiksa sebagai | Gangguan | Hasil diharapkan |
 |---|---|---|---|---|
-| `strife-optimistic.json` | optimistik (`init_sql`) | snapshot isolation | `freeze` | lulus |
+| `strife-optimistic.json` | optimistik (`init_sql`) | snapshot isolation | `freeze` | tanpa anomali (`--expect no-anomaly`) |
 | `strife.json` | pesimistis | snapshot isolation | tidak ada | **pelanggaran** |
 
 TiDB mendokumentasikan `REPEATABLE READ`-nya sebagai *snapshot isolation*. Pada mode optimistik, riwayat eksekusi memenuhi kontrak tersebut. Pada mode pesimistis bawaannya, penulisan mengambil kunci dan membaca versi ter-commit terbaru (serupa MySQL), sehingga beban kerja list-append mengamati elemen yang di-commit sesudah snapshot transaksi diambil: Strife melaporkan pelanggaran konsistensi internal serta siklus G-single. TiDB sendiri mendokumentasikan perilaku ini untuk transaksi pesimistis; contoh ini ada untuk membuktikan bahwa checker dapat membedakan kedua mode tersebut.

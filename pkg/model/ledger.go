@@ -268,8 +268,10 @@ type ledgerFinding struct {
 }
 
 // Decide implements Decider, checking all four financial ledger invariants in
-// polynomial time alongside Elle/Adya transactional dependency analysis.
-func (m Ledger) Decide(ops []history.Operation) (bool, []int, string, []string) {
+// polynomial time alongside Elle/Adya transactional dependency analysis. When
+// no anomaly is found on a non-empty history, it returns DecisionInconclusive
+// because dependency-graph checks are sound but incomplete.
+func (m Ledger) Decide(ops []history.Operation) (DecisionStatus, []int, string, []string) {
 	var findings []ledgerFinding
 	addFinding := func(kind string, witness []int, explanation string) {
 		dedup := make([]int, 0, len(witness))
@@ -702,7 +704,10 @@ func (m Ledger) Decide(ops []history.Operation) (bool, []int, string, []string) 
 	}
 
 	if len(findings) == 0 {
-		return false, nil, "", nil
+		if len(ops) == 0 {
+			return DecisionVerified, nil, "", nil
+		}
+		return DecisionInconclusive, nil, "", nil
 	}
 
 	var kinds []string
@@ -716,7 +721,27 @@ func (m Ledger) Decide(ops []history.Operation) (bool, []int, string, []string) 
 	if len(findings) > 1 {
 		diag += fmt.Sprintf(" (+%d additional finding(s): %s)", len(findings)-1, strings.Join(kinds, ", "))
 	}
-	return true, first.witness, diag, kinds
+	return DecisionViolation, first.witness, diag, kinds
+}
+
+// SupportsCompleteSearch implements CompleteSearcher when strict-serializable
+// mode and explicit positive initial balance match Ledger.Step, and ops contains
+// no indeterminate (Info) write attempts whose concrete deltas Step cannot model.
+func (m Ledger) SupportsCompleteSearch(ops []history.Operation) bool {
+	if !strings.EqualFold(m.Level, string(txn.LevelStrictSerializable)) || m.InitialBalance <= 0 {
+		return false
+	}
+	for _, o := range ops {
+		if o.Status() != history.Info {
+			continue
+		}
+		for _, mop := range effectiveMicroOps(o) {
+			if isWriteMicro(mop.F) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func effectiveMicroOps(o history.Operation) []history.MicroOp {

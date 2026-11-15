@@ -233,3 +233,36 @@ func TestHTMLResilienceAndMTTRSection(t *testing.T) {
 		}
 	}
 }
+
+func TestHTMLUnknownIncompleteBadge(t *testing.T) {
+	rep := &Report{
+		Tool:        "strife",
+		Version:     Version,
+		Kind:        KindCheck,
+		Target:      "append.jsonl",
+		Verdict:     checker.Unknown,
+		Fingerprint: "fp-inc",
+		Check: checker.Report{
+			Model:   "append",
+			Verdict: checker.Unknown,
+			Keys: []checker.KeyResult{
+				{Key: "txn", Verdict: checker.Unknown, Reason: checker.ReasonIncomplete, Operations: 24, Steps: 1},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := HTML(&buf, rep, nil); err != nil {
+		t.Fatalf("HTML() error: %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`class="verdict warn"`,
+		"check incomplete",
+		"unknown (sound incomplete)",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML missing %q:\n%s", want, html)
+		}
+	}
+}

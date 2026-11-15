@@ -20,10 +20,10 @@ The following classes of issues are treated as security vulnerabilities:
 1. **`strife-agent` Authentication & Privilege Boundaries (`pkg/agent`, `cmd/strife-agent`)**
    - Bypass of Bearer token authentication (`subtle.ConstantTimeCompare`), non-loopback listener restrictions (`-insecure-no-token` aside), path/PID validation on `/apply`, `/exec`, `/probes`, or command injection via agent endpoints.
 2. **`strife serve` Run Registry & Job Queue HTTP Daemon (`pkg/serve`)**
-   - Bypass of Bearer token checks on `POST /api/v1/ingest`, `POST /api/v1/jobs`, `POST /api/v1/jobs/claim`, or `POST /api/v1/jobs/<id>/complete`.
-   - Unauthorized disclosure of `live_config` payloads on unauthenticated `GET /api/v1/jobs` requests, cross-worker job completion spoofing, or replay of already-completed jobs.
-   - Unbounded memory allocation beyond the request body limits (4 MiB for job creation, 32 MiB for report/campaign ingestion), stored HTML/script injection (XSS) in the embedded dashboard or compliance dossier views, or leakage of webhook URLs/tokens via `/api/v1/webhooks` or logs.
-   - *Deployment note:* `strife serve` speaks plaintext HTTP over TCP (default `127.0.0.1:8080`). When exposing the registry beyond loopback, terminate TLS in front of `strife serve` and keep `--token` enabled.
+   - Bypass of fail-closed Bearer authentication (`--token` admin or `--tenant-tokens` per-tenant tokens, compared in constant time) on `/`, `/api/v1/runs*`, `/api/v1/series`, `/api/v1/trends`, `/api/v1/webhooks` (admin-only), `/api/v1/jobs*`, or `/api/v1/ingest`, or unauthorized metadata leakage on redacted unauthenticated `GET /api/v1/health`.
+   - Cross-tenant read/write/dossier/job access (must return `403 Forbidden`), cross-worker job completion/heartbeat spoofing (`worker_id` + per-claim `claim_token` checks), stale lease takeover races, or replay of already-completed/in-flight jobs (`409 Conflict`).
+   - Non-atomic state persistence (`jobs.json`, `campaign.json`), unbounded memory allocation beyond the request body limits (4 MiB for job creation, 32 MiB for report/campaign/completion ingestion), stored HTML/script injection (XSS) in the embedded dashboard or compliance dossier views, or leakage of webhook URLs/tokens via `/api/v1/webhooks` or logs.
+   - *Deployment note:* `strife serve` speaks plaintext HTTP over TCP (default `127.0.0.1:8080`). When exposing the registry beyond loopback, terminate TLS in front of `strife serve` and enable `--token` / `--tenant-tokens`.
 3. **`strife worker` Pull-Based Remote Worker (`pkg/serve/worker.go`)**
    - Unbounded response allocation when polling or claiming jobs from a registry endpoint, or credential leakage from `live_config` into persisted report artifacts (`runner.Config.Redacted()` must redact all credentials before report serialization).
 4. **Untrusted Input Parsers (`pkg/client`, `pkg/history`, `pkg/workload`)**

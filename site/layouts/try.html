@@ -18,8 +18,8 @@
           <button type="button" class="preset" data-preset="{{ $p.id }}" aria-pressed="{{ if eq $idx 0 }}true{{ else }}false{{ end }}">
             <div class="preset-top">
               <strong>{{ i18n (printf "preset_%s" $k) }}</strong>
-              <span class="badge {{ if eq $p.verdict "violation" }}badge-violation{{ else }}badge-linearizable{{ end }}">
-                {{ if eq $p.verdict "violation" }}{{ i18n "verdict_violation" }}{{ else }}{{ i18n "verdict_linearizable" }}{{ end }}
+              <span class="badge {{ if eq $p.verdict "violation" }}badge-violation{{ else if eq $p.verdict "linearizable" }}badge-linearizable{{ else }}badge-unknown{{ end }}">
+                {{ if eq $p.verdict "violation" }}{{ i18n "verdict_violation" }}{{ else if eq $p.verdict "linearizable" }}{{ i18n "verdict_linearizable" }}{{ else }}{{ i18n "verdict_unknown" }}{{ end }}
               </span>
             </div>
             <span>{{ i18n (printf "preset_%s_body" $k) }}</span>

@@ -18,12 +18,18 @@ func fmtTime(ns int64) string {
 	return fmt.Sprintf("%.3fs", float64(ns)/1e9)
 }
 
-func badge(v checker.Verdict) string {
-	switch v {
+func badge(r *Report) string {
+	if r == nil {
+		return "⚠️ UNKNOWN"
+	}
+	switch r.Verdict {
 	case checker.Linearizable:
 		return "✅ LINEARIZABLE"
 	case checker.Violation:
 		return "❌ VIOLATION"
+	}
+	if r.Check.IsIncomplete() {
+		return "⚠️ UNKNOWN (no anomaly found; check incomplete)"
 	}
 	return "⚠️ UNKNOWN (search budget exhausted)"
 }
@@ -32,7 +38,7 @@ func badge(v checker.Verdict) string {
 func Markdown(w io.Writer, r *Report) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Strife report — %s\n\n", r.Target)
-	fmt.Fprintf(&b, "**Verdict:** %s  \n", badge(r.Verdict))
+	fmt.Fprintf(&b, "**Verdict:** %s  \n", badge(r))
 	fmt.Fprintf(&b, "**Kind:** %s · **Seed:** `%d` · **Model:** %s\n\n", r.Kind, r.Seed, r.Check.Model)
 	if r.Reproduce != "" {
 		fmt.Fprintf(&b, "Reproduce:\n\n```sh\n%s\n```\n\n", r.Reproduce)
@@ -108,7 +114,11 @@ func Markdown(w io.Writer, r *Report) error {
 
 	b.WriteString("## Keys\n\n| Key | Ops | Verdict | Search steps |\n|---|---|---|---|\n")
 	for _, k := range r.Check.Keys {
-		fmt.Fprintf(&b, "| `%s` | %d | %s | %d |\n", k.Key, k.Operations, k.Verdict, k.Steps)
+		v := string(k.Verdict)
+		if k.Reason != "" {
+			v += " (" + k.Reason + ")"
+		}
+		fmt.Fprintf(&b, "| `%s` | %d | %s | %d |\n", k.Key, k.Operations, v, k.Steps)
 	}
 	b.WriteString("\n")
 

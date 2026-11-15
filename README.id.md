@@ -43,7 +43,7 @@ Pada jejak di atas, sebuah implementasi Raft mengakui penambahan log sebelum `fs
 
 - **Nol dependensi eksternal.** Baik `strife` maupun `strife-agent` dikompilasi murni dari pustaka standar Go 1.23 (`go.mod` tidak memiliki blok `require`). Protokol jaringan untuk etcd v3, Redis/Valkey (RESP2), PostgreSQL (protokol v3 dengan SCRAM-SHA-256 dan TLS), MySQL/TiDB (`caching_sha2_password`, TLS), Kafka (Produce v3 / Fetch v4, RecordBatch v2 dengan CRC-32C), soket rute `AF_NETLINK` Linux, penandatanganan Ed25519 `in-toto`, serta interpreter bytecode WebAssembly 1.0 seluruhnya diimplementasikan langsung di dalam repositori.
 - **Keacakan yang dipatok (*pinned randomness*).** Algoritma `math/rand` standar tidak dijamin tetap identik di setiap rilis Go. Strife memakai PRNG mandiri `xoshiro256**` yang di-seed melalui `SplitMix64` ([`internal/rng`](internal/rng/rng.go)) dengan percabangan aliran per aktor berbasis FNV-1a (`root.Fork("client/3")`), sehingga menambah klien atau node tidak mengganggu urutan bilangan acak aktor lain.
-- **Verdict yang jujur.** Bila pemeriksa (*checker*) kehabisan anggaran langkah atau batas waktu tanpa menemukan linearisasi yang sah maupun bukti ketidakmungkinan, verdict-nya adalah `unknown` (kode keluar `3`), tidak pernah `linearizable` palsu. Eksekusi langsung (*live run*) tanpa satu pun operasi yang berhasil juga bernilai `unknown`.
+- **Verdict yang jujur.** Bila pemeriksa (*checker*) kehabisan anggaran langkah atau batas waktu tanpa menemukan linearisasi yang sah maupun bukti ketidakmungkinan, verdict-nya adalah `unknown` (kode keluar `3`), tidak pernah `linearizable` palsu. Eksekusi langsung (*live run*) tanpa satu pun operasi yang berhasil juga bernilai `unknown`. Checker transaksional *sound-incomplete* (`append`, `ledger`, `settlement`) juga mengembalikan `unknown` (`sound incomplete`) bila tidak ditemukan anomali di luar pencarian tuntas berbatas (`<= 16` operasi, `<= 4` operasi `info`, `<= 500.000` langkah pada `strict-serializable`); gunakan `--expect no-anomaly` di CI untuk memvalidasi nol anomali terdeteksi.
 - **Klaim terukur.** Setiap angka performa atau deteksi di berkas ini merujuk ke [`docs/id/BENCHMARKS.md`](docs/id/BENCHMARKS.md), yang mencantumkan perintah, mesin, dan tanggal pengukurannya.
 
 ---
@@ -175,13 +175,13 @@ strife check --history otlp-traces.json --model kv --max-mttr 500ms --min-availa
 
 | Model | Operasi | Mesin Verifikasi & Kompleksitas |
 | :--- | :--- | :--- |
-| `kv` | `read`, `write`, `cas` | Pencarian linearizability Wing & Gong / Lowe dengan memoisasi bitset status, pemangkasan celah mati interval nilai (`kvPruner`), P-komposisionalitas per kunci, reduksi simetri, serta diagnosis pembacaan basi $O(N \log N)$ (~18,7k–508k ops/dtk per inti pada satu kunci hingga 50 proses konkuren; [terukur](docs/id/BENCHMARKS.md#2-throughput-checker)). |
+| `kv` | `read`, `write`, `cas` | Pencarian linearizability Wing & Gong / Lowe dengan memoisasi bitset status, pemangkasan celah mati interval nilai (`kvPruner`), P-komposisionalitas per kunci, reduksi simetri, serta diagnosis pembacaan basi $O(N \log N)$ (~18,7k–508k ops/dtk per inti pada satu kunci hingga 50 proses konkuren; [terukur](docs/id/BENCHMARKS.md#2-throughput-checker); jalur cepat diuji silang lewat `TestDifferentialOptimizerEquivalence`). |
 | `set` | `add`, `read` | Linearizability set hanya-tumbuh + ekstraksi saksi elemen hilang. |
 | `queue` | `enqueue`, `dequeue` | Linearizability antrean FIFO; mendiagnosis *phantom dequeue*, pembalikan urutan FIFO, dan pengembalian kosong prematur. |
 | `counter` | `inc` / `add`, `read` | Linearizability penghitung bilangan bulat bersama; mendiagnosis kehilangan inkremen dan pembacaan berlebih. |
 | `idgen` | `generate` | Verifikasi ID unik monoton/bebas kolisi dengan ekstraksi saksi duplikat. |
 | `txn` | `txn` (`[r(k), w(k,v), ...]`) | Pembangunan Direct Serialization Graph (DSG) (`wr`, `ww`, `rw`, `so`, `ro`) + ekstraksi siklus terpendek Tarjan SCC di 6 level isolasi. |
-| `append` | `txn` berisi `append(k, v)` / `r(k) → [v…]` | List-append bergaya Elle: urutan versi dipulihkan dari hasil baca, sisi `ww`/`wr`/`rw` dan waktu nyata, append hilang, urutan tak cocok, duplikat, dan pemeriksaan konsistensi internal (~40k–57k txn/dtk; 0 positif palsu dan 99,81% riwayat cacat tertangkap dalam uji silang brute-force, [terukur](docs/id/BENCHMARKS.md#3-ketepatan-checker)). |
+| `append` | `txn` berisi `append(k, v)` / `r(k) → [v…]` | List-append bergaya Elle: urutan versi dipulihkan dari hasil baca, sisi `ww`/`wr`/`rw` dan waktu nyata, append hilang, urutan tak cocok, duplikat, dan pemeriksaan konsistensi internal (~40k–57k txn/dtk; 0 positif palsu dan 99,81% riwayat cacat tertangkap dalam uji silang brute-force, [terukur](docs/id/BENCHMARKS.md#3-ketepatan-checker)); memakai pencarian WGL tuntas berbatas pada `strict-serializable` berukuran kecil, selainnya `unknown (sound incomplete)`. |
 | `ledger` | `txn` transfer akun & audit saldo | Pemeriksa buku besar keuangan berpasangan (*double-entry*) & konservasi uang (`LEDGER-CONSERVATION` $\sum B_i = M_0$, `LEDGER-OVERDRAFT` $B_i < 0$ & *write skew* `G2-item` konkuren, `LEDGER-DOUBLE-SPEND` pada pengulangan timeout `info`, serta `LEDGER-UNBALANCED` $\sum \Delta_k \ne 0$). |
 | `settlement` | `txn` append buku besar/broker & pembacaan rekonsiliasi | Verifikasi kliring lintas-sistem & transaksional outbox (`SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, dan `SETTLEMENT-IDEMPOTENCY`). |
 
@@ -197,6 +197,9 @@ Pemeriksa transaksional ([`pkg/txn`](pkg/txn/txn.go)) merekonstruksi versi item 
 - **`G-realtime` (Real-Time Inversion):** Urutan serialisasi bertentangan dengan urutan penyelesaian waktu nyata (`ro`), melanggar `strict-serializable`.
 
 Opsi `--isolation` yang didukung (berlaku untuk `--model txn`, `append`, dan `ledger`): `read-uncommitted`, `read-committed`, `repeatable-read`, `snapshot-isolation`, `serializable`, `strict-serializable`.
+
+> [!NOTE]
+> Prosedur keputusan graf kebergantungan untuk `append`, `ledger`, dan `settlement` bersifat **sound tetapi tidak lengkap** (*sound incomplete*). Bila tidak ada anomali yang ditemukan, Strife memverifikasi riwayat `strict-serializable` kecil (`<= 16` operasi dan `<= 4` operasi `info`, hingga `500.000` langkah) dengan pencarian WGL tuntas berbatas (`linearizable` hanya bila pencarian benar-benar tuntas), lalu mengembalikan `unknown` (`sound incomplete`) bila melampaui batas. Gunakan `--expect no-anomaly` di CI bila Anda ingin memastikan nol anomali terdeteksi tanpa mengklaim pembuktian formal menyeluruh.
 
 ---
 
@@ -376,7 +379,7 @@ strife compliance --report strife-out/raft-seed7/report.json \
 
 ID kontrol adalah label internal milik Strife untuk pemeriksaan teknisnya, bukan pengenal yang diterbitkan oleh regulator maupun lembaga standar; setiap kontrol di dalam dossier mengutip ketentuan yang didukungnya. Dossier merupakan artefak bukti teknis untuk ditinjau auditor, bukan sertifikasi ataupun opini hukum.
 
-Setiap kontrol dinilai murni berdasarkan bukti empiris (`PASS`, `PARTIAL` bila cakupan gangguan atau penandatanganan kriptografis belum lengkap, atau `FAIL`). Setiap dossier menyertakan pengungkapan eksplisit **Metodologi & Batasan Cakupan** yang menjelaskan apa yang diuji, kelas gangguan apa yang dikecualikan, serta perbedaan antara simulasi deterministik dan eksekusi pada cluster sungguhan.
+Setiap kontrol dinilai murni berdasarkan bukti empiris (`PASS`, `PARTIAL` bila cakupan gangguan, penandatanganan kriptografis, atau kelengkapan pembuktian konsistensi bersifat parsial, atau `FAIL`). Saat pemeriksaan transaksional berakhir dengan `unknown (sound incomplete)`, kontrol integritas terkait dinilai `PARTIAL` dan dicatat sebagai bukti empiris bebas anomali. Setiap dossier menyertakan pengungkapan eksplisit **Metodologi & Batasan Cakupan** yang menjelaskan apa yang diuji, kelas gangguan apa yang dikecualikan, serta perbedaan antara simulasi deterministik dan eksekusi pada cluster sungguhan.
 
 ---
 
@@ -384,30 +387,30 @@ Setiap kontrol dinilai murni berdasarkan bukti empiris (`PASS`, `PARTIAL` bila c
 
 `strife serve` ([`pkg/serve`](pkg/serve/server.go), referensi lengkap di [`docs/id/server.md`](docs/id/server.md)) menjalankan daemon HTTP *self-hosted* dan dasbor web tersemat yang menyimpan seluruh riwayat CI serta kampanye regresi di dalam jaringan Anda sendiri:
 
-- **Terverifikasi saat tiba & terisolasi multi-tenant:** Setiap `report.json` atau `campaign.json` yang masuk dihitung ulang sidik jari SHA-256-nya sebelum disimpan; baseline dan rekap deret waktu (`GET /api/v1/series`, `GET /api/v1/trends`) terisolasi berdasarkan pasangan `(tenant, target)`.
-- **Antrean worker jarak jauh berbasis pull (`strife worker`):** Cluster *staging* terisolasi dan VPC privat dapat menjalankan `strife worker --server http://... --token ...` ([`pkg/serve/worker.go`](pkg/serve/worker.go)) untuk mengambil antrean pekerjaan simulasi, kampanye, maupun uji gangguan database langsung melalui HTTP keluar (`POST /api/v1/jobs/claim`) dan mengembalikan hasil terverifikasi (`POST /api/v1/jobs/<id>/complete`) tanpa membuka port masuk firewall.
+- **Autentikasi fail-closed & isolasi multi-tenant:** Saat dijalankan dengan `--token` (admin) atau `--tenant-tokens tenant=rahasia` (per-tenant), autentikasi Bearer ditegakkan di dasbor web (`/`) maupun titik akhir `/api/v1/*` (`GET /api/v1/keys` tetap publik; `GET /api/v1/health` tanpa autentikasi mengembalikan payload tersunting) dengan isolasi tenant ketat `403` dan visibilitas webhook khusus admin (`GET /api/v1/webhooks`). Setiap `report.json` atau `campaign.json` yang masuk dihitung ulang sidik jari SHA-256-nya sebelum disimpan; baseline dan rekap deret waktu (`GET /api/v1/series`, `GET /api/v1/trends`) terisolasi berdasarkan `(tenant, target)`.
+- **Antrean worker jarak jauh berpenjaga lease (`strife worker`):** Cluster *staging* terisolasi dan VPC privat dapat menjalankan `strife worker --server http://... --token ...` ([`pkg/serve/worker.go`](pkg/serve/worker.go)) untuk mengambil antrean pekerjaan simulasi, kampanye, maupun uji gangguan database melalui HTTP keluar (`POST /api/v1/jobs/claim`) memakai token klaim acak `claim_token` dan lease (`--job-lease`, default `2m`) yang diperpanjang otomatis lewat `POST /api/v1/jobs/<id>/heartbeat`, sekaligus memulihkan lease yang kedaluwarsa secara otomatis tanpa membuka port masuk firewall. Berkas status (`jobs.json`, `campaign.json`) ditulis secara atomik.
 - **Perbandingan regresi baseline otomatis:** Kampanye yang masuk otomatis dibandingkan terhadap kampanye tersimpan terbaru untuk pasangan `(tenant, target)` yang sama, lalu mencatat transisi seed `regressed`, `fixed`, dan `trace_drift`.
 - **Penandatanganan Ed25519 per tenant & dossier sesuai permintaan:** Tandatangani laporan yang masuk secara otomatis dengan `--key` atau kunci per tenant (`--tenant-keys tenant=path.key`), umumkan kunci publik aktif melalui `GET /api/v1/keys`, dan susun dossier kepatuhan terverifikasi langsung (`GET /api/v1/runs/<id>/dossier`).
 - **Peringatan webhook konsistensi & SLA:** Saat dijalankan dengan `--webhook <urls>`, `strife serve` mengirimkan notifikasi Slack, Discord, atau JSON generik ketika terjadi pelanggaran konsistensi (`report.violation`), regresi/pelanggaran kampanye (`campaign.regression` / `campaign.violation`), dan pelanggaran SLA pemulihan (`report.sla_breach` melalui `--max-mttr` dan `--min-availability`).
 
 ```sh
-# Jalankan registri dengan autentikasi Bearer, kunci Ed25519 per tenant, gerbang SLA, dan peringatan webhook
+# Jalankan registri dengan autentikasi Bearer fail-closed, token/kunci per tenant, lease pekerjaan, gerbang SLA, dan peringatan webhook
 strife serve --listen 127.0.0.1:8080 --store ./strife-registry \
-  --token "$STRIFE_REGISTRY_TOKEN" --key audit-key.key \
-  --tenant-keys "payments=payments.key" --signer "ci-registry" \
-  --max-mttr 500ms --min-availability 0.99 \
+  --token "$STRIFE_REGISTRY_TOKEN" --tenant-tokens "payments=$STRIFE_PAYMENTS_TOKEN" \
+  --key audit-key.key --tenant-keys "payments=payments.key" --signer "ci-registry" \
+  --job-lease 2m --max-mttr 500ms --min-availability 0.99 \
   --webhook "https://hooks.slack.com/services/T00/B00/X00"
 
 # Jalankan worker jarak jauh berbasis pull di dalam VPC staging privat
-strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --id staging-worker-1 --tenant payments
+strife worker --server http://127.0.0.1:8080 --token "$STRIFE_PAYMENTS_TOKEN" --id staging-worker-1 --tenant payments
 
 # Dorong laporan atau kampanye langsung dari CLI (`sim --seed`, `campaign`, `run`, `check`), atau POST JSON ke /api/v1/ingest
 strife check --model settlement --history history.jsonl \
-  --push http://127.0.0.1:8080 --push-token "$STRIFE_REGISTRY_TOKEN" --tenant payments
+  --push http://127.0.0.1:8080 --push-token "$STRIFE_PAYMENTS_TOKEN" --tenant payments
 strife campaign --system raft --seeds 1..100 --commit "$(git rev-parse --short HEAD)" --branch main \
-  --push http://127.0.0.1:8080 --push-token "$STRIFE_REGISTRY_TOKEN" --tenant payments
+  --push http://127.0.0.1:8080 --push-token "$STRIFE_PAYMENTS_TOKEN" --tenant payments
 curl -fsSL -X POST \
-  -H "Authorization: Bearer $STRIFE_REGISTRY_TOKEN" \
+  -H "Authorization: Bearer $STRIFE_PAYMENTS_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @strife-out/raft-seed7/report.json \
   "http://127.0.0.1:8080/api/v1/ingest?tenant=payments&commit=$(git rev-parse --short HEAD)&branch=main"
@@ -419,7 +422,7 @@ curl -fsSL -X POST \
 
 Seluruh hasil di bawah ini direproduksi oleh perintah di [`docs/id/BENCHMARKS.md`](docs/id/BENCHMARKS.md).
 
-**Korpus bug simulasi** (200 seed, atau 60 seed untuk model injeksi bug deterministik, 5 node, 10 detik simulasi):
+**Korpus bug simulasi** (200 seed, atau 60 seed untuk model injeksi bug deterministik, 5 node, 10 detik simulasi; model transaksional bersih `raft-ledger`, `2pc-ledger`, dan `outbox-settlement` lulus `--expect no-anomaly` dengan 0 anomali terdeteksi dan melaporkan `unknown (sound incomplete)` bila melebihi pencarian tuntas berbatas):
 
 | Sistem | Bug | Gangguan wajib | Seed melanggar |
 | :--- | :--- | :--- | :--- |
@@ -434,20 +437,20 @@ Seluruh hasil di bawah ini direproduksi oleh perintah di [`docs/id/BENCHMARKS.md
 | `2pc-ledger-torn-commit` | 2PC / Saga non-atomik meng-commit kaki debit sebelum kaki kredit (`LEDGER-CONSERVATION`) | `partition` + `kill` | **60 / 60** |
 | `outbox-dual-write` | *dual-write* asinkron menghilangkan kejadian kliring saat crash/partisi (`SETTLEMENT-ATOMICITY`) | `partition` + `kill` | **60 / 60** |
 
-**Cluster sungguhan di CI** ([`.github/workflows/live.yml`](.github/workflows/live.yml), setiap push). Konfigurasi yang benar wajib lulus dan konfigurasi lemah yang dikenal wajib tertangkap:
+**Cluster sungguhan di CI** ([`.github/workflows/live.yml`](.github/workflows/live.yml), setiap push). Konfigurasi yang benar wajib lulus (`--expect linearizable` untuk `kv`, `--expect no-anomaly` untuk `append`/`ledger` yang *sound-incomplete*) dan konfigurasi lemah yang dikenal wajib tertangkap:
 
 | Sistem | Gangguan | Verdict |
 | :--- | :--- | :--- |
-| etcd 3.5 (Docker, lewat `strife-agent`, dan di Kubernetes dalam kind) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable; transaksi strictly serializable |
-| PostgreSQL 17, primary SERIALIZABLE | kill -9, pause | strictly serializable |
-| PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation terpenuhi; **write skew (G2)** tertangkap pada serializable |
+| etcd 3.5 (Docker, lewat `strife-agent`, dan di Kubernetes dalam kind) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable (`kv`); tanpa anomali terdeteksi (`append` di `strict-serializable`, `--expect no-anomaly`) |
+| PostgreSQL 17, primary SERIALIZABLE | kill -9, pause | tanpa anomali terdeteksi di `strict-serializable` (`append`, `ledger`; `--expect no-anomaly`) |
+| PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation terpenuhi (`--expect no-anomaly`); **write skew (G2)** tertangkap pada serializable |
 | PostgreSQL 17, standby asinkron | partition | **pembacaan basi** tertangkap; `shrink --live` membuktikan tidak perlu gangguan apa pun |
-| MySQL 8.4 | freeze | SERIALIZABLE strictly serializable; **REPEATABLE READ melanggar snapshot isolation** |
-| TiDB 8.5 | freeze | mode optimistik memenuhi snapshot isolation; **mode pesimistik tidak** |
+| MySQL 8.4 | freeze | SERIALIZABLE lulus `--expect no-anomaly` di `strict-serializable`; **REPEATABLE READ melanggar snapshot isolation** |
+| TiDB 8.5 | freeze | mode optimistik lulus `--expect no-anomaly` di snapshot isolation; **mode pesimistis tidak** |
 | Valkey 8 | partition, pause, kill -9 | **pembacaan basi replika** tertangkap; primary tunggal dengan `appendfsync always` linearizable |
 | Kafka 3.9.1 dan 4.1.0 (KRaft) | partition, kill -9, pause | tidak ada rekaman diakui yang hilang atau terbalik urutannya; pembacaan basi pasca pergantian leader dilaporkan |
 
-**Ketepatan checker:** dalam uji silang *brute-force*, pemeriksa list-append tidak pernah salah menandai satu pun dari 150.030 riwayat valid dan berhasil menangkap 99,81% dari 49.970 riwayat yang cacat; pemeriksa transaksi register tidak salah menandai satu pun dari 40.000 riwayat valid. Setiap parser untuk byte yang tidak tepercaya (protokol jaringan, JSONL, Jepsen EDN, OpenTelemetry Span JSON, Wasm) terus di-fuzz di CI.
+**Ketepatan checker:** dalam uji silang *brute-force*, pemeriksa list-append tidak pernah salah menandai satu pun dari 150.030 riwayat valid dan berhasil menangkap 99,81% dari 49.970 riwayat yang cacat; pemeriksa transaksi register tidak salah menandai satu pun dari 40.000 riwayat valid, dan `TestDifferentialOptimizerEquivalence` menguji silang jalur cepat WGL (`eagerRead`, `kvPruner`) terhadap oracle *brute-force* pada riwayat kecil. Setiap parser untuk byte yang tidak tepercaya (protokol jaringan, JSONL, Jepsen EDN, OpenTelemetry Span JSON, Wasm) terus di-fuzz di CI.
 
 ---
 
@@ -511,12 +514,12 @@ site/             Situs produk interaktif & demo HTML5 mandiri (timeline, kampan
 
 | Perintah | Deskripsi |
 | :--- | :--- |
-| `strife sim [flags]` | Jalankan satu seed atau sapu `--seeds 1..N` di simulator deterministik (`--determinism`, `--shrink`, `--workload`, `--max-mttr`, `--min-availability`, `--junit`, `--sarif`, `--push` untuk satu seed) |
-| `strife campaign [flags]` | Jalankan kampanye multi-seed, hasilkan `campaign.html`, dan bandingkan dengan `--baseline` (`--expect no-regression`, `--junit`, `--sarif`, `--push`) |
+| `strife sim [flags]` | Jalankan satu seed atau sapu `--seeds 1..N` di simulator deterministik (`--determinism`, `--expect linearizable|violation|no-anomaly`, `--shrink`, `--workload`, `--max-mttr`, `--min-availability`, `--junit`, `--sarif`, `--push` untuk satu seed) |
+| `strife campaign [flags]` | Jalankan kampanye multi-seed, hasilkan `campaign.html`, dan bandingkan dengan `--baseline` (`--expect linearizable|violation|no-anomaly|no-regression`, `--junit`, `--sarif`, `--push`) |
 | `strife shrink [flags]` | Perkecil simulasi yang melanggar (`--seed` / `--report`) atau jejak terekam (`--history FILE`) hingga 1-minimal, atau jadwal langsung (`--live --config`) menjadi pereproduksi kandidat |
-| `strife check [flags]` | Verifikasi berkas `history.jsonl` / `.edn` / OTel `.json` terhadap `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`), ekspor EDN (`--export-edn`), tegakkan SLO (`--max-mttr`, `--min-availability`), hasilkan `--sarif`, atau dorong ke `strife serve` (`--push`) |
+| `strife check [flags]` | Verifikasi berkas `history.jsonl` / `.edn` / OTel `.json` terhadap `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`), tetapkan ekspektasi `--expect` (`linearizable`, `violation`, `no-anomaly`), ekspor EDN (`--export-edn`), tegakkan SLO (`--max-mttr`, `--min-availability`), hasilkan `--sarif`, atau dorong ke `strife serve` (`--push`) |
 | `strife plan [flags]` | Cetak jadwal gangguan ber-seed beserta perintah host/kontainer eksaknya tanpa mengeksekusi apa pun |
-| `strife run [flags]` | Eksekusi uji kekacauan langsung berdasarkan `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`, `--max-mttr`, `--min-availability`, `--sarif`, `--push`) |
+| `strife run [flags]` | Eksekusi uji kekacauan langsung berdasarkan `strife.json` (`--dry-run`, `--faults`, `--expect linearizable|violation|no-anomaly`, `--schedule`, `--max-mttr`, `--min-availability`, `--sarif`, `--push`) |
 | `strife doctor [flags]` | Periksa kapabilitas OS/cgroup host, transport, dan keterjangkauan endpoint cluster (`--config`, `--json`) |
 | `strife bench inject [flags]` | Ukur latensi injeksi gangguan per transport dan jenis gangguan (`--transports docker,agent`, `--json`, `--markdown`) |
 | `strife workload [flags]` | Daftar preset (`--list`), kompilasi spesifikasi ke `.wasm` (`--compile --out`), atau inspeksi plugin `.wasm` (`--inspect`) |
@@ -525,17 +528,17 @@ site/             Situs produk interaktif & demo HTML5 mandiri (timeline, kampan
 | `strife verify [flags]` | Verifikasi `bundle.json` bertanda tangan (beserta `history.jsonl` opsional) atau direktori rilis (`--release-dir`) dengan kunci publik Ed25519 |
 | `strife compliance [flags]` | Evaluasi laporan/kampanye dan bundel atestasi terhadap `dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp` (`--max-mttr`, `--min-availability`, `--sarif`, `--strict`) |
 | `strife ci-report [flags]` | Bandingkan laporan, kampanye, atau dossier kandidat dengan baseline untuk gerbang PR dan ringkasan Markdown (`--report`, `--baseline-report`, `--campaign`, `--baseline-campaign`, `--dossier`, `--max-mttr`, `--min-availability`, `--out`, `--json`) |
-| `strife serve [flags]` | Jalankan daemon HTTP verifikasi berkelanjutan & registri run self-hosted (`--listen`, `--store`, `--key`, `--tenant-keys`, `--token`, `--webhook`, `--max-mttr`, `--min-availability`) |
+| `strife serve [flags]` | Jalankan daemon HTTP verifikasi berkelanjutan & registri run self-hosted (`--listen`, `--store`, `--key`, `--tenant-keys`, `--token`, `--tenant-tokens`, `--job-lease`, `--webhook`, `--max-mttr`, `--min-availability`) |
 | `strife worker [flags]` | Jalankan worker jarak jauh berbasis pull yang mengambil dan mengeksekusi tugas dari `strife serve` (`--server`, `--token`, `--id`/`--worker-id`, `--tenant`, `--once`, `--poll-interval`/`--poll`) |
 | `strife version` | Cetak versi yang dicap saat build |
 | `strife systems` | Daftar sistem simulasi bawaan beserta kombinasi gangguan yang membuka bug-nya |
 
 **Kode Keluar:**
 
-- `0` — `linearizable` (atau cocok dengan `--expect` / seluruh kontrol kepatuhan & SLO lulus)
+- `0` — `linearizable` (atau cocok dengan `--expect`, termasuk `--expect no-anomaly` pada pemeriksaan *sound-incomplete* yang bersih / seluruh kontrol kepatuhan & SLO lulus)
 - `1` — `violation` (atau regresi / pelanggaran SLO / kegagalan kepatuhan / ketidakcocokan tanda tangan)
 - `2` — penggunaan CLI tidak valid atau galat konfigurasi
-- `3` — `unknown` (anggaran pencarian atau batas waktu checker habis tanpa verdict pasti)
+- `3` — `unknown` (anggaran pencarian atau batas waktu checker habis, atau keputusan `sound incomplete` tanpa `--expect no-anomaly`)
 - `4` — galat eksekusi runtime atau transport
 
 ---

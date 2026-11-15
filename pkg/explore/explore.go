@@ -43,6 +43,21 @@ func (s System) Model() model.Model {
 	return model.KV{}
 }
 
+// ExpectFlag returns the CLI --expect flag corresponding to this system's
+// expected verdict ("violation", "linearizable", or "no-anomaly" when using
+// a sound-incomplete transactional model).
+func (s System) ExpectFlag() string {
+	if s.Expect == checker.Violation {
+		return "violation"
+	}
+	switch s.Model().(type) {
+	case model.Ledger, model.Settlement, model.Append:
+		return "no-anomaly"
+	default:
+		return "linearizable"
+	}
+}
+
 // Systems lists the built-in simulated systems.
 func Systems() []System {
 	d := raft.Defaults()
@@ -337,6 +352,7 @@ func Determinism(cfg Config) (first, second *Result, ok bool, err error) {
 type Summary struct {
 	Seed      uint64          `json:"seed"`
 	Verdict   checker.Verdict `json:"verdict"`
+	Reason    string          `json:"reason,omitempty"`
 	Ops       int             `json:"ops"`
 	Faults    int             `json:"faults"`
 	TraceHash string          `json:"trace_hash"`
@@ -372,6 +388,26 @@ func Explore(base Config, seeds []uint64, workers int, onResult func(*Result)) [
 				} else {
 					s.Verdict, s.Ops, s.Faults, s.TraceHash = res.Check.Verdict, res.Check.Operations, len(res.Schedule.Faults), res.TraceHash
 					s.Elapsed = res.Elapsed
+					if res.Check.Verdict == checker.Unknown {
+						if res.Check.IsIncomplete() {
+							s.Reason = checker.ReasonIncomplete
+						} else {
+							for _, k := range res.Check.Keys {
+								if k.Verdict == checker.Unknown && k.Reason != "" && k.Reason != checker.ReasonIncomplete {
+									s.Reason = k.Reason
+									break
+								}
+							}
+							if s.Reason == "" {
+								for _, k := range res.Check.Keys {
+									if k.Verdict == checker.Unknown && k.Reason != "" {
+										s.Reason = k.Reason
+										break
+									}
+								}
+							}
+						}
+					}
 					if res.Check.Verdict == checker.Violation {
 						sys, _ := LookupSystem(cfg.System)
 						_ = checker.AddWitnesses(sys.Model(), res.History, &res.Check, checker.WitnessOptions{DiagnoseOnly: true})

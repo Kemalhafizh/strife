@@ -126,8 +126,8 @@ func TestLiveAppendWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Check.Model != "append" || res.Check.Verdict != checker.Linearizable {
-		t.Fatalf("a strictly serializable store must pass: %s %s", res.Check.Model, res.Check.Verdict)
+	if res.Check.Model != "append" || res.Check.Verdict != checker.Unknown || !res.Check.IsIncomplete() || !res.Check.NoAnomalyFound() {
+		t.Fatalf("a strictly serializable store (>16 ops) must be unknown/sound-incomplete: %s %s %+v", res.Check.Model, res.Check.Verdict, res.Check.Keys)
 	}
 	// Keys rotated: more distinct keys than slots, and every value unique.
 	keys, values := map[string]bool{}, map[int64]bool{}
@@ -148,6 +148,27 @@ func TestLiveAppendWorkload(t *testing.T) {
 	}
 	if len(keys) <= 3 || reads == 0 {
 		t.Fatalf("keys %d (want rotation past 3 slots), non-empty reads %d", len(keys), reads)
+	}
+}
+
+func TestLiveAppendSmallBoundedLinearizable(t *testing.T) {
+	cfg := testConfig()
+	cfg.Duration = Duration(60 * time.Millisecond)
+	cfg.Nemesis.Faults = nil
+	cfg.Workload = WorkloadConfig{Model: "append", Keys: 1, Concurrency: 1, Think: Duration(20 * time.Millisecond), Isolation: "strict-serializable"}
+	cfg.Defaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), cfg, Options{Transport: &transport.DryRun{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Check.Operations == 0 || res.Check.Operations > 16 {
+		t.Fatalf("expected bounded 1..16 ops, got %d", res.Check.Operations)
+	}
+	if res.Check.Model != "append" || res.Check.Verdict != checker.Linearizable {
+		t.Fatalf("bounded strictly serializable append history must verify linearizable: verdict=%s keys=%+v", res.Check.Verdict, res.Check.Keys)
 	}
 }
 
@@ -330,8 +351,8 @@ func TestLiveLedgerWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Check.Model != "ledger" || res.Check.Verdict != checker.Linearizable {
-		t.Fatalf("strictly serializable ledger store must pass: model=%s verdict=%s", res.Check.Model, res.Check.Verdict)
+	if res.Check.Model != "ledger" || res.Check.Verdict != checker.Unknown || !res.Check.IsIncomplete() || !res.Check.NoAnomalyFound() {
+		t.Fatalf("strictly serializable ledger store (>16 ops) must be unknown/sound-incomplete: model=%s verdict=%s keys=%+v", res.Check.Model, res.Check.Verdict, res.Check.Keys)
 	}
 	transfers, audits, finalAudits := 0, 0, 0
 	for _, op := range res.History {
@@ -430,8 +451,8 @@ func TestLiveSettlementWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Check.Model != "settlement" || res.Check.Verdict != checker.Linearizable {
-		t.Fatalf("atomic settlement store must pass: model=%s verdict=%s", res.Check.Model, res.Check.Verdict)
+	if res.Check.Model != "settlement" || res.Check.Verdict != checker.Unknown || !res.Check.IsIncomplete() || !res.Check.NoAnomalyFound() {
+		t.Fatalf("atomic settlement store (>16 ops) must be unknown/sound-incomplete: model=%s verdict=%s keys=%+v", res.Check.Model, res.Check.Verdict, res.Check.Keys)
 	}
 	writes, audits, finalAudits := 0, 0, 0
 	for _, op := range res.History {

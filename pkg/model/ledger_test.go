@@ -79,9 +79,22 @@ func TestLedgerValidDoubleEntryHistory(t *testing.T) {
 	}
 
 	m := model.Ledger{InitialBalance: 1000}
-	bad, witness, diag, kinds := m.Decide(ops)
-	if bad {
-		t.Fatalf("expected valid ledger history, got violation: %s (witness=%v, kinds=%v)", diag, witness, kinds)
+	st, witness, diag, kinds := m.Decide(ops)
+	if st != model.DecisionInconclusive {
+		t.Fatalf("expected valid non-empty ledger history to return DecisionInconclusive, got %s: %s (witness=%v, kinds=%v)", st, diag, witness, kinds)
+	}
+	if stEmpty, _, _, _ := m.Decide(nil); stEmpty != model.DecisionVerified {
+		t.Fatalf("expected empty ledger history to return DecisionVerified, got %s", stEmpty)
+	}
+	if m.SupportsCompleteSearch(ops) {
+		t.Fatal("default serializable Ledger should not claim SupportsCompleteSearch")
+	}
+	strict := model.Ledger{InitialBalance: 1000, Level: "strict-serializable"}
+	if !strict.SupportsCompleteSearch(ops) {
+		t.Fatal("strict-serializable Ledger with explicit InitialBalance and no Info writes should support complete search")
+	}
+	if ch := checker.CheckOperations(strict, ops, checker.Options{}); ch.Verdict != checker.Linearizable {
+		t.Fatalf("expected small strict-serializable ledger history to verify via bounded complete search, got %s", ch.Verdict)
 	}
 
 	rep := checker.CheckOperations(m, ops, checker.Options{SearchOnly: true})
@@ -102,9 +115,9 @@ func TestLedgerUnbalancedJournalViolation(t *testing.T) {
 	}
 
 	m := model.Ledger{InitialBalance: 1000}
-	bad, witness, diag, kinds := m.Decide(ops)
-	if !bad {
-		t.Fatal("expected LEDGER-UNBALANCED violation, got pass")
+	st, witness, diag, kinds := m.Decide(ops)
+	if st != model.DecisionViolation {
+		t.Fatalf("expected LEDGER-UNBALANCED violation, got %s", st)
 	}
 	if !slices.Contains(kinds, model.AnomalyLedgerUnbalanced) {
 		t.Fatalf("expected %s in kinds %v (diag=%s)", model.AnomalyLedgerUnbalanced, kinds, diag)
@@ -139,9 +152,9 @@ func TestLedgerOverdraftWriteSkewViolation(t *testing.T) {
 	}
 
 	m := model.Ledger{InitialBalance: 1000}
-	bad, witness, diag, kinds := m.Decide(ops)
-	if !bad {
-		t.Fatal("expected LEDGER-OVERDRAFT violation, got pass")
+	st, witness, diag, kinds := m.Decide(ops)
+	if st != model.DecisionViolation {
+		t.Fatalf("expected LEDGER-OVERDRAFT violation, got %s", st)
 	}
 	if !slices.Contains(kinds, model.AnomalyLedgerOverdraft) {
 		t.Fatalf("expected %s in kinds %v (diag=%s)", model.AnomalyLedgerOverdraft, kinds, diag)
@@ -171,9 +184,9 @@ func TestLedgerConservationAuditFracturedRead(t *testing.T) {
 	}
 
 	m := model.Ledger{InitialBalance: 1000}
-	bad, _, diag, kinds := m.Decide(ops)
-	if !bad {
-		t.Fatal("expected LEDGER-CONSERVATION violation, got pass")
+	st, _, diag, kinds := m.Decide(ops)
+	if st != model.DecisionViolation {
+		t.Fatalf("expected LEDGER-CONSERVATION violation, got %s", st)
 	}
 	if !slices.Contains(kinds, model.AnomalyLedgerConservation) {
 		t.Fatalf("expected %s in kinds %v (diag=%s)", model.AnomalyLedgerConservation, kinds, diag)
@@ -203,9 +216,9 @@ func TestLedgerDoubleSpendAcrossTimeoutRetry(t *testing.T) {
 	}
 
 	m := model.Ledger{InitialBalance: 1000}
-	bad, witness, diag, kinds := m.Decide(ops)
-	if !bad {
-		t.Fatal("expected LEDGER-DOUBLE-SPEND violation, got pass")
+	st, witness, diag, kinds := m.Decide(ops)
+	if st != model.DecisionViolation {
+		t.Fatalf("expected LEDGER-DOUBLE-SPEND violation, got %s", st)
 	}
 	if !slices.Contains(kinds, model.AnomalyLedgerDoubleSpend) {
 		t.Fatalf("expected %s in kinds %v (diag=%s)", model.AnomalyLedgerDoubleSpend, kinds, diag)
@@ -247,7 +260,11 @@ func TestLedgerIndeterminateWriteDoesNotCauseFalseG2(t *testing.T) {
 	}
 
 	m := model.Ledger{InitialBalance: 1000}
-	if bad, witness, diag, kinds := m.Decide(ops); bad {
-		t.Fatalf("expected linearizable ledger history, got violation: %s (witness=%v, kinds=%v)", diag, witness, kinds)
+	if st, witness, diag, kinds := m.Decide(ops); st != model.DecisionInconclusive {
+		t.Fatalf("expected valid non-empty ledger history to return DecisionInconclusive, got %s: %s (witness=%v, kinds=%v)", st, diag, witness, kinds)
+	}
+	strict := model.Ledger{InitialBalance: 1000, Level: "strict-serializable"}
+	if strict.SupportsCompleteSearch(ops) {
+		t.Fatal("ledger history with Info write micro-ops must not claim SupportsCompleteSearch")
 	}
 }

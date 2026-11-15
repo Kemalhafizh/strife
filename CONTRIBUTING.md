@@ -42,8 +42,9 @@ go test ./...
 # 4. Determinism & shrinking smoke check
 go build -o bin/strife ./cmd/strife
 ./bin/strife sim --system raft --seeds 1..50 --determinism --expect linearizable --out ""
-./bin/strife sim --system raft-ledger --seeds 1..20 --determinism --expect linearizable --out ""
-./bin/strife sim --system outbox-settlement --seeds 1..20 --determinism --expect linearizable --out ""
+./bin/strife sim --system raft-ledger --seeds 1..20 --determinism --expect no-anomaly --out ""
+./bin/strife sim --system 2pc-ledger --seeds 1..20 --determinism --expect no-anomaly --out ""
+./bin/strife sim --system outbox-settlement --seeds 1..20 --determinism --expect no-anomaly --out ""
 ```
 
 ### Website & WebAssembly Bridge Checks
@@ -82,7 +83,7 @@ go test -run '^$' -fuzz '^FuzzKafkaRecords$' -fuzztime 15s ./pkg/client
 ## Where to Make Changes
 
 - **Consistency models (`pkg/model`, `pkg/checker`, `pkg/txn`):**
-  Implement `model.Model` (and optionally `model.Diagnoser`, `model.Decider`, or `model.ReadOnly` for direct witness extraction or eager read linearization), register the model in [`model.ByName`](pkg/model/model.go) and `model.Names()`, and add unit + brute-force cross-check tests in `pkg/model` and `pkg/txn`.
+  Implement `model.Model` (and optionally `model.Diagnoser`, `model.Decider` returning 3-state `DecisionStatus`, `model.CompleteSearcher`, or `model.ReadOnly` for direct witness extraction or eager read linearization), register the model in [`model.ByName`](pkg/model/model.go) and `model.Names()`, and add unit + brute-force cross-check tests in `pkg/model` and `pkg/txn` plus differential WGL optimizer equivalence checks in `pkg/checker`.
 - **Simulated systems or bug modes (`pkg/sim`, `pkg/sim/raft`, `pkg/explore`):**
   Register the system in [`explore.Systems()`](pkg/explore/explore.go) with its `Expect` verdict and recommended faults, add regression tests in [`pkg/explore/explore_test.go`](pkg/explore/explore_test.go), and record empirical measurements in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 - **Live database clients (`pkg/client`, `pkg/runner`):**

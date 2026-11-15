@@ -14,7 +14,7 @@ import sys
 
 outcome, out_dir = sys.argv[1], sys.argv[2]
 reports = glob.glob(f"{out_dir}/*/report.json")
-if outcome not in ("passed", "violation") or len(reports) != 1:
+if outcome not in ("passed", "violation", "inconclusive") or len(reports) != 1:
     sys.exit(f"unexpected outcome {outcome!r} with reports {reports}")
 report = json.load(open(reports[0]))
 kinds = set()
@@ -22,6 +22,16 @@ for key in report["check"]["keys"]:
     kinds |= set((key.get("counterexample") or {}).get("anomalies") or [])
 if outcome == "violation" and not kinds:
     sys.exit("violation without a listed anomaly")
+if outcome == "inconclusive":
+    if kinds:
+        sys.exit(f"inconclusive outcome still listed anomalies: {sorted(kinds)}")
+    non_incomplete = [
+        k.get("reason") or "unknown"
+        for k in report["check"]["keys"]
+        if k.get("verdict") == "unknown" and k.get("reason") != "sound incomplete"
+    ]
+    if non_incomplete:
+        sys.exit(f"inconclusive beyond sound incomplete: {non_incomplete}")
 unexpected = kinds - {"G-realtime"}
 if unexpected:
     sys.exit(f"anomalies beyond stale reads: {sorted(unexpected)}")

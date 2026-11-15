@@ -23,9 +23,12 @@ func TestSettlementModelValidHistory(t *testing.T) {
 	}
 
 	m := Settlement{}
-	violation, witness, diag, kinds := m.Decide(ops)
-	if violation {
-		t.Fatalf("expected valid settlement history, got violation: %s (kinds=%v, witness=%v)", diag, kinds, witness)
+	st, witness, diag, kinds := m.Decide(ops)
+	if st != DecisionInconclusive {
+		t.Fatalf("expected valid non-empty settlement history to return DecisionInconclusive (sound incomplete), got %s: %s (kinds=%v, witness=%v)", st, diag, kinds, witness)
+	}
+	if stEmpty, _, _, _ := m.Decide(nil); stEmpty != DecisionVerified {
+		t.Fatalf("expected empty settlement history to return DecisionVerified, got %s", stEmpty)
 	}
 }
 
@@ -45,9 +48,9 @@ func TestSettlementDetectsAtomicityViolation(t *testing.T) {
 	}
 
 	m := Settlement{}
-	violation, _, diag, kinds := m.Decide(ops)
-	if !violation || !slices.Contains(kinds, AnomalySettlementAtomicity) {
-		t.Fatalf("expected %s violation, got violation=%v kinds=%v diag=%q", AnomalySettlementAtomicity, violation, kinds, diag)
+	st, _, diag, kinds := m.Decide(ops)
+	if st != DecisionViolation || !slices.Contains(kinds, AnomalySettlementAtomicity) {
+		t.Fatalf("expected %s violation, got status=%s kinds=%v diag=%q", AnomalySettlementAtomicity, st, kinds, diag)
 	}
 }
 
@@ -62,9 +65,9 @@ func TestSettlementDetectsOrphanCreditAndDuplicate(t *testing.T) {
 	}
 
 	m := Settlement{}
-	violation, _, diag, kinds := m.Decide(ops)
-	if !violation {
-		t.Fatalf("expected violation, got none")
+	st, _, diag, kinds := m.Decide(ops)
+	if st != DecisionViolation {
+		t.Fatalf("expected violation, got %s", st)
 	}
 	if !slices.Contains(kinds, AnomalySettlementOrphan) || !slices.Contains(kinds, AnomalySettlementIdempotency) {
 		t.Fatalf("expected both %s and %s, got kinds=%v (diag=%s)",

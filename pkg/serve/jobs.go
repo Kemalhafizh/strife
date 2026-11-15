@@ -2,6 +2,9 @@ package serve
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,27 +31,33 @@ const (
 // Job represents a verification task queued in strife serve for pull-based
 // execution by a remote or private-VPC strife worker.
 type Job struct {
-	ID          string          `json:"id"`
-	Tenant      string          `json:"tenant,omitempty"`
-	Kind        string          `json:"kind"` // "sim", "campaign", or "run"
-	System      string          `json:"system,omitempty"`
-	Seed        uint64          `json:"seed,omitempty"`
-	Seeds       string          `json:"seeds,omitempty"`
-	Nodes       int             `json:"nodes,omitempty"`
-	Clients     int             `json:"clients,omitempty"`
-	Duration    string          `json:"duration,omitempty"`
-	Faults      string          `json:"faults,omitempty"`
-	LiveConfig  json.RawMessage `json:"live_config,omitempty"`
-	Commit      string          `json:"commit,omitempty"`
-	Branch      string          `json:"branch,omitempty"`
-	Status      string          `json:"status"`
-	WorkerID    string          `json:"worker_id,omitempty"`
-	CreatedAt   string          `json:"created_at"`
-	ClaimedAt   string          `json:"claimed_at,omitempty"`
-	CompletedAt string          `json:"completed_at,omitempty"`
-	RunID       string          `json:"run_id,omitempty"`
-	Verdict     checker.Verdict `json:"verdict,omitempty"`
-	Error       string          `json:"error,omitempty"`
+	ID              string          `json:"id"`
+	Tenant          string          `json:"tenant,omitempty"`
+	Kind            string          `json:"kind"` // "sim", "campaign", or "run"
+	System          string          `json:"system,omitempty"`
+	Seed            uint64          `json:"seed,omitempty"`
+	Seeds           string          `json:"seeds,omitempty"`
+	Nodes           int             `json:"nodes,omitempty"`
+	Clients         int             `json:"clients,omitempty"`
+	Duration        string          `json:"duration,omitempty"`
+	Faults          string          `json:"faults,omitempty"`
+	LiveConfig      json.RawMessage `json:"live_config,omitempty"`
+	Commit          string          `json:"commit,omitempty"`
+	Branch          string          `json:"branch,omitempty"`
+	Status          string          `json:"status"`
+	WorkerID        string          `json:"worker_id,omitempty"`
+	ClaimToken      string          `json:"claim_token,omitempty"`
+	CreatedAt       string          `json:"created_at"`
+	ClaimedAt       string          `json:"claimed_at,omitempty"`
+	LastHeartbeatAt string          `json:"last_heartbeat_at,omitempty"`
+	LeaseExpiresAt  string          `json:"lease_expires_at,omitempty"`
+	CompletedAt     string          `json:"completed_at,omitempty"`
+	Attempts        int             `json:"attempts,omitempty"`
+	RunID           string          `json:"run_id,omitempty"`
+	Verdict         checker.Verdict `json:"verdict,omitempty"`
+	Error           string          `json:"error,omitempty"`
+
+	completing bool `json:"-"`
 }
 
 // JobClaimRequest is sent by a worker to claim the next pending job.
@@ -57,12 +66,54 @@ type JobClaimRequest struct {
 	Tenant   string `json:"tenant,omitempty"`
 }
 
+// JobHeartbeatRequest is sent periodically by a claiming worker to renew its lease.
+type JobHeartbeatRequest struct {
+	WorkerID   string `json:"worker_id"`
+	ClaimToken string `json:"claim_token"`
+}
+
 // JobCompleteRequest is sent by a worker when a claimed job finishes.
 type JobCompleteRequest struct {
-	WorkerID string             `json:"worker_id,omitempty"`
-	Error    string             `json:"error,omitempty"`
-	Report   *report.Report     `json:"report,omitempty"`
-	Campaign *campaign.Manifest `json:"campaign,omitempty"`
+	WorkerID   string             `json:"worker_id,omitempty"`
+	ClaimToken string             `json:"claim_token,omitempty"`
+	Error      string             `json:"error,omitempty"`
+	Report     *report.Report     `json:"report,omitempty"`
+	Campaign   *campaign.Manifest `json:"campaign,omitempty"`
+}
+
+func newClaimToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+func claimTokensEqual(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (s *Server) isJobLeaseExpired(j *Job, now time.Time) bool {
+	if j.Status != JobClaimed || j.completing {
+		return false
+	}
+	if j.LeaseExpiresAt != "" {
+		exp, err := time.Parse(time.RFC3339Nano, j.LeaseExpiresAt)
+		if err != nil {
+			return true
+		}
+		return !now.Before(exp)
+	}
+	if j.ClaimedAt != "" {
+		claimed, err := time.Parse(time.RFC3339Nano, j.ClaimedAt)
+		if err == nil {
+			return !now.Before(claimed.Add(s.cfg.JobLease))
+		}
+	}
+	return true
 }
 
 func (s *Server) loadJobs() error {
@@ -102,33 +153,7 @@ func (s *Server) saveJobsLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(s.store.Dir(), ".jobs-*.json.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, p); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+	return atomicWriteFileSync(p, append(data, '\n'), 0o600)
 }
 
 func (s *Server) handleTrends(w http.ResponseWriter, r *http.Request) {
@@ -136,8 +161,19 @@ func (s *Server) handleTrends(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	idAuth, ok := s.checkAuthIdentity(w, r)
+	if !ok {
+		return
+	}
 	target := strings.TrimSpace(r.URL.Query().Get("target"))
 	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	if !idAuth.isAdmin {
+		if tenant != "" && normalizeTenant(tenant) != idAuth.tenant {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
+			return
+		}
+		tenant = idAuth.tenant
+	}
 	points := s.store.Trends(target, tenant)
 	resp := map[string]any{
 		"target": target,
@@ -153,12 +189,22 @@ func (s *Server) handleTrends(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		idAuth, ok := s.checkAuthIdentity(w, r)
+		if !ok {
+			return
+		}
 		statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
 		tenantFilter := strings.TrimSpace(r.URL.Query().Get("tenant"))
 		if tenantFilter != "" {
 			tenantFilter = normalizeTenant(tenantFilter)
 		}
-		authed := s.hasValidAuth(r)
+		if !idAuth.isAdmin {
+			if tenantFilter != "" && tenantFilter != idAuth.tenant {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
+				return
+			}
+			tenantFilter = idAuth.tenant
+		}
 		s.jobMu.Lock()
 		var out []Job
 		for i := len(s.jobs) - 1; i >= 0; i-- {
@@ -169,9 +215,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			if tenantFilter != "" && normalizeTenant(j.Tenant) != tenantFilter {
 				continue
 			}
-			if !authed {
-				j.LiveConfig = nil
-			}
+			j.ClaimToken = ""
 			out = append(out, j)
 		}
 		s.jobMu.Unlock()
@@ -181,7 +225,8 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodPost:
-		if !s.checkAuth(w, r) {
+		idAuth, ok := s.checkAuthIdentity(w, r)
+		if !ok {
 			return
 		}
 		const maxJobBodyBytes = 4 * 1024 * 1024
@@ -204,6 +249,13 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Tenant != "" {
 			req.Tenant = normalizeTenant(req.Tenant)
+		}
+		if !idAuth.isAdmin {
+			if req.Tenant != "" && req.Tenant != idAuth.tenant {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
+				return
+			}
+			req.Tenant = idAuth.tenant
 		}
 		if req.Kind == "" {
 			req.Kind = "sim"
@@ -276,6 +328,11 @@ func (s *Server) handleJobsSubpath(w http.ResponseWriter, r *http.Request) {
 		s.handleJobClaim(w, r)
 		return
 	}
+	if strings.HasSuffix(sub, "/heartbeat") {
+		id := strings.TrimSuffix(sub, "/heartbeat")
+		s.handleJobHeartbeat(w, r, id)
+		return
+	}
 	if strings.HasSuffix(sub, "/complete") {
 		id := strings.TrimSuffix(sub, "/complete")
 		s.handleJobComplete(w, r, id)
@@ -285,15 +342,16 @@ func (s *Server) handleJobsSubpath(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	authed := s.hasValidAuth(r)
+	idAuth, ok := s.checkAuthIdentity(w, r)
+	if !ok {
+		return
+	}
 	s.jobMu.Lock()
 	var found *Job
 	for _, j := range s.jobs {
 		if j.ID == sub {
 			c := *j
-			if !authed {
-				c.LiveConfig = nil
-			}
+			c.ClaimToken = ""
 			found = &c
 			break
 		}
@@ -301,6 +359,10 @@ func (s *Server) handleJobsSubpath(w http.ResponseWriter, r *http.Request) {
 	s.jobMu.Unlock()
 	if found == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("job %q not found", sub)})
+		return
+	}
+	if !idAuth.allowsTenant(found.Tenant) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: job belongs to another tenant"})
 		return
 	}
 	writeJSON(w, http.StatusOK, found)
@@ -311,7 +373,8 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !s.checkAuth(w, r) {
+	idAuth, ok := s.checkAuthIdentity(w, r)
+	if !ok {
 		return
 	}
 	const maxClaimBodyBytes = 64 * 1024
@@ -344,23 +407,41 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 	if req.Tenant != "" {
 		wantTenant = normalizeTenant(req.Tenant)
 	}
+	if !idAuth.isAdmin {
+		if wantTenant != "" && wantTenant != idAuth.tenant {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
+			return
+		}
+		wantTenant = idAuth.tenant
+	}
 
 	s.jobMu.Lock()
 	var claimed *Job
 	var saveErr error
+	now := time.Now().UTC()
 	for _, j := range s.jobs {
-		if j.Status != JobPending {
+		if j.Status != JobPending && !s.isJobLeaseExpired(j, now) {
 			continue
 		}
 		if wantTenant != "" && normalizeTenant(j.Tenant) != wantTenant {
 			continue
 		}
-		prevStatus, prevWorker, prevClaimed := j.Status, j.WorkerID, j.ClaimedAt
+		tok, tokErr := newClaimToken()
+		if tokErr != nil {
+			saveErr = tokErr
+			break
+		}
+		prev := *j
+		nowStr := now.Format(time.RFC3339Nano)
 		j.Status = JobClaimed
 		j.WorkerID = req.WorkerID
-		j.ClaimedAt = time.Now().UTC().Format(time.RFC3339)
+		j.ClaimToken = tok
+		j.ClaimedAt = nowStr
+		j.LastHeartbeatAt = nowStr
+		j.LeaseExpiresAt = now.Add(s.cfg.JobLease).Format(time.RFC3339Nano)
+		j.Attempts++
 		if err := s.saveJobsLocked(); err != nil {
-			j.Status, j.WorkerID, j.ClaimedAt = prevStatus, prevWorker, prevClaimed
+			*j = prev
 			saveErr = err
 			break
 		}
@@ -381,12 +462,94 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, claimed)
 }
 
+func (s *Server) handleJobHeartbeat(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	idAuth, ok := s.checkAuthIdentity(w, r)
+	if !ok {
+		return
+	}
+	const maxHeartbeatBodyBytes = 64 * 1024
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxHeartbeatBodyBytes+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(body) > maxHeartbeatBodyBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "job heartbeat body exceeds 64 KiB limit"})
+		return
+	}
+	var req JobHeartbeatRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid json: %v", err)})
+		return
+	}
+
+	s.jobMu.Lock()
+	var targetJob *Job
+	for _, j := range s.jobs {
+		if j.ID == id {
+			targetJob = j
+			break
+		}
+	}
+	if targetJob == nil {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("job %q not found", id)})
+		return
+	}
+	if !idAuth.allowsTenant(targetJob.Tenant) {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: job belongs to another tenant"})
+		return
+	}
+	if targetJob.Status != JobClaimed || targetJob.completing {
+		status := targetJob.Status
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q cannot accept heartbeat in state %q", id, status)})
+		return
+	}
+	now := time.Now().UTC()
+	if s.isJobLeaseExpired(targetJob, now) {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q claim lease has expired", id)})
+		return
+	}
+	if req.WorkerID == "" || req.WorkerID != targetJob.WorkerID {
+		claimedBy := targetJob.WorkerID
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is claimed by worker %q, not %q", id, claimedBy, req.WorkerID)})
+		return
+	}
+	if targetJob.ClaimToken != "" && !claimTokensEqual(req.ClaimToken, targetJob.ClaimToken) {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q claim token mismatch", id)})
+		return
+	}
+	prev := *targetJob
+	targetJob.LastHeartbeatAt = now.Format(time.RFC3339Nano)
+	targetJob.LeaseExpiresAt = now.Add(s.cfg.JobLease).Format(time.RFC3339Nano)
+	if err := s.saveJobsLocked(); err != nil {
+		*targetJob = prev
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("persist job heartbeat: %v", err)})
+		return
+	}
+	jobCopy := *targetJob
+	jobCopy.ClaimToken = ""
+	s.jobMu.Unlock()
+	writeJSON(w, http.StatusOK, jobCopy)
+}
+
 func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !s.checkAuth(w, r) {
+	idAuth, ok := s.checkAuthIdentity(w, r)
+	if !ok {
 		return
 	}
 	const maxCompleteBodyBytes = 32 * 1024 * 1024
@@ -418,16 +581,34 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("job %q not found", id)})
 		return
 	}
-	if targetJob.Status == JobCompleted || targetJob.Status == JobFailed {
+	if !idAuth.allowsTenant(targetJob.Tenant) {
 		s.jobMu.Unlock()
-		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is already %s", id, targetJob.Status)})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: job belongs to another tenant"})
 		return
 	}
-	if targetJob.WorkerID != "" && req.WorkerID != "" && targetJob.WorkerID != req.WorkerID {
+	if targetJob.Status != JobClaimed {
+		status := targetJob.Status
 		s.jobMu.Unlock()
-		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is claimed by worker %q, not %q", id, targetJob.WorkerID, req.WorkerID)})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is %s, not claimed", id, status)})
 		return
 	}
+	if targetJob.completing {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q completion already in progress", id)})
+		return
+	}
+	if req.WorkerID == "" || (targetJob.WorkerID != "" && targetJob.WorkerID != req.WorkerID) {
+		claimedBy := targetJob.WorkerID
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is claimed by worker %q, not %q", id, claimedBy, req.WorkerID)})
+		return
+	}
+	if targetJob.ClaimToken != "" && !claimTokensEqual(req.ClaimToken, targetJob.ClaimToken) {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q claim token mismatch", id)})
+		return
+	}
+	targetJob.completing = true
 	tenant := targetJob.Tenant
 	commit := targetJob.Commit
 	branch := targetJob.Branch
@@ -443,6 +624,9 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		}
 		res, err := s.store.IngestCampaign(req.Campaign, tenant)
 		if err != nil {
+			s.jobMu.Lock()
+			targetJob.completing = false
+			s.jobMu.Unlock()
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -452,6 +636,9 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		priv, signer := s.signingKeyForTenant(tenant)
 		res, err := s.store.IngestReport(req.Report, commit, branch, priv, signer, tenant)
 		if err != nil {
+			s.jobMu.Lock()
+			targetJob.completing = false
+			s.jobMu.Unlock()
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -460,16 +647,12 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 	}
 
 	s.jobMu.Lock()
-	if targetJob.Status == JobCompleted || targetJob.Status == JobFailed {
-		s.jobMu.Unlock()
-		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is already %s", id, targetJob.Status)})
-		return
-	}
 	prevJob := *targetJob
 	targetJob.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-	if req.WorkerID != "" {
-		targetJob.WorkerID = req.WorkerID
-	}
+	targetJob.WorkerID = req.WorkerID
+	targetJob.ClaimToken = ""
+	targetJob.LeaseExpiresAt = ""
+	targetJob.completing = false
 	targetJob.Error = req.Error
 	if ingestRes != nil {
 		targetJob.RunID = ingestRes.Entry.ID

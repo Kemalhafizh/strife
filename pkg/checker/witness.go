@@ -107,16 +107,23 @@ const defaultWitnessSteps = 1_000_000
 func Witness(m model.Model, part []history.Operation, o WitnessOptions) ([]history.Operation, string) {
 	if d, ok := m.(model.Decider); ok {
 		// The decision procedure already names the anomaly and its
-		// transactions; searching would be both slow and pointless.
-		bad, idx, diag, _ := d.Decide(part)
-		if !bad {
+		// transactions when it finds one; searching would be both slow and pointless.
+		status, idx, diag, _ := d.Decide(part)
+		switch status {
+		case model.DecisionViolation:
+			w := make([]history.Operation, len(idx))
+			for i, j := range idx {
+				w[i] = part[j]
+			}
+			return w, diag
+		case model.DecisionVerified:
 			return nil, ""
+		case model.DecisionInconclusive:
+			if cs, ok := m.(model.CompleteSearcher); !ok || !cs.SupportsCompleteSearch(part) ||
+				len(part) > completeSearchMaxOps || countInfoOps(part) > completeSearchMaxInfoOps {
+				return nil, ""
+			}
 		}
-		w := make([]history.Operation, len(idx))
-		for i, j := range idx {
-			w[i] = part[j]
-		}
-		return w, diag
 	}
 	if d, ok := m.(model.Diagnoser); ok {
 		if idx, diag, ok := d.Diagnose(part); ok {

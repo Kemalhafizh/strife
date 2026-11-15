@@ -150,7 +150,7 @@
     out.push(h("div", { class: "result-head" },
       verdictBadge(res.verdict),
       h("span", { class: "muted small" },
-        `${nf.format(res.events)} ${t("try_events")} · ${nf.format(ops.invocations || 0)} ${t("try_ops")} ` +
+        `${res.reason ? `${res.reason} · ` : ""}${nf.format(res.events)} ${t("try_events")} · ${nf.format(ops.invocations || 0)} ${t("try_ops")} ` +
         `(${nf.format(ops.ok || 0)} ${t("try_ok")}, ${nf.format(ops.fail || 0)} ${t("try_fail")}, ${nf.format(ops.info || 0)} ${t("try_info")}) · ${nf.format(ms)} ms ${t("try_elapsed")}`)));
 
     if (res.failures && res.failures.length) {

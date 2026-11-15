@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/kemalhafizh/strife/pkg/checker"
@@ -20,12 +21,35 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	idAuth, ok := s.checkAuthIdentity(w, r)
+	if !ok {
+		return
+	}
 
 	targetFilter := strings.TrimSpace(r.URL.Query().Get("target"))
 	tenantFilter := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	if !idAuth.isAdmin {
+		if tenantFilter != "" && normalizeTenant(tenantFilter) != idAuth.tenant {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
+			return
+		}
+		tenantFilter = idAuth.tenant
+	}
+
 	runs := s.store.List(targetFilter, "", tenantFilter)
-	targets := s.store.Targets()
-	tenants := s.store.Tenants()
+	var targets, tenants []string
+	if idAuth.isAdmin {
+		targets = s.store.Targets()
+		tenants = s.store.Tenants()
+	} else {
+		for _, e := range s.store.List("", "", idAuth.tenant) {
+			if e.Target != "" && !slices.Contains(targets, e.Target) {
+				targets = append(targets, e.Target)
+			}
+		}
+		slices.Sort(targets)
+		tenants = []string{idAuth.tenant}
+	}
 	series := s.store.Series(tenantFilter, targetFilter)
 
 	var totalRuns, passRuns, violationRuns, totalRegressions, signedCount int

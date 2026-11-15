@@ -8,6 +8,23 @@ All notable changes to Strife. The format follows
 [`schemas/`](schemas/) are versioned contracts: within a major version they
 only gain optional fields.
 
+## [Unreleased]
+
+### Fixed
+
+- **Honest sound-incomplete transaction verdicts (`pkg/model`, `pkg/checker`, `pkg/compliance`):**
+  - Replace the binary `model.Decider` return with a three-state `DecisionStatus` (`DecisionViolation`, `DecisionVerified`, `DecisionInconclusive`).
+  - Sound-incomplete models (`append`, `ledger`, `settlement`) now return `DecisionInconclusive` instead of claiming a complete `linearizable` proof when no anomaly is detected (empty histories remain `DecisionVerified`).
+  - Add bounded exhaustive WGL search (`<= 16` operations, `<= 4` `info` operations, `<= 500,000` steps) via `model.CompleteSearcher` for eligible `strict-serializable` histories, falling back to `Verdict: Unknown` with `Reason: "sound incomplete"` when bounds are exceeded.
+  - Add `--expect no-anomaly` across `strife sim`, `strife campaign`, `strife check`, `strife run`, reports, CI workflows, and the Wasm bridge, and preserve `ReasonIncomplete` in `schemas/campaign.v1.json`.
+  - Grade compliance controls backed by sound-incomplete verdicts as `PARTIAL` (with explicit Methodology & Scope Boundaries disclosure) instead of `PASS` (`FAIL` remains unchanged on violations or budget exhaustion).
+- **WGL optimizer equivalence verification (`pkg/checker`):**
+  - Add `TestDifferentialOptimizerEquivalence` comparing the default optimized solver, `SearchOnly`, disabled `eagerRead`, disabled `kvPruner`, and unoptimized WGL against a brute-force oracle across randomized histories.
+- **`strife serve` multi-tenant auth and job lease recovery (`pkg/serve`):**
+  - Enforce fail-closed Bearer authentication (`--token` admin and `--tenant-tokens tenant=secret`) across the embedded dashboard (`/`) and `/api/v1/*` endpoints while keeping `GET /api/v1/keys` public and redacting details on unauthenticated `GET /api/v1/health`.
+  - Restrict `GET /api/v1/webhooks` to admin tokens (`403` for tenant-scoped tokens) and enforce strict `403` tenant isolation across runs, dossiers, series, trends, and jobs.
+  - Add worker job `claim_token`, configurable `--job-lease` (default `2m`), `POST /api/v1/jobs/<id>/heartbeat`, automatic background worker heartbeats, expired-lease reclaim on `claim`, `completing` concurrency guards (`409 Conflict`), and atomic persistence for `jobs.json` and `campaign.json`.
+
 ## [1.0.0] - 2026-11-14
 
 ### Added (1.0.0)

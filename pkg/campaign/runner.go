@@ -149,6 +149,18 @@ func Run(ctx context.Context, opts Options) (*Manifest, error) {
 						rec.Availability = resil.OverallAvailability
 						rec.MTTRP95Ms = resil.MTTR.P95.Milliseconds()
 					}
+					if res.Check.Verdict == checker.Unknown {
+						if res.Check.IsIncomplete() {
+							rec.Reason = checker.ReasonIncomplete
+						} else {
+							for _, k := range res.Check.Keys {
+								if k.Verdict == checker.Unknown && k.Reason != "" {
+									rec.Reason = k.Reason
+									break
+								}
+							}
+						}
+					}
 
 					if res.Check.Verdict == checker.Violation {
 						mSpec := model.Model(model.KV{})

@@ -100,7 +100,7 @@ violation)
   echo "::error title=Strife found a consistency violation::strife $sub exited with code 1. The job summary, the JUnit report and the uploaded reports contain the counterexample and a one-line reproduction command."
   ;;
 inconclusive)
-  echo "::warning title=Strife was inconclusive::The checker's search budget ran out before a verdict (exit code 3). Raise --max-steps or shorten the history."
+  echo "::warning title=Strife was inconclusive::The checker returned unknown (exit code 3), either because a search budget ran out (--max-steps) or a transactional check found no anomalies under a sound-incomplete model (pass --expect no-anomaly to accept)."
   ;;
 usage-error | error)
   echo "::error title=Strife failed to run::strife $sub exited with code $code."

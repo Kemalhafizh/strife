@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kemalhafizh/strife/pkg/campaign"
+	"github.com/kemalhafizh/strife/pkg/checker"
+	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/report"
 	"github.com/kemalhafizh/strife/pkg/serve"
 )
@@ -455,10 +458,14 @@ func TestDoctorAndSettlementAndEDNCheck(t *testing.T) {
 		t.Fatalf("doctor --json failed (%d):\n%s", code, out)
 	}
 
-	// 2. outbox-settlement passes and outbox-dual-write finds a violation
+	// 2. outbox-settlement finishes with sound-incomplete no-anomaly (exitUnknown without --expect, exitOK with --expect no-anomaly), and outbox-dual-write finds a violation
 	code, out = runCLI(t, "sim", "--system", "outbox-settlement", "--seed", "1", "--duration", "3s", "--out", "")
-	if code != exitOK || !strings.Contains(out, "verdict: LINEARIZABLE") {
-		t.Fatalf("outbox-settlement failed (%d):\n%s", code, out)
+	if code != exitUnknown || !strings.Contains(out, "sound incomplete") {
+		t.Fatalf("outbox-settlement without --expect should exit %d (sound incomplete), got (%d):\n%s", exitUnknown, code, out)
+	}
+	code, out = runCLI(t, "sim", "--system", "outbox-settlement", "--seed", "1", "--duration", "3s", "--expect", "no-anomaly", "--out", "")
+	if code != exitOK {
+		t.Fatalf("outbox-settlement --expect no-anomaly failed (%d):\n%s", code, out)
 	}
 
 	code, out = runCLI(t, "sim", "--system", "outbox-dual-write", "--seeds", "1..15", "--duration", "3s", "--expect", "violation", "--out", "")
@@ -781,14 +788,209 @@ func TestCLIUsageValidationAcrossSubcommands(t *testing.T) {
 		{"run", "--max-mttr", "-1ms", "--config", "../../testdata/memory.json"},
 		{"compliance", "--min-availability", "150", "--report", "r.json"},
 		{"serve", "--min-availability", "-1"},
+		{"serve", "--job-lease", "0s"},
+		{"serve", "--job-lease", "-5s"},
+		{"serve", "--tenant-tokens", "malformed"},
+		{"serve", "--tenant-tokens", "alpha="},
+		{"serve", "--tenant-tokens", "alpha=tok1,alpha=tok2"},
+		{"serve", "--tenant-tokens", "alpha=env:STRIFE_UNSET_TOKEN_ENV_VAR"},
 		{"worker", "--poll", "-1s"},
 		{"ci-report"},
 		{"ci-report", "--report", "r.json", "--max-mttr", "-5ms"},
 		{"ci-report", "--dossier", "d.json", "--baseline-report", "b.json"},
+		{"sim", "--expect", "bogus"},
+		{"check", "--expect", "bogus", "--history", "h.jsonl"},
+		{"run", "--expect", "bogus", "--config", "../../testdata/memory.json"},
+		{"campaign", "--expect", "bogus"},
+		{"ci-report", "--expect", "bogus", "--report", "r.json"},
 	}
 	for _, args := range cases {
 		if code, out := runCLI(t, args...); code != exitUsage {
 			t.Errorf("%v: want exitUsage (%d), got %d:\n%s", args, exitUsage, code, out)
 		}
+	}
+}
+
+func TestServeCLITenantTokensAndJobLease(t *testing.T) {
+	dir := t.TempDir()
+	emptySecretFile := filepath.Join(dir, "empty.tok")
+	if err := os.WriteFile(emptySecretFile, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCLI(t, "serve", "--tenant-tokens", "alpha=file:"+emptySecretFile); code != exitUsage || !strings.Contains(out, "empty resolved token") {
+		t.Fatalf("expected exitUsage on empty resolved secret file, got code=%d:\n%s", code, out)
+	}
+
+	tokFile := filepath.Join(dir, "beta.tok")
+	if err := os.WriteFile(tokFile, []byte("secret-beta\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STRIFE_CLI_ADMIN_TOK", "secret-admin")
+	t.Setenv("STRIFE_CLI_ALPHA_TOK", "secret-alpha")
+
+	var errBuf bytes.Buffer
+	cfg, code, err := parseServeConfig([]string{
+		"--store", filepath.Join(dir, "registry"),
+		"--token", "env:STRIFE_CLI_ADMIN_TOK",
+		"--tenant-tokens", "alpha=env:STRIFE_CLI_ALPHA_TOK,beta=file:" + tokFile,
+		"--job-lease", "15s",
+	}, &errBuf)
+	if err != nil || code != exitOK {
+		t.Fatalf("parseServeConfig failed (code=%d, err=%v): %s", code, err, errBuf.String())
+	}
+	if cfg.Token != "secret-admin" {
+		t.Fatalf("expected resolved admin token, got %q", cfg.Token)
+	}
+	if cfg.TenantTokens["alpha"] != "secret-alpha" || cfg.TenantTokens["beta"] != "secret-beta" {
+		t.Fatalf("unexpected resolved tenant tokens: %+v", cfg.TenantTokens)
+	}
+	if cfg.JobLease.String() != "15s" {
+		t.Fatalf("expected JobLease 15s, got %v", cfg.JobLease)
+	}
+
+	srv, err := serve.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("serve.NewServer: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	})
+	baseURL := "http://" + ln.Addr().String()
+
+	// Unauthenticated GET /api/v1/runs must be rejected.
+	resp, err := http.Get(baseURL + "/api/v1/runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on unauthenticated GET /api/v1/runs, got %d", resp.StatusCode)
+	}
+
+	// Tenant alpha token cannot enqueue jobs for tenant beta.
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs", strings.NewReader(`{"tenant":"beta","kind":"sim","system":"raft"}`))
+	req.Header.Set("Authorization", "Bearer secret-alpha")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for cross-tenant POST /api/v1/jobs, got %d", resp.StatusCode)
+	}
+}
+
+func TestSystemsAndNoAnomalyExpectation(t *testing.T) {
+	code, out := runCLI(t, "systems")
+	if code != exitOK {
+		t.Fatalf("systems exit %d:\n%s", code, out)
+	}
+	for _, want := range []string{"raft", "raft-ledger", "no-anomaly", "2pc-ledger", "outbox-settlement"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("systems output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Sound-incomplete ledger systems must not pass --expect linearizable, and must pass --expect no-anomaly.
+	code, out = runCLI(t, "sim", "--system", "raft-ledger", "--seeds", "1..2", "--duration", "2s", "--expect", "linearizable", "--out", "")
+	if code != exitViolation {
+		t.Fatalf("expected exitViolation for raft-ledger --expect linearizable, got %d:\n%s", code, out)
+	}
+	code, out = runCLI(t, "sim", "--system", "raft-ledger", "--seeds", "1..2", "--duration", "2s", "--expect", "no-anomaly", "--out", "")
+	if code != exitOK {
+		t.Fatalf("expected exitOK for raft-ledger --expect no-anomaly, got %d:\n%s", code, out)
+	}
+
+	// Campaign + ci-report --expect no-anomaly end-to-end.
+	dir := t.TempDir()
+	campDir := filepath.Join(dir, "camp")
+	code, out = runCLI(t, "campaign", "--system", "outbox-settlement", "--seeds", "1..2", "--duration", "2s", "--expect", "no-anomaly", "--out", campDir)
+	if code != exitOK || !strings.Contains(out, "sound incomplete") {
+		t.Fatalf("campaign --expect no-anomaly failed (%d):\n%s", code, out)
+	}
+	campPath := filepath.Join(campDir, "campaign.json")
+	code, out = runCLI(t, "ci-report", "--campaign", campPath)
+	if code != exitViolation {
+		t.Fatalf("ci-report without --expect on incomplete campaign should fail, got %d:\n%s", code, out)
+	}
+	code, out = runCLI(t, "ci-report", "--campaign", campPath, "--expect", "no-anomaly")
+	if code != exitOK {
+		t.Fatalf("ci-report --expect no-anomaly failed (%d):\n%s", code, out)
+	}
+
+	// Budget-exhausted campaign must still fail ci-report --expect no-anomaly.
+	budgetCamp := &campaign.Manifest{
+		Tool:       "strife",
+		Version:    report.Version,
+		CampaignID: "budget-1",
+		System:     "raft",
+		TotalSeeds: 1,
+		Unknown:    1,
+		Seeds: []campaign.SeedRecord{
+			{Seed: 1, Verdict: checker.Unknown, Reason: checker.ReasonSteps},
+		},
+	}
+	budgetCampPath := filepath.Join(dir, "budget-campaign.json")
+	if err := campaign.WriteManifest(budgetCampPath, budgetCamp); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCLI(t, "ci-report", "--campaign", budgetCampPath, "--expect", "no-anomaly")
+	if code != exitViolation {
+		t.Fatalf("ci-report --expect no-anomaly should reject step-budget unknown, got %d:\n%s", code, out)
+	}
+
+	// Large valid append history (>16 ops) -> Unknown (sound incomplete); passes --expect no-anomaly, fails --expect linearizable.
+	histOps := make([]history.Op, 0, 40)
+	var vals []int64
+	for i := 1; i <= 20; i++ {
+		if i%2 == 1 {
+			v := int64(i)
+			vals = append(vals, v)
+			histOps = append(histOps,
+				history.Op{Index: len(histOps), Process: 1, Type: history.Invoke, F: history.FTxn,
+					Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(v)}}, Time: int64(i*2-1) * 1000},
+				history.Op{Index: len(histOps) + 1, Process: 1, Type: history.OK, F: history.FTxn,
+					Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(v)}}, Time: int64(i*2) * 1000},
+			)
+		} else {
+			snap := append([]int64(nil), vals...)
+			histOps = append(histOps,
+				history.Op{Index: len(histOps), Process: 2, Type: history.Invoke, F: history.FTxn,
+					Txn: []history.MicroOp{{F: history.MicroRead, Key: "x"}}, Time: int64(i*2-1) * 1000},
+				history.Op{Index: len(histOps) + 1, Process: 2, Type: history.OK, F: history.FTxn,
+					Txn: []history.MicroOp{{F: history.MicroRead, Key: "x", Values: snap}}, Time: int64(i*2) * 1000},
+			)
+		}
+	}
+	appendHistPath := filepath.Join(dir, "append-large.jsonl")
+	af, err := os.Create(appendHistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := history.WriteJSONL(af, histOps); err != nil {
+		t.Fatal(err)
+	}
+	if err := af.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out = runCLI(t, "check", "--model", "append", "--history", appendHistPath)
+	if code != exitUnknown || !strings.Contains(out, "sound incomplete") {
+		t.Fatalf("large append check without --expect should exit %d (sound incomplete), got %d:\n%s", exitUnknown, code, out)
+	}
+	code, out = runCLI(t, "check", "--model", "append", "--expect", "linearizable", "--history", appendHistPath)
+	if code != exitViolation {
+		t.Fatalf("large append check --expect linearizable should exit %d, got %d:\n%s", exitViolation, code, out)
+	}
+	code, out = runCLI(t, "check", "--model", "append", "--expect", "no-anomaly", "--history", appendHistPath)
+	if code != exitOK {
+		t.Fatalf("large append check --expect no-anomaly should exit %d, got %d:\n%s", exitOK, code, out)
 	}
 }

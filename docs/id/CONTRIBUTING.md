@@ -42,8 +42,9 @@ go test ./...
 # 4. Uji ringkas determinisme & pengecilan skenario
 go build -o bin/strife ./cmd/strife
 ./bin/strife sim --system raft --seeds 1..50 --determinism --expect linearizable --out ""
-./bin/strife sim --system raft-ledger --seeds 1..20 --determinism --expect linearizable --out ""
-./bin/strife sim --system outbox-settlement --seeds 1..20 --determinism --expect linearizable --out ""
+./bin/strife sim --system raft-ledger --seeds 1..20 --determinism --expect no-anomaly --out ""
+./bin/strife sim --system 2pc-ledger --seeds 1..20 --determinism --expect no-anomaly --out ""
+./bin/strife sim --system outbox-settlement --seeds 1..20 --determinism --expect no-anomaly --out ""
 ```
 
 ### Pemeriksaan Situs Web & Jembatan WebAssembly
@@ -82,7 +83,7 @@ go test -run '^$' -fuzz '^FuzzKafkaRecords$' -fuzztime 15s ./pkg/client
 ## Lokasi Melakukan Perubahan
 
 - **Model konsistensi (`pkg/model`, `pkg/checker`, `pkg/txn`):**
-  Implementasikan `model.Model` (dan opsional `model.Diagnoser`, `model.Decider`, atau `model.ReadOnly` untuk ekstraksi saksi langsung maupun linearisasi bacaan cepat), daftarkan modelnya di [`model.ByName`](../../pkg/model/model.go) serta `model.Names()`, dan tambahkan unit test + uji silang brute-force di `pkg/model` dan `pkg/txn`.
+  Implementasikan `model.Model` (dan opsional `model.Diagnoser`, `model.Decider` berstatus 3-kondisi `DecisionStatus`, `model.CompleteSearcher`, atau `model.ReadOnly` untuk ekstraksi saksi langsung maupun linearisasi bacaan cepat), daftarkan modelnya di [`model.ByName`](../../pkg/model/model.go) serta `model.Names()`, lalu tambahkan unit test + uji silang brute-force di `pkg/model` dan `pkg/txn` beserta uji kesetaraan diferensial pengoptimal WGL di `pkg/checker`.
 - **Sistem simulasi atau mode bug (`pkg/sim`, `pkg/sim/raft`, `pkg/explore`):**
   Daftarkan sistem di [`explore.Systems()`](../../pkg/explore/explore.go) beserta `Expect` verdict dan daftar gangguan yang disarankan, tambahkan uji regresi di [`pkg/explore/explore_test.go`](../../pkg/explore/explore_test.go), lalu catat pengukuran empirisnya di [`BENCHMARKS.md`](BENCHMARKS.md) dan [`docs/BENCHMARKS.md`](../BENCHMARKS.md).
 - **Klien database langsung (`pkg/client`, `pkg/runner`):**

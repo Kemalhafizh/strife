@@ -199,8 +199,10 @@ func (Settlement) Step(s State, in, out history.Op) (bool, State) {
 	return true, next
 }
 
-// Decide implements Decider for Settlement.
-func (Settlement) Decide(ops []history.Operation) (bool, []int, string, []string) {
+// Decide implements Decider for Settlement. Returning DecisionInconclusive
+// on clean non-empty histories avoids claiming full linearizability proof
+// without an exhaustive search.
+func (Settlement) Decide(ops []history.Operation) (DecisionStatus, []int, string, []string) {
 	var (
 		kinds     []string
 		witness   []int
@@ -461,13 +463,16 @@ func (Settlement) Decide(ops []history.Operation) (bool, []int, string, []string
 
 	if len(kinds) > 0 {
 		sort.Strings(kinds)
-		return true, witness, diagnosis, kinds
+		return DecisionViolation, witness, diagnosis, kinds
 	}
-	return false, nil, "", nil
+	if len(ops) == 0 {
+		return DecisionVerified, nil, "", nil
+	}
+	return DecisionInconclusive, nil, "", nil
 }
 
 // Diagnose implements Diagnoser for Settlement.
 func (s Settlement) Diagnose(ops []history.Operation) ([]int, string, bool) {
-	v, w, d, _ := s.Decide(ops)
-	return w, d, v
+	st, w, d, _ := s.Decide(ops)
+	return w, d, st == DecisionViolation
 }

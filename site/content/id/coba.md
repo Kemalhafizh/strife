@@ -11,7 +11,7 @@ empty: Pilih salah satu skenario di sebelah kiri, atau atur sendiri lalu tekan â
 ## Yang sebenarnya terjadi saat Anda menekan tombol
 
 1. Browser Anda menjalankan `strife sim` yang sama dengan rilis CLI: cluster Raft lima node disimulasikan dalam satu proses, dengan jaringan, disk, timer, dan jam yang semuanya dikendalikan oleh seed.
-2. Setiap operasi klien direkam, lalu diperiksa secara formal apakah ada urutan yang bisa menjelaskan semua hasilnya (linearizability).
+2. Setiap operasi klien direkam, lalu diperiksa terhadap model konsistensi atau transaksinya (`linearizable`, `violation`, atau `unknown` dengan alasan `sound incomplete` bila beban kerja transaksional besar tidak menunjukkan anomali di luar batas pencarian tuntas).
 3. Seed yang sama selalu menghasilkan eksekusi yang sama. Untuk skenario siap pakai, halaman ini membandingkan hash eksekusi di browser dengan hasil engine native di Linux saat situs dibangun.
 
 Urutan daftar gangguan ikut menentukan jadwalnya, jadi perintah CLI di hasil memakai urutan persis yang Anda pilih. Untuk menguji sistem Anda sendiri, pakai CLI terhadap cluster staging. Panduannya ada di [Mulai Cepat](/docs/quick-start) dan [Cluster Sungguhan](/docs/live-clusters).

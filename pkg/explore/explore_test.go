@@ -79,8 +79,8 @@ func TestCorrectRaftLedgerSurvivesFaults(t *testing.T) {
 		seeds = append(seeds, s)
 	}
 	for _, s := range Explore(quick("raft-ledger", "all"), seeds, 0, nil) {
-		if s.Error != "" || s.Verdict != checker.Linearizable {
-			t.Errorf("seed %d: verdict %s (%s) %s", s.Seed, s.Verdict, s.Explanation, s.Error)
+		if s.Error != "" || s.Verdict != checker.Unknown || s.Reason != checker.ReasonIncomplete {
+			t.Errorf("seed %d: verdict %s reason=%q (%s) %s", s.Seed, s.Verdict, s.Reason, s.Explanation, s.Error)
 		}
 		if s.Ops < 500 {
 			t.Errorf("seed %d: only %d ops, workload starved", s.Seed, s.Ops)
@@ -98,11 +98,36 @@ func TestCorrect2PCLedgerSurvivesFaults(t *testing.T) {
 		seeds = append(seeds, s)
 	}
 	for _, s := range Explore(quick("2pc-ledger", "all"), seeds, 0, nil) {
-		if s.Error != "" || s.Verdict != checker.Linearizable {
-			t.Errorf("seed %d: verdict %s (%s) %s", s.Seed, s.Verdict, s.Explanation, s.Error)
+		if s.Error != "" || s.Verdict != checker.Unknown || s.Reason != checker.ReasonIncomplete {
+			t.Errorf("seed %d: verdict %s reason=%q (%s) %s", s.Seed, s.Verdict, s.Reason, s.Explanation, s.Error)
 		}
 		if s.Ops < 300 {
 			t.Errorf("seed %d: only %d ops, workload starved", s.Seed, s.Ops)
+		}
+	}
+}
+
+func TestSystemExpectFlag(t *testing.T) {
+	want := map[string]string{
+		"raft":                   "linearizable",
+		"raft-ledger":            "no-anomaly",
+		"2pc-ledger":             "no-anomaly",
+		"outbox-settlement":      "no-anomaly",
+		"raft-stale-reads":       "violation",
+		"raft-ledger-overdraft":  "violation",
+		"2pc-ledger-torn-commit": "violation",
+		"outbox-dual-write":      "violation",
+	}
+	seen := make(map[string]bool)
+	for _, s := range Systems() {
+		seen[s.Name] = true
+		if w, ok := want[s.Name]; ok && s.ExpectFlag() != w {
+			t.Errorf("system %s ExpectFlag() = %q, want %q", s.Name, s.ExpectFlag(), w)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Fatalf("missing system %q in Systems()", name)
 		}
 	}
 }

@@ -82,6 +82,9 @@ func WriteHTML(w io.Writer, m *Manifest) error {
 		verdictClass = "bad"
 	} else if m.Verdict() == checker.Violation {
 		verdictClass = "bad"
+	} else if m.IsIncomplete() {
+		verdictLabel = "INCOMPLETE"
+		verdictClass = "warn"
 	} else if m.Verdict() != checker.Linearizable {
 		verdictClass = "warn"
 	}
@@ -133,15 +136,24 @@ func WriteHTML(w io.Writer, m *Manifest) error {
 			dLabel = "TRACE DRIFT"
 			tileClass = "tile-drift"
 		default:
-			if s.Verdict == checker.Violation {
+			switch {
+			case s.Error != "":
+				dLabel = "ERROR"
+			case s.Verdict == checker.Violation:
 				dLabel = "VIOLATION"
-			} else {
+			case s.Verdict == checker.Unknown && s.Reason == checker.ReasonIncomplete:
+				dLabel = "INCOMPLETE"
+			case s.Verdict == checker.Unknown:
+				dLabel = "UNKNOWN"
+			default:
 				dLabel = "PASS"
 			}
 		}
 		expl := s.Explanation
 		if expl == "" && s.Error != "" {
 			expl = s.Error
+		} else if expl == "" && s.Reason != "" {
+			expl = s.Reason
 		}
 		v.Seeds = append(v.Seeds, seedView{
 			Seed:          s.Seed,
@@ -224,6 +236,7 @@ var campaignTmpl = template.Must(template.New("campaign").Parse(`<!doctype html>
   .kpi .v { font-size: 20px; font-weight: 700; margin-top: 4px; }
   .kpi .v.ok { color: #56d364; }
   .kpi .v.bad { color: #ff7b72; }
+  .kpi .v.warn { color: var(--warn); }
   .kpi .v.fixed { color: var(--fixed); }
   .heatmap {
     display: flex; flex-wrap: wrap; gap: 5px;
@@ -272,6 +285,7 @@ var campaignTmpl = template.Must(template.New("campaign").Parse(`<!doctype html>
   .tag.REGRESSED { background: #f85149; color: #fff; }
   .tag.FIXED { background: rgba(57,197,207,.2); color: #56d4dd; }
   .tag.TRACE { background: rgba(163,113,247,.2); color: #d2a8ff; }
+  .tag.INCOMPLETE, .tag.UNKNOWN, .tag.ERROR { background: rgba(210,153,34,.2); color: #e3b341; }
   .repro-code {
     display: block; font-size: 11px; color: var(--muted); word-break: break-all; margin-top: 4px;
   }
@@ -298,6 +312,7 @@ var campaignTmpl = template.Must(template.New("campaign").Parse(`<!doctype html>
   <div class="kpi"><div class="k">Total Seeds</div><div class="v mono">{{.M.TotalSeeds}}</div></div>
   <div class="kpi"><div class="k">Linearizable</div><div class="v mono ok">{{.M.Passed}}</div></div>
   <div class="kpi"><div class="k">Violations</div><div class="v mono {{if gt .M.Violations 0}}bad{{end}}">{{.M.Violations}}</div></div>
+  {{if gt .M.Unknown 0}}<div class="kpi"><div class="k">Inconclusive</div><div class="v mono warn">{{.M.Unknown}}</div></div>{{end}}
   {{if .HasBaseline}}
   <div class="kpi"><div class="k">Regressed</div><div class="v mono {{if gt .Regressed 0}}bad{{end}}">{{.Regressed}}</div></div>
   <div class="kpi"><div class="k">Fixed</div><div class="v mono fixed">{{.Fixed}}</div></div>
@@ -324,6 +339,7 @@ var campaignTmpl = template.Must(template.New("campaign").Parse(`<!doctype html>
   <div class="pills" id="filter-pills">
     <button class="pill active" data-filter="all">All ({{.M.TotalSeeds}})</button>
     <button class="pill" data-filter="violation">Violations ({{.M.Violations}})</button>
+    {{if gt .M.Unknown 0}}<button class="pill" data-filter="unknown">Inconclusive ({{.M.Unknown}})</button>{{end}}
     {{if .HasBaseline}}
     <button class="pill" data-filter="regressed">Regressed ({{.Regressed}})</button>
     <button class="pill" data-filter="fixed">Fixed ({{.Fixed}})</button>

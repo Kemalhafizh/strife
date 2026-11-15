@@ -457,3 +457,110 @@ func TestEvaluateZeroAvailabilitySLABreach(t *testing.T) {
 		t.Fatalf("expected 0.0%% availability rendered in HTML")
 	}
 }
+
+func TestEvaluateSoundIncompleteAndBudgetExhausted(t *testing.T) {
+	v := int64(100)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FTxn, Key: "k0", Value: &v, Time: 100},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FTxn, Key: "k0", Value: &v, Time: 200},
+	}
+	sched := nemesis.Schedule{
+		Nodes:    5,
+		Duration: 10 * time.Second,
+		Faults: []nemesis.Fault{
+			{ID: 1, Kind: nemesis.Partition, Nodes: []int{0, 1}, Start: time.Second, End: 3 * time.Second},
+			{ID: 2, Kind: nemesis.Kill, Nodes: []int{2}, Start: 2 * time.Second, End: 4 * time.Second},
+			{ID: 3, Kind: nemesis.IOStall, Nodes: []int{3}, Start: 3 * time.Second, End: 5 * time.Second},
+			{ID: 4, Kind: nemesis.ClockSkew, Nodes: []int{4}, Start: 4 * time.Second, End: 6 * time.Second},
+		},
+	}
+	incRep, err := report.New(
+		report.KindSimulation,
+		"raft-ledger",
+		7,
+		map[string]any{"nodes": 5},
+		sched,
+		ops,
+		checker.Report{
+			Model:      "ledger",
+			Verdict:    checker.Unknown,
+			Operations: 40,
+			Checked:    40,
+			Keys:       []checker.KeyResult{{Key: "ledger", Verdict: checker.Unknown, Reason: checker.ReasonIncomplete, Operations: 40}},
+		},
+		"trace-inc-7",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, priv, err := attest.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := attest.Sign(incRep, priv, "auditor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ver, err := attest.Verify(bundle, pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dInc, err := Evaluate(Options{
+		Report:       incRep,
+		Verification: ver,
+		Frameworks:   []FrameworkID{FrameworkDORA, FrameworkSOC2},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate sound-incomplete: %v", err)
+	}
+	if dInc.Overall != StatusPartial {
+		t.Fatalf("expected StatusPartial for sound-incomplete run, got %s (%+v)", dInc.Overall, dInc.Controls)
+	}
+	var md strings.Builder
+	if err := Markdown(&md, dInc); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(md.String(), "1 inconclusive") || !strings.Contains(md.String(), "sound-incomplete procedure") {
+		t.Fatalf("expected inconclusive count and methodology limit in Markdown:\n%s", md.String())
+	}
+	// Verify attestation control still passes while data-integrity control is partial.
+	for _, c := range dInc.Controls {
+		if c.ControlID == "soc2.test-evidence" && c.Status != StatusPass {
+			t.Errorf("attested evidence control should remain StatusPass, got %s", c.Status)
+		}
+		if c.ControlID == "dora.data-integrity" && c.Status != StatusPartial {
+			t.Errorf("dora.data-integrity should be StatusPartial under ReasonIncomplete, got %s", c.Status)
+		}
+	}
+	if s := Suite(dInc, true); s.Count(report.Failed) == 0 {
+		t.Fatal("strict compliance Suite must fail when controls are PARTIAL")
+	}
+
+	// Budget exhaustion stays StatusFail.
+	budgetRep, err := report.New(
+		report.KindSimulation,
+		"raft",
+		8,
+		nil,
+		sched,
+		ops,
+		checker.Report{
+			Model:      "kv",
+			Verdict:    checker.Unknown,
+			Operations: 40,
+			Keys:       []checker.KeyResult{{Key: "k0", Verdict: checker.Unknown, Reason: checker.ReasonSteps}},
+		},
+		"trace-budget-8",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dBudget, err := Evaluate(Options{Report: budgetRep, Frameworks: []FrameworkID{FrameworkDORA}})
+	if err != nil {
+		t.Fatalf("Evaluate budget-exhausted: %v", err)
+	}
+	if dBudget.Overall != StatusFail {
+		t.Fatalf("expected StatusFail on budget exhaustion, got %s", dBudget.Overall)
+	}
+}

@@ -16,8 +16,8 @@ strife plan --config strife.json
 # Run the key-value linearizability test (2 minutes) and write reports to ./strife-out/
 strife run --config strife.json
 
-# Run list-append transactions checked at strict serializability
-strife run --config strife-append.json
+# Run list-append transactions checked at strict serializability (--expect no-anomaly passes CI when no anomaly is found)
+strife run --config strife-append.json --expect no-anomaly
 
 docker compose down -v
 ```
@@ -32,7 +32,7 @@ commands and exits non-zero; drop those faults with
 | Config / File | Model & Transport | Faults | Exercised by CI (`live.yml`) |
 |---|---|---|---|
 | `strife.json` | `kv` over `docker` | `partition`, `kill`, `pause`, `latency`, `loss` | `etcd` job (linearizable) |
-| `strife-append.json` | `append` (`strict-serializable`) over `docker` | `partition`, `kill`, `pause`, `latency`, `loss` | `etcd` job (strict serializable) |
+| `strife-append.json` | `append` (`strict-serializable`) over `docker` | `partition`, `kill`, `pause`, `latency`, `loss` | `etcd` job (`--expect no-anomaly`) |
 | `strife-agent.json` + `docker-compose.agent.yml` | `kv` over `agent` (`strife-agent` port 9292) | `partition`, `kill`, `pause` | `agent` job + `strife bench inject` |
 | `strife-cgroup.json` | `kv` over `docker` (`cgroup: auto`, `io_device: auto`, `sudo: true`) | `freeze`, `io-stall` | `cgroup` job |
 

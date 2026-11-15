@@ -9,25 +9,25 @@ export STRIFE_PG_PASSWORD=$(openssl rand -hex 16)
 cd examples/postgres
 docker compose up -d --build
 
-strife run --config strife.json            # primary, list-append SERIALIZABLE, kill -9 + pause
-strife run --config strife-ledger.json     # primary, audit buku besar berpasangan SERIALIZABLE
-strife run --config strife-snapshot.json   # primary, diperiksa sebagai snapshot isolation
-strife run --config strife-replicas.json   # pembacaan disebar ke node-node standby
+strife run --config strife.json --expect no-anomaly          # primary, list-append SERIALIZABLE, kill -9 + pause
+strife run --config strife-ledger.json --expect no-anomaly   # primary, audit buku besar berpasangan SERIALIZABLE
+strife run --config strife-snapshot.json --expect no-anomaly # primary, diperiksa sebagai snapshot isolation
+strife run --config strife-replicas.json --expect violation  # pembacaan disebar ke node-node standby
 
 docker compose down -v
 ```
 
 Kata sandi tidak pernah tertulis secara harfiah di berkas konfigurasi: `"password": "env:STRIFE_PG_PASSWORD"` diselesaikan saat eksekusi berjalan dan laporan hanya menampilkan rujukannya, bukan nilainya.
 
-`strife-settlement.json` adalah templat beban kerja dua-kaki `settlement` tambahan yang dikonfigurasi menggunakan transport `proxy` tanpa hak istimewa terhadap cluster PostgreSQL mandiri (`172.30.0.11:5432`, pengguna/database `strife`); sesuaikan `nodes` dan `db.endpoints` bila dijalankan terhadap jaringan compose lokal.
+`strife-settlement.json` adalah templat beban kerja dua-kaki `settlement` tambahan yang dikonfigurasi menggunakan transport `proxy` tanpa hak istimewa terhadap cluster PostgreSQL mandiri (`172.30.0.11:5432`, pengguna/database `strife`); sesuaikan `nodes` dan `db.endpoints` bila dijalankan terhadap jaringan compose lokal, dan gunakan `--expect no-anomaly` di CI (karena checker transaksional untuk `append`, `ledger`, dan `settlement` melaporkan `unknown (sound incomplete)` alih-alih pembuktian linearizability menyeluruh bila riwayat melampaui pencarian tuntas berbatas).
 
 ## Yang Diuji oleh CI (job `postgres` di `.github/workflows/live.yml`)
 
 | Konfigurasi | Isolasi yang diminta ke PostgreSQL | Diperiksa sebagai | Gangguan | Hasil diharapkan |
 |---|---|---|---|---|
-| `strife.json` | `SERIALIZABLE` | strict serializable (`append`) | `kill`, `pause` | lulus |
-| `strife-ledger.json` | `SERIALIZABLE` | strict serializable (`ledger`) | `kill`, `pause` | lulus |
-| `strife-snapshot.json` | bawaan (*default*) | snapshot isolation (`append`) | `kill`, `pause` | lulus |
+| `strife.json` | `SERIALIZABLE` | strict serializable (`append`) | `kill`, `pause` | tanpa anomali (`--expect no-anomaly`) |
+| `strife-ledger.json` | `SERIALIZABLE` | strict serializable (`ledger`) | `kill`, `pause` | tanpa anomali (`--expect no-anomaly`) |
+| `strife-snapshot.json` | bawaan (*default*) | snapshot isolation (`append`) | `kill`, `pause` | tanpa anomali (`--expect no-anomaly`) |
 | riwayat yang sama | | serializable | | **pelanggaran**: *write skew* (G2) |
 | `strife-replicas.json` | `REPEATABLE READ` per standby | strict serializable (`append`) | `partition` | **pelanggaran**: pembacaan basi (G-realtime) |
 

@@ -8,12 +8,15 @@ import (
 	"bufio"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/attest"
@@ -100,30 +103,79 @@ func (s *Store) loadExisting() error {
 	if err != nil {
 		return fmt.Errorf("serve: open registry %s: %w", regPath, err)
 	}
-	defer f.Close()
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var e RunEntry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			continue
-		}
-		s.entries = append(s.entries, e)
-		s.byID[e.ID] = e
-		s.seq++
-		if e.Kind == "campaign" {
-			cPath := filepath.Join(s.dir, "runs", e.ID, "campaign.json")
-			if m, err := campaign.LoadManifest(cPath); err == nil {
-				s.baselines[baselineKey(e.Tenant, m.System)] = m
+	r := bufio.NewReaderSize(f, 64*1024)
+	var offset, validEnd int64
+	tornTail := false
+	needNewline := false
+	for {
+		lineBytes, readErr := r.ReadBytes('\n')
+		if len(lineBytes) > 0 {
+			offset += int64(len(lineBytes))
+			line := strings.TrimSpace(string(lineBytes))
+			if line == "" {
+				validEnd = offset
+			} else {
+				var e RunEntry
+				if uerr := json.Unmarshal([]byte(line), &e); uerr != nil {
+					if errors.Is(readErr, io.EOF) {
+						tornTail = true
+						break
+					}
+					// Skip malformed middle lines without discarding subsequent valid records.
+				} else {
+					s.entries = append(s.entries, e)
+					s.byID[e.ID] = e
+					s.seq++
+					if e.Kind == "campaign" {
+						cPath := filepath.Join(s.dir, "runs", e.ID, "campaign.json")
+						if m, err := campaign.LoadManifest(cPath); err == nil {
+							s.baselines[baselineKey(e.Tenant, m.System)] = m
+						}
+					}
+					validEnd = offset
+					if lineBytes[len(lineBytes)-1] != '\n' {
+						needNewline = true
+					}
+				}
 			}
 		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			_ = f.Close()
+			return fmt.Errorf("serve: read registry %s: %w", regPath, readErr)
+		}
 	}
-	return sc.Err()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("serve: close registry %s: %w", regPath, err)
+	}
+	if tornTail {
+		if err := os.Truncate(regPath, validEnd); err != nil {
+			return fmt.Errorf("serve: repair torn registry %s: %w", regPath, err)
+		}
+		if err := syncDir(s.dir); err != nil {
+			return err
+		}
+	} else if needNewline {
+		wf, err := os.OpenFile(regPath, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("serve: terminate registry %s: %w", regPath, err)
+		}
+		if _, err := wf.Write([]byte{'\n'}); err != nil {
+			_ = wf.Close()
+			return err
+		}
+		if err := wf.Sync(); err != nil {
+			_ = wf.Close()
+			return err
+		}
+		if err := wf.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeTenant(t string) string {
@@ -294,7 +346,7 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 		if err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(filepath.Join(runDir, "bundle.json"), append(bBytes, '\n'), 0o644); err != nil {
+		if err := atomicWriteFileSync(filepath.Join(runDir, "bundle.json"), append(bBytes, '\n'), 0o644); err != nil {
 			return nil, err
 		}
 	}
@@ -303,7 +355,10 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "report.json"), append(rBytes, '\n'), 0o644); err != nil {
+	if err := atomicWriteFileSync(filepath.Join(runDir, "report.json"), append(rBytes, '\n'), 0o644); err != nil {
+		return nil, err
+	}
+	if err := syncDir(filepath.Join(s.dir, "runs")); err != nil {
 		return nil, err
 	}
 
@@ -403,6 +458,9 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 	if err := campaign.WriteManifest(filepath.Join(runDir, "campaign.json"), m); err != nil {
 		return nil, err
 	}
+	if err := syncDir(filepath.Join(s.dir, "runs")); err != nil {
+		return nil, err
+	}
 	if err := s.appendEntry(entry); err != nil {
 		return nil, err
 	}
@@ -425,12 +483,69 @@ func (s *Store) appendEntry(e RunEntry) error {
 		_ = f.Close()
 		return err
 	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
 	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := syncDir(s.dir); err != nil {
 		return err
 	}
 	s.entries = append(s.entries, e)
 	s.byID[e.ID] = e
 	return nil
+}
+
+func atomicWriteFileSync(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return syncDir(dir)
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	if errors.Is(err, syscall.EINVAL) || errors.Is(err, errors.ErrUnsupported) {
+		return nil
+	}
+	return err
 }
 
 // Targets returns the sorted list of unique system/cluster targets in the store.

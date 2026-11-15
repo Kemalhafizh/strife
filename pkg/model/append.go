@@ -108,12 +108,17 @@ func (Append) Partition(ops []history.Operation) ([]string, [][]history.Operatio
 	return []string{"txns"}, [][]history.Operation{ops}
 }
 
-// Decide implements Decider.
-func (m Append) Decide(ops []history.Operation) (bool, []int, string, []string) {
+// Decide implements Decider. Elle dependency-graph analysis is sound but not
+// complete, so absence of a detected anomaly yields DecisionInconclusive for
+// non-empty histories rather than DecisionVerified.
+func (m Append) Decide(ops []history.Operation) (DecisionStatus, []int, string, []string) {
 	level := txn.IsolationLevel(m.Level)
 	rep := txn.CheckAppend(ops, level)
 	if rep.Verdict != txn.Violation {
-		return false, nil, "", nil
+		if len(ops) == 0 {
+			return DecisionVerified, nil, "", nil
+		}
+		return DecisionInconclusive, nil, "", nil
 	}
 	var kinds []string
 	for _, a := range rep.Anomalies {
@@ -154,5 +159,11 @@ func (m Append) Decide(ops []history.Operation) (bool, []int, string, []string) 
 		sort.Strings(parts)
 		diag += fmt.Sprintf(" (%d more: %s)", n, strings.Join(parts, ", "))
 	}
-	return true, witness, diag, kinds
+	return DecisionViolation, witness, diag, kinds
+}
+
+// SupportsCompleteSearch implements CompleteSearcher. Append.Step enforces
+// strict-serializable atomic transactions, matching strict-serializable checks.
+func (m Append) SupportsCompleteSearch(ops []history.Operation) bool {
+	return txn.IsolationLevel(m.Level) == txn.LevelStrictSerializable
 }

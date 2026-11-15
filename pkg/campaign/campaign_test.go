@@ -224,3 +224,82 @@ func TestCampaignSettlementExplanation(t *testing.T) {
 		t.Fatalf("expected SETTLEMENT-* diagnosis in seed explanation, got %+v", m.Seeds)
 	}
 }
+
+func TestCampaignSoundIncompleteAndNoAnomalyExpectation(t *testing.T) {
+	base := &Manifest{
+		CampaignID: "ledger-base",
+		System:     "raft-ledger",
+		TotalSeeds: 2,
+		Unknown:    2,
+		Seeds: []SeedRecord{
+			{Seed: 1, Verdict: checker.Unknown, Reason: checker.ReasonIncomplete, TraceHash: "t1", Ops: 100},
+			{Seed: 2, Verdict: checker.Unknown, Reason: checker.ReasonIncomplete, TraceHash: "t2", Ops: 100},
+		},
+	}
+	if !base.IsIncomplete() {
+		t.Fatal("expected IsIncomplete() = true for ReasonIncomplete seeds")
+	}
+
+	budget := &Manifest{
+		CampaignID: "budget",
+		System:     "raft",
+		TotalSeeds: 1,
+		Unknown:    1,
+		Seeds:      []SeedRecord{{Seed: 1, Verdict: checker.Unknown, Reason: checker.ReasonSteps}},
+	}
+	if budget.IsIncomplete() {
+		t.Fatal("expected IsIncomplete() = false for budget-exhausted Unknown seed")
+	}
+
+	regressedCurr := &Manifest{
+		CampaignID: "ledger-curr",
+		System:     "raft-ledger",
+		TotalSeeds: 2,
+		Violations: 1,
+		Unknown:    1,
+		Seeds: []SeedRecord{
+			{Seed: 1, Verdict: checker.Unknown, Reason: checker.ReasonIncomplete, TraceHash: "t1"},
+			{Seed: 2, Verdict: checker.Violation, TraceHash: "t2-bad", Explanation: "LEDGER-OVERDRAFT"},
+		},
+	}
+	comp := Compare(base, regressedCurr)
+	if comp == nil || !comp.HasRegressions() || len(comp.Regressed) != 1 || comp.Regressed[0].Seed != 2 {
+		t.Fatalf("expected seed 2 regression from ReasonIncomplete to Violation, got %+v", comp)
+	}
+	if comp.UnchangedPassCount != 1 {
+		t.Fatalf("expected UnchangedPassCount=1 for unchanged ReasonIncomplete seed, got %d", comp.UnchangedPassCount)
+	}
+
+	if merged := MergeSeeds([]uint64{1}, base, true); len(merged) != 1 {
+		t.Fatalf("expected MergeSeeds not to treat ReasonIncomplete as failing, got %v", merged)
+	}
+
+	suitePass := Suite(base, "no-anomaly")
+	for _, c := range suitePass.Cases {
+		if c.Status != report.Passed {
+			t.Errorf("no-anomaly Suite expected Passed case, got %s (%s)", c.Status, c.Message)
+		}
+	}
+	suiteStrict := Suite(base, "")
+	for _, c := range suiteStrict.Cases {
+		if c.Status != report.Errored || !strings.Contains(c.Message, "sound incomplete") {
+			t.Errorf("strict Suite expected Errored sound-incomplete case, got %s (%s)", c.Status, c.Message)
+		}
+	}
+	suiteMixed := Suite(budget, "no-anomaly")
+	if suiteMixed.Cases[0].Status != report.Errored {
+		t.Errorf("no-anomaly Suite must still error on step-budget exhaustion, got %s", suiteMixed.Cases[0].Status)
+	}
+
+	var htmlBuf bytes.Buffer
+	if err := WriteHTML(&htmlBuf, base); err != nil {
+		t.Fatalf("WriteHTML: %v", err)
+	}
+	html := htmlBuf.String()
+	if !strings.Contains(html, "INCOMPLETE") {
+		t.Errorf("expected campaign HTML to render INCOMPLETE badge/tag")
+	}
+	if !strings.Contains(html, "Inconclusive") {
+		t.Errorf("expected campaign HTML to render Inconclusive KPI and filter pill")
+	}
+}
