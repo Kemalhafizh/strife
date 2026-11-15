@@ -118,7 +118,7 @@ func classifySARIFRule(c Case) (id, name, desc string) {
 	case strings.Contains(combined, "REGRESSION"):
 		return "STRIFE-CAMPAIGN-REGRESSION", "SeedRegression", "Seed that passed in baseline manifest now violates consistency."
 	case c.Status == Errored:
-		return "STRIFE-INCONCLUSIVE", "InconclusiveOrExecutionError", "Checker search budget exhausted or runtime/transport error occurred."
+		return "STRIFE-INCONCLUSIVE", "InconclusiveOrExecutionError", "Checker verdict was unknown (sound-incomplete decision procedure or exhausted search budget) or a runtime/transport error occurred."
 	default:
 		return "STRIFE-LINEARIZABILITY", "LinearizabilityViolation", "Execution history is not linearizable."
 	}

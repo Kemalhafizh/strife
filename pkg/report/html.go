@@ -81,6 +81,7 @@ type view struct {
 	R            *Report
 	Badge        string
 	Bad          bool
+	Warn         bool
 	Bars         []bar
 	Bands        []band
 	Ticks        []tick
@@ -112,8 +113,9 @@ const (
 func HTML(w io.Writer, r *Report, ops []history.Op) error {
 	v := &view{
 		R:     r,
-		Badge: badge(r.Verdict),
-		Bad:   r.Verdict != checker.Linearizable,
+		Badge: badge(r),
+		Bad:   r.Verdict == checker.Violation,
+		Warn:  r.Verdict == checker.Unknown,
 		Width: svgWidth,
 		Fails: r.Check.Failures(),
 	}
@@ -522,6 +524,7 @@ h2{font-size:16px;margin:28px 0 10px;font-weight:600;display:flex;align-items:ce
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin:12px 0;box-shadow:0 2px 8px rgba(0,0,0,0.04)}
 .verdict{display:inline-block;font-weight:700;padding:5px 12px;border-radius:6px;background:var(--ok);color:#fff;letter-spacing:0.02em}
 .verdict.bad{background:var(--bad)}
+.verdict.warn{background:var(--info)}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12.5px;word-break:break-all}
 table{border-collapse:collapse;width:100%}
 td,th{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -583,7 +586,7 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
 <div class="muted">{{.R.Kind}} · seed {{.R.Seed}} · model {{.R.Check.Model}}{{if .R.GeneratedAt}} · {{.R.GeneratedAt}}{{end}}</div>
 
 <div class="card">
-  <span class="verdict{{if .Bad}} bad{{end}}">{{.Badge}}</span>
+  <span class="verdict{{if .Bad}} bad{{else if .Warn}} warn{{end}}">{{.Badge}}</span>
   <p>{{.R.Check.Stats.Invocations}} operations — {{.R.Check.Stats.OK}} ok, {{.R.Check.Stats.Fail}} failed, {{.R.Check.Stats.Info}} indeterminate; {{len .R.Schedule.Faults}} faults injected.</p>
   {{if .R.Reproduce}}<p>Reproduce: <code>{{.R.Reproduce}}</code></p>{{end}}
   <table>
@@ -688,7 +691,7 @@ svg text{fill:var(--muted);font:10px ui-monospace,monospace}
 
 <h2>Keys</h2>
 <div class="card"><table><tr><th>Key</th><th>Operations</th><th>Verdict</th><th>Search steps</th></tr>
-{{range .R.Check.Keys}}<tr><td><code>{{.Key}}</code></td><td>{{.Operations}}</td><td>{{.Verdict}}</td><td>{{.Steps}}</td></tr>{{end}}
+{{range .R.Check.Keys}}<tr><td><code>{{.Key}}</code></td><td>{{.Operations}}</td><td>{{.Verdict}}{{if .Reason}} ({{.Reason}}){{end}}</td><td>{{.Steps}}</td></tr>{{end}}
 </table></div>
 
 {{if .FaultRows}}<h2>Fault schedule</h2>

@@ -285,9 +285,13 @@ func KeyCases(class string, check checker.Report, reproduce string) []Case {
 			}
 		case checker.Unknown:
 			c.Status = Errored
-			c.Message = "search budget exhausted before a verdict (raise --max-steps)"
-			if k.Reason == checker.ReasonTime {
+			switch k.Reason {
+			case checker.ReasonTime:
 				c.Message = "time budget exhausted before a verdict (raise --check-timeout)"
+			case checker.ReasonIncomplete:
+				c.Message = "no anomaly found; check is sound incomplete (decision procedure incomplete for large histories)"
+			default:
+				c.Message = "search budget exhausted before a verdict (raise --max-steps)"
 			}
 		}
 		out = append(out, c)
@@ -341,8 +345,12 @@ func SuiteFromReport(r *Report, elapsed time.Duration) Suite {
 		Reproduce:  r.Reproduce,
 	}
 	st := r.Check.Stats
+	verdictLabel := strings.ToUpper(string(r.Verdict))
+	if r.Check.IsIncomplete() {
+		verdictLabel += " (sound incomplete; no anomaly found)"
+	}
 	s.Headline = fmt.Sprintf("**%s** · %d operations (%d ok, %d failed, %d indeterminate) · %d faults",
-		strings.ToUpper(string(r.Verdict)), st.Invocations, st.OK, st.Fail, st.Info, len(r.Schedule.Faults))
+		verdictLabel, st.Invocations, st.OK, st.Fail, st.Info, len(r.Schedule.Faults))
 	if sh := r.Shrink; sh != nil {
 		s.Headline += fmt.Sprintf(" · shrunk from %d to %d faults in %d runs", sh.OriginalFaults, sh.MinimalFaults, sh.Runs)
 	}
@@ -374,6 +382,7 @@ func SuiteFromReport(r *Report, elapsed time.Duration) Suite {
 type SeedResult struct {
 	Seed        uint64
 	Verdict     checker.Verdict
+	Reason      string
 	Ops         int
 	Faults      int
 	Explanation string
@@ -386,10 +395,21 @@ type SeedResult struct {
 // mode (expectViolation) the suite holds a single case that passes when any
 // seed violates, because finding the bug is the point of the test.
 func ExplorationSuite(system, faults string, seeds []SeedResult, expectViolation bool, elapsed time.Duration) Suite {
+	expect := ""
+	if expectViolation {
+		expect = string(checker.Violation)
+	}
+	return ExplorationSuiteExpect(system, faults, seeds, expect, elapsed)
+}
+
+// ExplorationSuiteExpect builds the suite for a seed exploration using the
+// caller's expected verdict ("violation", "linearizable", "no-anomaly", or "").
+func ExplorationSuiteExpect(system, faults string, seeds []SeedResult, expect string, elapsed time.Duration) Suite {
 	sort.Slice(seeds, func(i, j int) bool { return seeds[i].Seed < seeds[j].Seed })
 	s := Suite{Name: fmt.Sprintf("simulation · %s", system), Time: elapsed,
 		Properties: []Property{{"strife.version", Version}, {"system", system}, {"faults", faults}, {"seeds", fmt.Sprint(len(seeds))}}}
 	var violating []uint64
+	var unknown int
 	var firstRepro string
 	for _, r := range seeds {
 		if r.Verdict == checker.Violation {
@@ -397,15 +417,20 @@ func ExplorationSuite(system, faults string, seeds []SeedResult, expectViolation
 			if firstRepro == "" {
 				firstRepro = r.Reproduce
 			}
+		} else if r.Verdict == checker.Unknown && r.Error == "" {
+			unknown++
 		}
 	}
 	if len(seeds) > 0 {
 		s.Properties = append(s.Properties, Property{"seed_range", fmt.Sprintf("%d..%d", seeds[0].Seed, seeds[len(seeds)-1].Seed)})
 	}
 	s.Headline = fmt.Sprintf("%d seeds of `%s` under `%s`: **%d violating**", len(seeds), system, faults, len(violating))
+	if unknown > 0 {
+		s.Headline += fmt.Sprintf(", **%d unknown**", unknown)
+	}
 	s.Reproduce = firstRepro
 
-	if expectViolation {
+	if expect == string(checker.Violation) {
 		c := Case{Name: "finds a violation", Class: system, Time: elapsed}
 		if len(violating) > 0 {
 			c.Status = Passed
@@ -418,7 +443,11 @@ func ExplorationSuite(system, faults string, seeds []SeedResult, expectViolation
 			if r.Error != "" {
 				c.Output += fmt.Sprintf("\nseed %d inconclusive: %s", r.Seed, r.Error)
 			} else if r.Verdict == checker.Unknown {
-				c.Output += fmt.Sprintf("\nseed %d inconclusive: %s", r.Seed, r.Verdict)
+				if r.Reason != "" {
+					c.Output += fmt.Sprintf("\nseed %d inconclusive: %s (%s)", r.Seed, r.Verdict, r.Reason)
+				} else {
+					c.Output += fmt.Sprintf("\nseed %d inconclusive: %s", r.Seed, r.Verdict)
+				}
 			}
 		}
 		s.Cases = []Case{c}
@@ -438,6 +467,13 @@ func ExplorationSuite(system, faults string, seeds []SeedResult, expectViolation
 				c.Message = "not linearizable"
 			}
 			c.Detail = fmt.Sprintf("%s\n\nReproduce:\n  %s\n", r.Explanation, r.Reproduce)
+		case r.Verdict == checker.Unknown && r.Reason == checker.ReasonIncomplete:
+			if expect == "no-anomaly" {
+				c.Status = Passed
+				c.Output += "; no anomaly found (sound incomplete)"
+			} else {
+				c.Status, c.Message = Errored, "no anomaly found; check is sound incomplete (decision procedure incomplete for large histories)"
+			}
 		case r.Verdict == checker.Unknown:
 			c.Status, c.Message = Errored, "search budget exhausted before a verdict"
 		}

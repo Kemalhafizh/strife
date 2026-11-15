@@ -49,16 +49,53 @@ type Diagnoser interface {
 	Diagnose(ops []history.Operation) (witness []int, diagnosis string, ok bool)
 }
 
-// Decider is implemented by models that are not checked by searching for a
-// linearization at all but by a direct decision procedure, such as Elle's
-// dependency-graph analysis of list-append transactions. Decide must be
-// sound: a reported violation is a proof. A model that implements Decider is
-// never searched, so a pass means "no anomaly found".
+// DecisionStatus distinguishes a proved pass, a proved violation, and an
+// inconclusive result where a sound-but-incomplete checker found no anomaly
+// but cannot claim completeness.
+type DecisionStatus uint8
+
+const (
+	// DecisionInconclusive indicates no violation was found, but the decision
+	// procedure did not establish completeness across the entire history.
+	DecisionInconclusive DecisionStatus = iota
+	// DecisionViolation indicates a provable violation with witness indices
+	// and diagnosis.
+	DecisionViolation
+	// DecisionVerified indicates every sequential/interleaving requirement of
+	// the model was proved across the history.
+	DecisionVerified
+)
+
+// String formats a DecisionStatus for logs and test failures.
+func (s DecisionStatus) String() string {
+	switch s {
+	case DecisionVerified:
+		return "verified"
+	case DecisionViolation:
+		return "violation"
+	default:
+		return "inconclusive"
+	}
+}
+
+// Decider is implemented by models that analyze a full partition directly via a
+// specialized decision procedure, such as Elle's dependency-graph analysis of
+// list-append transactions. Decide must be sound: a reported DecisionViolation
+// is a proof. When a procedure is sound but incomplete and detects no anomaly,
+// it must return DecisionInconclusive rather than DecisionVerified.
 type Decider interface {
-	// Decide returns whether ops violate the model, the indices of the
-	// operations that witness the first violation, a sentence explaining
-	// it, and the kinds of every violation found (e.g. "G2").
-	Decide(ops []history.Operation) (violation bool, witness []int, diagnosis string, kinds []string)
+	// Decide returns a tri-state DecisionStatus, the indices of the
+	// operations that witness the first violation (when DecisionViolation), a
+	// sentence explaining it, and the kinds of every violation found (e.g.
+	// "G2").
+	Decide(ops []history.Operation) (status DecisionStatus, witness []int, diagnosis string, kinds []string)
+}
+
+// CompleteSearcher is optionally implemented by Decider models whose Step
+// transition function matches the configured isolation/model semantics so the
+// checker can exhaustively search small histories when Decide is inconclusive.
+type CompleteSearcher interface {
+	SupportsCompleteSearch(ops []history.Operation) bool
 }
 
 // ReadOnly is implemented by models whose some operations never change the

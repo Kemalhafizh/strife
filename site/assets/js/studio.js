@@ -78,7 +78,7 @@
       h("div", { class: "result-head" },
         verdictBadge(res.verdict),
         h("span", { class: "muted small" },
-          `${res.model} · ${nf.format(res.keys)} ${t("studio_keys")} · ${nf.format(ops.invocations || 0)} ${t("try_ops")} ` +
+          `${res.reason ? `${res.reason} · ` : ""}${res.model} · ${nf.format(res.keys)} ${t("studio_keys")} · ${nf.format(ops.invocations || 0)} ${t("try_ops")} ` +
           `(${nf.format(ops.ok || 0)} ${t("try_ok")}, ${nf.format(ops.fail || 0)} ${t("try_fail")}, ${nf.format(ops.info || 0)} ${t("try_info")}) · ${nf.format(ms)} ms ${t("try_elapsed")}`)),
     ];
     if (res.failures && res.failures.length) {

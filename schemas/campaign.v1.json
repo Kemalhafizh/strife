@@ -254,6 +254,9 @@
         "ops": {
           "type": "integer"
         },
+        "reason": {
+          "type": "string"
+        },
         "report_path": {
           "type": "string"
         },

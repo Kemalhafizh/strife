@@ -42,7 +42,7 @@ type System struct {
 func Systems() []System {
 	var out []System
 	for _, s := range explore.Systems() {
-		out = append(out, System{Name: s.Name, Description: s.Description, Expect: string(s.Expect), Hint: s.Hint})
+		out = append(out, System{Name: s.Name, Description: s.Description, Expect: s.ExpectFlag(), Hint: s.Hint})
 	}
 	return out
 }
@@ -91,6 +91,7 @@ type SimResult struct {
 	System       string        `json:"system"`
 	Seed         uint64        `json:"seed"`
 	Verdict      string        `json:"verdict"`
+	Reason       string        `json:"reason,omitempty"`
 	Events       uint64        `json:"events"`
 	Simulated    string        `json:"simulated"`
 	Ops          history.Stats `json:"ops"`
@@ -102,6 +103,21 @@ type SimResult struct {
 	Command      string        `json:"command"`
 	ElapsedMS    int64         `json:"elapsed_ms"`
 	ReportHTML   string        `json:"report_html,omitempty"`
+}
+
+func unknownReason(rep checker.Report) string {
+	if rep.Verdict != checker.Unknown {
+		return ""
+	}
+	if rep.IsIncomplete() {
+		return checker.ReasonIncomplete
+	}
+	for _, k := range rep.Keys {
+		if k.Verdict == checker.Unknown && k.Reason != "" {
+			return k.Reason
+		}
+	}
+	return ""
 }
 
 // Simulate runs one deterministic simulation and checks it, as `strife sim`
@@ -123,6 +139,7 @@ func Simulate(req SimRequest) (*SimResult, error) {
 		System:       cfg.System,
 		Seed:         cfg.Seed,
 		Verdict:      string(res.Check.Verdict),
+		Reason:       unknownReason(res.Check),
 		Events:       res.Events,
 		Simulated:    cfg.Duration.String(),
 		Ops:          res.Check.Stats,
@@ -253,8 +270,8 @@ func failures(rep checker.Report) []KeyFailure {
 // CheckRequest selects how Check reads a history.
 type CheckRequest struct {
 	Name      string `json:"name"`      // file name shown in the report
-	Model     string `json:"model"`     // kv (default), set, queue, counter, idgen, txn, append
-	Isolation string `json:"isolation"` // for txn and append; default serializable
+	Model     string `json:"model"`     // kv (default), set, queue, counter, idgen, txn, append, ledger, settlement
+	Isolation string `json:"isolation"` // for txn, append, and ledger; default serializable
 	Report    bool   `json:"report,omitempty"`
 }
 
@@ -262,6 +279,7 @@ type CheckRequest struct {
 type CheckResult struct {
 	Model       string        `json:"model"`
 	Verdict     string        `json:"verdict"`
+	Reason      string        `json:"reason,omitempty"`
 	Operations  int           `json:"operations"`
 	Checked     int           `json:"checked"`
 	Keys        int           `json:"keys"`
@@ -313,6 +331,7 @@ func Check(jsonl []byte, req CheckRequest) (*CheckResult, error) {
 	out := &CheckResult{
 		Model:       m.Name(),
 		Verdict:     string(rep.Verdict),
+		Reason:      unknownReason(rep),
 		Operations:  rep.Operations,
 		Checked:     rep.Checked,
 		Keys:        len(rep.Keys),

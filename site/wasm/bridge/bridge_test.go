@@ -316,3 +316,64 @@ func TestSimulateSettlementAndCheckEDN(t *testing.T) {
 		t.Fatalf("expected violation on stale EDN history, got %s", chk.Verdict)
 	}
 }
+
+func TestSystemsExpectAndSoundIncompleteReason(t *testing.T) {
+	want := map[string]string{
+		"raft":              "linearizable",
+		"raft-ledger":       "no-anomaly",
+		"2pc-ledger":        "no-anomaly",
+		"outbox-settlement": "no-anomaly",
+		"raft-stale-reads":  "violation",
+	}
+	for _, s := range Systems() {
+		if w, ok := want[s.Name]; ok && s.Expect != w {
+			t.Errorf("Systems() %s expect = %q, want %q", s.Name, s.Expect, w)
+		}
+	}
+
+	simRes, err := Simulate(SimRequest{System: "raft-ledger", Faults: "none", Seed: 1, Duration: "1s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if simRes.Verdict != "unknown" || simRes.Reason != "sound incomplete" {
+		t.Fatalf("Simulate(raft-ledger) = verdict %q reason %q, want unknown / sound incomplete", simRes.Verdict, simRes.Reason)
+	}
+
+	var smallBuf bytes.Buffer
+	for i := 0; i < 4; i++ {
+		smallBuf.WriteString(appendLine(int64(i*20+10), i+1))
+	}
+	smallChk, err := Check(smallBuf.Bytes(), CheckRequest{Model: "append", Isolation: "strict-serializable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if smallChk.Verdict != "linearizable" || smallChk.Reason != "" {
+		t.Fatalf("small append Check = verdict %q reason %q, want linearizable / empty", smallChk.Verdict, smallChk.Reason)
+	}
+
+	var largeBuf bytes.Buffer
+	for i := 0; i < 20; i++ {
+		largeBuf.WriteString(appendLine(int64(i*20+10), i+1))
+	}
+	largeChk, err := Check(largeBuf.Bytes(), CheckRequest{Model: "append", Isolation: "strict-serializable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if largeChk.Verdict != "unknown" || largeChk.Reason != "sound incomplete" {
+		t.Fatalf("large append Check = verdict %q reason %q, want unknown / sound incomplete", largeChk.Verdict, largeChk.Reason)
+	}
+}
+
+func appendLine(start int64, val int) string {
+	v := int64(val)
+	txn := []history.MicroOp{{F: history.MicroAppend, Key: "k0", Value: &v}}
+	b1, _ := json.Marshal(history.Op{
+		Type: history.Invoke, Process: 0, F: history.FTxn, Txn: txn,
+		Time: start,
+	})
+	b2, _ := json.Marshal(history.Op{
+		Type: history.OK, Process: 0, F: history.FTxn, Txn: txn,
+		Time: start + 10,
+	})
+	return string(b1) + "\n" + string(b2) + "\n"
+}

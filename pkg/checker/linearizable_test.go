@@ -2,6 +2,7 @@ package checker
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/kemalhafizh/strife/internal/rng"
@@ -508,5 +509,261 @@ func TestTxnModelIntegration(t *testing.T) {
 	}
 	if r.Keys[0].Counterexample.Diagnosis == "" {
 		t.Fatal("expected non-empty diagnosis for transactional violation")
+	}
+}
+
+func randomSetHistory(r *rng.Rand, n int) []history.Operation {
+	var ops []history.Operation
+	for i := 0; i < n; i++ {
+		call := r.Int64n(16)
+		ret := call + 1 + r.Int64n(6)
+		in := history.Op{Index: i, Process: i, Type: history.Invoke}
+		out := history.Op{Process: i, Type: history.OK}
+		if r.Bool(0.55) {
+			in.F, in.Value = "add", v(1+r.Int64n(3))
+			out.F, out.Value = "add", in.Value
+		} else {
+			in.F, out.F = "read", "read"
+			k := r.Intn(3)
+			for j := 0; j < k; j++ {
+				out.Values = append(out.Values, 1+r.Int64n(3))
+			}
+		}
+		if in.F == "add" && r.Bool(0.15) {
+			out.Type, ret = history.Info, history.Infinity
+		}
+		ops = append(ops, history.Operation{ID: i, Process: i, Call: call, Return: ret, Input: in, Output: out})
+	}
+	return ops
+}
+
+func randomCounterHistory(r *rng.Rand, n int) []history.Operation {
+	var ops []history.Operation
+	for i := 0; i < n; i++ {
+		call := r.Int64n(16)
+		ret := call + 1 + r.Int64n(6)
+		in := history.Op{Index: i, Process: i, Type: history.Invoke, Key: "c"}
+		out := history.Op{Process: i, Type: history.OK, Key: "c"}
+		switch r.Intn(3) {
+		case 0:
+			in.F, out.F = "add", "add"
+			delta := 1 + r.Int64n(2)
+			in.Value = v(delta)
+			out.Value = v(delta)
+		case 1:
+			in.F, out.F = "inc", "inc"
+		default:
+			in.F, out.F = "read", "read"
+			out.Value = v(r.Int64n(5))
+		}
+		if in.F != "read" && r.Bool(0.15) {
+			out.Type, ret = history.Info, history.Infinity
+		}
+		ops = append(ops, history.Operation{ID: i, Process: i, Call: call, Return: ret, Input: in, Output: out})
+	}
+	return ops
+}
+
+func randomQueueHistory(r *rng.Rand, n int) []history.Operation {
+	var ops []history.Operation
+	for i := 0; i < n; i++ {
+		call := r.Int64n(16)
+		ret := call + 1 + r.Int64n(6)
+		in := history.Op{Index: i, Process: i, Type: history.Invoke, Key: "q"}
+		out := history.Op{Process: i, Type: history.OK, Key: "q"}
+		if r.Bool(0.55) {
+			in.F, out.F = "enqueue", "enqueue"
+			in.Value = v(1 + r.Int64n(3))
+			out.Value = in.Value
+		} else {
+			in.F, out.F = "dequeue", "dequeue"
+			if r.Bool(0.75) {
+				out.Value = v(1 + r.Int64n(3))
+			}
+		}
+		if in.F == "enqueue" && r.Bool(0.1) {
+			out.Type, ret = history.Info, history.Infinity
+		}
+		ops = append(ops, history.Operation{ID: i, Process: i, Call: call, Return: ret, Input: in, Output: out})
+	}
+	return ops
+}
+
+func randomIDGenHistory(r *rng.Rand, n int) []history.Operation {
+	var ops []history.Operation
+	for i := 0; i < n; i++ {
+		call := r.Int64n(16)
+		ret := call + 1 + r.Int64n(6)
+		in := history.Op{Index: i, Process: i, Type: history.Invoke, Key: "id", F: "generate"}
+		out := history.Op{Process: i, Type: history.OK, Key: "id", F: "generate", Value: v(1 + r.Int64n(4))}
+		if r.Bool(0.15) {
+			out.Type, ret = history.Info, history.Infinity
+			out.Value = nil
+		}
+		ops = append(ops, history.Operation{ID: i, Process: i, Call: call, Return: ret, Input: in, Output: out})
+	}
+	return ops
+}
+
+func randomAppendHistory(r *rng.Rand, n int, uniqueVal *int64) []history.Operation {
+	var ops []history.Operation
+	keys := []string{"k0", "k1"}
+	seenByKey := map[string][]int64{}
+	infoCount := 0
+	for i := 0; i < n; i++ {
+		call := r.Int64n(16)
+		ret := call + 1 + r.Int64n(6)
+		k := keys[r.Intn(len(keys))]
+		var micro []history.MicroOp
+		hasRead := r.Bool(0.5)
+		hasAppend := r.Bool(0.6) || !hasRead
+		if hasAppend {
+			*uniqueVal++
+			val := *uniqueVal
+			seenByKey[k] = append(seenByKey[k], val)
+			micro = append(micro, history.MicroOp{F: history.MicroAppend, Key: k, Value: v(val)})
+		}
+		if hasRead {
+			pool := seenByKey[k]
+			var vs []int64
+			if len(pool) > 0 && r.Bool(0.8) {
+				start := 0
+				end := 1 + r.Intn(len(pool))
+				if r.Bool(0.3) && end > start {
+					start = r.Intn(end)
+				}
+				vs = append([]int64(nil), pool[start:end]...)
+			}
+			micro = append(micro, history.MicroOp{F: history.MicroRead, Key: k, Values: vs})
+		}
+		in := history.Op{Index: i, Process: i, Type: history.Invoke, F: history.FTxn, Txn: micro}
+		out := history.Op{Process: i, Type: history.OK, F: history.FTxn, Txn: micro}
+		if !hasRead && infoCount < 2 && r.Bool(0.15) {
+			infoCount++
+			out.Type, ret = history.Info, history.Infinity
+		}
+		ops = append(ops, history.Operation{ID: i, Process: i, Call: call, Return: ret, Input: in, Output: out})
+	}
+	return ops
+}
+
+// TestDifferentialOptimizerEquivalence verifies that every WGL optimization mode
+// (default fast paths, SearchOnly, disabled eagerRead, disabled kvPruner, and
+// both optimizers disabled) agrees with the brute-force oracle across multiple
+// models on randomized small histories.
+func TestDifferentialOptimizerEquivalence(t *testing.T) {
+	modes := []struct {
+		name string
+		opts Options
+	}{
+		{"default", Options{Parallelism: 1}},
+		{"search_only", Options{Parallelism: 1, SearchOnly: true}},
+		{"no_eager_read", Options{Parallelism: 1, disableEagerRead: true}},
+		{"no_pruner", Options{Parallelism: 1, disablePruner: true}},
+		{"baseline_wgl", Options{Parallelism: 1, disableEagerRead: true, disablePruner: true}},
+	}
+
+	r := rng.New(9991)
+	var appendSeq int64
+	models := []struct {
+		name  string
+		model model.Model
+		iters int
+		gen   func() []history.Operation
+	}{
+		{"kv", model.KV{}, 600, func() []history.Operation { return randomHistory(r, 1+r.Intn(6)) }},
+		{"set", model.Set{}, 200, func() []history.Operation { return randomSetHistory(r, 1+r.Intn(6)) }},
+		{"counter", model.Counter{}, 200, func() []history.Operation { return randomCounterHistory(r, 1+r.Intn(6)) }},
+		{"queue", model.Queue{}, 200, func() []history.Operation { return randomQueueHistory(r, 1+r.Intn(6)) }},
+		{"idgen", model.IDGen{}, 200, func() []history.Operation { return randomIDGenHistory(r, 1+r.Intn(6)) }},
+		{"append_strict", model.Append{Level: "strict-serializable"}, 200, func() []history.Operation { return randomAppendHistory(r, 1+r.Intn(6), &appendSeq) }},
+	}
+
+	for _, mc := range models {
+		t.Run(mc.name, func(t *testing.T) {
+			counts := map[Verdict]int{}
+			for iter := 0; iter < mc.iters; iter++ {
+				ops := mc.gen()
+				want := bruteForce(mc.model, ops)
+				for _, mode := range modes {
+					got := CheckOperations(mc.model, ops, mode.opts)
+					if (got.Verdict == Linearizable) != want {
+						t.Fatalf("iter %d mode %s: got=%s wantLinearizable=%v\n%s", iter, mode.name, got.Verdict, want, dump(ops))
+					}
+					if mode.name == "default" {
+						counts[got.Verdict]++
+					}
+				}
+			}
+			if counts[Linearizable] == 0 || counts[Violation] == 0 {
+				t.Fatalf("model %s histories lacked both outcomes: %v", mc.name, counts)
+			}
+		})
+	}
+}
+
+func TestDeciderSoundIncompleteAndBoundedCompleteSearch(t *testing.T) {
+	// 1. Empty sound-incomplete model history proves Linearizable.
+	for _, m := range []model.Model{
+		model.Append{Level: "serializable"},
+		model.Ledger{InitialBalance: 1000},
+		model.Settlement{},
+	} {
+		rep := CheckOperations(m, nil, Options{})
+		if rep.Verdict != Linearizable || rep.IsIncomplete() || !rep.NoAnomalyFound() {
+			t.Fatalf("%s empty history: got verdict=%s incomplete=%v noAnomaly=%v",
+				m.Name(), rep.Verdict, rep.IsIncomplete(), rep.NoAnomalyFound())
+		}
+	}
+
+	// 2. Clean non-strict Append returns Unknown ("sound incomplete"), not Linearizable.
+	nonStrict := []history.Operation{
+		{
+			ID: 0, Process: 0, Call: 10, Return: 20,
+			Input:  history.Op{Index: 0, Process: 0, Type: history.Invoke, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "k0", Value: v(1)}}},
+			Output: history.Op{Index: 1, Process: 0, Type: history.OK, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "k0", Value: v(1)}}},
+		},
+	}
+	repSer := CheckOperations(model.Append{Level: "serializable"}, nonStrict, Options{})
+	if repSer.Verdict != Unknown || !repSer.IsIncomplete() || !repSer.NoAnomalyFound() {
+		t.Fatalf("serializable append: got verdict=%s reason=%q incomplete=%v noAnomaly=%v",
+			repSer.Verdict, repSer.Keys[0].Reason, repSer.IsIncomplete(), repSer.NoAnomalyFound())
+	}
+
+	// 3. Small clean strict-serializable Append verifies Linearizable via bounded WGL fallback.
+	repStrictSmall := CheckOperations(model.Append{Level: "strict-serializable"}, nonStrict, Options{})
+	if repStrictSmall.Verdict != Linearizable || repStrictSmall.IsIncomplete() || !repStrictSmall.NoAnomalyFound() {
+		t.Fatalf("small strict append: got verdict=%s incomplete=%v noAnomaly=%v",
+			repStrictSmall.Verdict, repStrictSmall.IsIncomplete(), repStrictSmall.NoAnomalyFound())
+	}
+
+	// 4. Large clean strict-serializable Append (> 16 ops) yields Unknown ("sound incomplete").
+	var large []history.Operation
+	var cur []int64
+	for i := 0; i < 18; i++ {
+		val := int64(i + 1)
+		cur = append(slices.Clone(cur), val)
+		micro := []history.MicroOp{
+			{F: history.MicroAppend, Key: "k0", Value: v(val)},
+			{F: history.MicroRead, Key: "k0", Values: cur},
+		}
+		large = append(large, history.Operation{
+			ID: i, Process: 0, Call: int64(i * 10), Return: int64(i*10 + 5),
+			Input:  history.Op{Index: i * 2, Process: 0, Type: history.Invoke, F: history.FTxn, Txn: micro},
+			Output: history.Op{Index: i*2 + 1, Process: 0, Type: history.OK, F: history.FTxn, Txn: micro},
+		})
+	}
+	repLarge := CheckOperations(model.Append{Level: "strict-serializable"}, large, Options{})
+	if repLarge.Verdict != Unknown || !repLarge.IsIncomplete() || !repLarge.NoAnomalyFound() {
+		t.Fatalf("large strict append: got verdict=%s reason=%q incomplete=%v noAnomaly=%v",
+			repLarge.Verdict, repLarge.Keys[0].Reason, repLarge.IsIncomplete(), repLarge.NoAnomalyFound())
+	}
+
+	// 5. Budget exhaustion Unknown is distinct from sound-incomplete and does NOT satisfy NoAnomalyFound.
+	kvOps := generateConcurrentKVHistory(2026, 40, 8, 4)
+	repBudget := CheckOperations(model.KV{}, kvOps, Options{SearchOnly: true, MaxSteps: 1})
+	if repBudget.Verdict != Unknown || repBudget.Keys[0].Reason != ReasonSteps || repBudget.IsIncomplete() || repBudget.NoAnomalyFound() {
+		t.Fatalf("budget exhaustion: got verdict=%s reason=%q incomplete=%v noAnomaly=%v",
+			repBudget.Verdict, repBudget.Keys[0].Reason, repBudget.IsIncomplete(), repBudget.NoAnomalyFound())
 	}
 }

@@ -51,6 +51,9 @@ func Suite(m *Manifest, expect string) report.Suite {
 
 	headline := fmt.Sprintf("Campaign `%s` · %d seeds of `%s` under `%s`: **%d passed**, **%d violating**",
 		m.CampaignID, m.TotalSeeds, m.System, faultStr, m.Passed, m.Violations)
+	if m.Unknown > 0 {
+		headline += fmt.Sprintf(", **%d unknown**", m.Unknown)
+	}
 	if m.Comparison != nil {
 		headline += fmt.Sprintf(" · baseline diff: **%d regressed**, **%d fixed**, **%d persistent**",
 			len(m.Comparison.Regressed), len(m.Comparison.Fixed), len(m.Comparison.PersistentFailures))
@@ -143,6 +146,14 @@ func Suite(m *Manifest, expect string) report.Suite {
 				}
 				c.Message = msg
 				c.Detail = fmt.Sprintf("%s\n\nReproduce:\n  %s\n", msg, rec.Reproduce)
+			}
+		case rec.Verdict == checker.Unknown && rec.Reason == checker.ReasonIncomplete:
+			if expect == "no-anomaly" {
+				c.Status = report.Passed
+				c.Output += "; no anomaly found (sound incomplete)"
+			} else {
+				c.Status = report.Errored
+				c.Message = "no anomaly found; check is sound incomplete (decision procedure incomplete for large histories)"
 			}
 		case rec.Verdict == checker.Unknown:
 			c.Status = report.Errored

@@ -31,6 +31,7 @@ type Config struct {
 	ListenAddr      string
 	StoreDir        string
 	Token           string
+	TenantTokens    map[string]string
 	SigningKeyPath  string
 	TenantKeyPaths  map[string]string
 	Signer          string
@@ -38,6 +39,7 @@ type Config struct {
 	WebhookTimeout  time.Duration
 	MaxMTTR         time.Duration
 	MinAvailability float64
+	JobLease        time.Duration
 }
 
 func normalizeAvailability(v float64) float64 {
@@ -64,18 +66,19 @@ type PublicKeyInfo struct {
 
 // Server is the strife serve HTTP daemon and run registry.
 type Server struct {
-	cfg        Config
-	store      *Store
-	privKey    ed25519.PrivateKey
-	keyID      string
-	tenantKeys map[string]ed25519.PrivateKey
-	startTime  time.Time
-	httpSrv    *http.Server
-	webhookMu  sync.Mutex
-	deliveries []WebhookDelivery
-	jobMu      sync.Mutex
-	jobs       []*Job
-	jobSeq     uint64
+	cfg          Config
+	store        *Store
+	privKey      ed25519.PrivateKey
+	keyID        string
+	tenantKeys   map[string]ed25519.PrivateKey
+	tenantTokens map[string]string
+	startTime    time.Time
+	httpSrv      *http.Server
+	webhookMu    sync.Mutex
+	deliveries   []WebhookDelivery
+	jobMu        sync.Mutex
+	jobs         []*Job
+	jobSeq       uint64
 }
 
 // IngestPayload accepts either a wrapped ingest envelope, a raw report.Report,
@@ -98,6 +101,36 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("serve: %w", err)
 	}
 	cfg.MinAvailability = normAvail
+	if cfg.JobLease < 0 {
+		return nil, fmt.Errorf("serve: job_lease %v must be non-negative", cfg.JobLease)
+	}
+	if cfg.JobLease == 0 {
+		cfg.JobLease = 2 * time.Minute
+	}
+
+	tenantTokens := make(map[string]string, len(cfg.TenantTokens))
+	seenTokens := make(map[string]string, len(cfg.TenantTokens)+1)
+	if cfg.Token != "" {
+		seenTokens[cfg.Token] = "admin"
+	}
+	for rawTenant, tok := range cfg.TenantTokens {
+		trimmedTenant := strings.TrimSpace(rawTenant)
+		if trimmedTenant == "" {
+			return nil, fmt.Errorf("serve: tenant token entry has empty tenant name")
+		}
+		t := normalizeTenant(trimmedTenant)
+		if tok == "" {
+			return nil, fmt.Errorf("serve: tenant %q token must be non-empty", t)
+		}
+		if _, dup := tenantTokens[t]; dup {
+			return nil, fmt.Errorf("serve: duplicate tenant token entry for %q", t)
+		}
+		if prevOwner, dup := seenTokens[tok]; dup {
+			return nil, fmt.Errorf("serve: duplicate bearer token shared between %s and tenant %q", prevOwner, t)
+		}
+		tenantTokens[t] = tok
+		seenTokens[tok] = fmt.Sprintf("tenant %q", t)
+	}
 
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:8080"
@@ -132,12 +165,13 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:        cfg,
-		store:      st,
-		privKey:    priv,
-		keyID:      keyID,
-		tenantKeys: tenantKeys,
-		startTime:  time.Now().UTC(),
+		cfg:          cfg,
+		store:        st,
+		privKey:      priv,
+		keyID:        keyID,
+		tenantKeys:   tenantKeys,
+		tenantTokens: tenantTokens,
+		startTime:    time.Now().UTC(),
 	}
 	if err := s.loadJobs(); err != nil {
 		return nil, fmt.Errorf("serve: load jobs: %w", err)
@@ -185,20 +219,72 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpSrv.Shutdown(ctx)
 }
 
-func (s *Server) hasValidAuth(r *http.Request) bool {
-	if s.cfg.Token == "" {
-		return true
-	}
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+type authIdentity struct {
+	enabled bool
+	ok      bool
+	isAdmin bool
+	tenant  string
 }
 
-func (s *Server) checkAuth(w http.ResponseWriter, r *http.Request) bool {
-	if !s.hasValidAuth(r) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return false
+func (a authIdentity) allowsTenant(tenant string) bool {
+	if a.isAdmin {
+		return true
 	}
-	return true
+	return normalizeTenant(tenant) == a.tenant
+}
+
+func (s *Server) authEnabled() bool {
+	return s.cfg.Token != "" || len(s.tenantTokens) > 0
+}
+
+func extractBearerToken(r *http.Request) (string, bool) {
+	hdr := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(hdr) < len("Bearer ") {
+		return "", false
+	}
+	if !strings.EqualFold(hdr[:6], "Bearer") || (hdr[6] != ' ' && hdr[6] != '\t') {
+		return "", false
+	}
+	tok := strings.TrimSpace(hdr[7:])
+	if tok == "" {
+		return "", false
+	}
+	return tok, true
+}
+
+func (s *Server) authFromRequest(r *http.Request) authIdentity {
+	if !s.authEnabled() {
+		return authIdentity{enabled: false, ok: true, isAdmin: true}
+	}
+	tok, hasBearer := extractBearerToken(r)
+	if !hasBearer {
+		return authIdentity{enabled: true, ok: false}
+	}
+	id := authIdentity{enabled: true}
+	if s.cfg.Token != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.Token)) == 1 {
+		id.ok = true
+		id.isAdmin = true
+	}
+	for tenant, secretTok := range s.tenantTokens {
+		if subtle.ConstantTimeCompare([]byte(tok), []byte(secretTok)) == 1 {
+			id.ok = true
+			id.tenant = tenant
+		}
+	}
+	return id
+}
+
+func (s *Server) hasValidAuth(r *http.Request) bool {
+	return s.authFromRequest(r).ok
+}
+
+func (s *Server) checkAuthIdentity(w http.ResponseWriter, r *http.Request) (authIdentity, bool) {
+	id := s.authFromRequest(r)
+	if !id.ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return id, false
+	}
+	return id, true
 }
 
 func (s *Server) signingKeyForTenant(tenant string) (ed25519.PrivateKey, string) {
@@ -263,18 +349,36 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	runs := s.store.List("", "")
+	id := s.authFromRequest(r)
 	resp := map[string]any{
 		"status":              "ok",
 		"version":             report.Version,
 		"uptime_seconds":      int64(time.Since(s.startTime).Seconds()),
-		"stored_runs":         len(runs),
-		"targets":             s.store.Targets(),
-		"tenants":             s.store.Tenants(),
+		"auth_enabled":        s.authEnabled(),
 		"signing_active":      len(s.privKey) == ed25519.PrivateKeySize || len(s.tenantKeys) > 0,
 		"key_id":              s.keyID,
 		"tenant_keys":         len(s.tenantKeys),
 		"webhooks_configured": len(s.cfg.Webhooks),
+	}
+	if id.ok {
+		if id.isAdmin {
+			runs := s.store.List("", "")
+			resp["stored_runs"] = len(runs)
+			resp["targets"] = s.store.Targets()
+			resp["tenants"] = s.store.Tenants()
+		} else {
+			runs := s.store.List("", "", id.tenant)
+			var targets []string
+			for _, e := range runs {
+				if e.Target != "" && !slices.Contains(targets, e.Target) {
+					targets = append(targets, e.Target)
+				}
+			}
+			slices.Sort(targets)
+			resp["stored_runs"] = len(runs)
+			resp["targets"] = targets
+			resp["tenants"] = []string{id.tenant}
+		}
 	}
 	if s.cfg.MaxMTTR > 0 {
 		resp["sla_max_mttr_ms"] = s.cfg.MaxMTTR.Milliseconds()
@@ -288,6 +392,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWebhooks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	id, ok := s.checkAuthIdentity(w, r)
+	if !ok {
+		return
+	}
+	if !id.isAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: admin token required"})
 		return
 	}
 	s.webhookMu.Lock()
@@ -308,9 +420,20 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	id, ok := s.checkAuthIdentity(w, r)
+	if !ok {
+		return
+	}
 	target := strings.TrimSpace(r.URL.Query().Get("target"))
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	if !id.isAdmin {
+		if tenant != "" && normalizeTenant(tenant) != id.tenant {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
+			return
+		}
+		tenant = id.tenant
+	}
 	runs := s.store.List(target, kind, tenant)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": len(runs),
@@ -323,7 +446,18 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	id, ok := s.checkAuthIdentity(w, r)
+	if !ok {
+		return
+	}
 	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	if !id.isAdmin {
+		if tenant != "" && normalizeTenant(tenant) != id.tenant {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
+			return
+		}
+		tenant = id.tenant
+	}
 	target := strings.TrimSpace(r.URL.Query().Get("target"))
 	series := s.store.Series(tenant, target)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -337,6 +471,10 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	idAuth, ok := s.checkAuthIdentity(w, r)
+	if !ok {
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/runs/")
 	id = strings.TrimSpace(strings.TrimSuffix(id, "/"))
 	if id == "" {
@@ -345,21 +483,29 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(id, "/dossier") {
 		runID := strings.TrimSpace(strings.TrimSuffix(id, "/dossier"))
-		s.handleRunDossier(w, r, runID)
+		s.handleRunDossier(w, r, idAuth, runID)
 		return
 	}
-	_, payload, err := s.store.Lookup(id)
+	entry, payload, err := s.store.Lookup(id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	if !idAuth.allowsTenant(entry.Tenant) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: run belongs to another tenant"})
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
-func (s *Server) handleRunDossier(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) handleRunDossier(w http.ResponseWriter, r *http.Request, idAuth authIdentity, id string) {
 	entry, _, err := s.store.Lookup(id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	if !idAuth.allowsTenant(entry.Tenant) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: run belongs to another tenant"})
 		return
 	}
 	rep, camp, bundle, err := s.store.LoadDossierInputs(id)
@@ -440,7 +586,8 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !s.checkAuth(w, r) {
+	idAuth, ok := s.checkAuthIdentity(w, r)
+	if !ok {
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024*1024))
@@ -489,6 +636,14 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			}
 			env.Report = &rep
 		}
+	}
+
+	if !idAuth.isAdmin {
+		if tenant != "" && normalizeTenant(tenant) != idAuth.tenant {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
+			return
+		}
+		tenant = idAuth.tenant
 	}
 
 	var (

@@ -72,8 +72,27 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) (int, error) {
 			}
 			logf("worker claim error: %v", err)
 		} else if job != nil {
-			logf("claimed job %s (kind=%s, system=%s)", job.ID, job.Kind, job.System)
+			logf("claimed job %s (kind=%s, system=%s, attempt=%d)", job.ID, job.Kind, job.System, job.Attempts)
+			hbCtx, cancelHB := context.WithCancel(ctx)
+			hbDone := make(chan struct{})
+			go func(j *Job) {
+				defer close(hbDone)
+				ticker := time.NewTicker(workerHeartbeatInterval(j))
+				defer ticker.Stop()
+				for {
+					select {
+					case <-hbCtx.Done():
+						return
+					case <-ticker.C:
+						if err := heartbeatJob(hbCtx, client, baseURL, cfg.Token, j.ID, cfg.WorkerID, j.ClaimToken); err != nil && hbCtx.Err() == nil {
+							logf("worker heartbeat error for %s: %v", j.ID, err)
+						}
+					}
+				}
+			}(job)
 			compReq := executeJob(ctx, job, cfg.WorkerID)
+			cancelHB()
+			<-hbDone
 			if err := completeJob(ctx, client, baseURL, cfg.Token, job.ID, compReq); err != nil {
 				if cfg.Once {
 					return processed, fmt.Errorf("worker complete %s: %w", job.ID, err)
@@ -97,6 +116,35 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) (int, error) {
 		case <-time.After(cfg.PollInterval):
 		}
 	}
+}
+
+func workerHeartbeatInterval(job *Job) time.Duration {
+	const defaultInterval = 15 * time.Second
+	if job == nil || job.LeaseExpiresAt == "" {
+		return defaultInterval
+	}
+	exp, err := time.Parse(time.RFC3339Nano, job.LeaseExpiresAt)
+	if err != nil {
+		return defaultInterval
+	}
+	base := time.Now().UTC()
+	if job.ClaimedAt != "" {
+		if c, cerr := time.Parse(time.RFC3339Nano, job.ClaimedAt); cerr == nil {
+			base = c
+		}
+	}
+	lease := exp.Sub(base)
+	if lease <= 0 {
+		return defaultInterval
+	}
+	interval := lease / 3
+	if interval < 25*time.Millisecond {
+		interval = 25 * time.Millisecond
+	}
+	if interval > 30*time.Second {
+		interval = 30 * time.Second
+	}
+	return interval
 }
 
 func claimNextJob(ctx context.Context, client *http.Client, baseURL, token, workerID, tenant string) (*Job, error) {
@@ -129,6 +177,31 @@ func claimNextJob(ctx context.Context, client *http.Client, baseURL, token, work
 	return &job, nil
 }
 
+func heartbeatJob(ctx context.Context, client *http.Client, baseURL, token, jobID, workerID, claimToken string) error {
+	body, err := json.Marshal(JobHeartbeatRequest{WorkerID: workerID, ClaimToken: claimToken})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/jobs/"+jobID+"/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("heartbeat HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	return nil
+}
+
 func completeJob(ctx context.Context, client *http.Client, baseURL, token, jobID string, payload JobCompleteRequest) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -155,7 +228,7 @@ func completeJob(ctx context.Context, client *http.Client, baseURL, token, jobID
 }
 
 func executeJob(ctx context.Context, job *Job, workerID string) JobCompleteRequest {
-	out := JobCompleteRequest{WorkerID: workerID}
+	out := JobCompleteRequest{WorkerID: workerID, ClaimToken: job.ClaimToken}
 	switch job.Kind {
 	case "sim":
 		cfg, err := buildExploreConfig(job)

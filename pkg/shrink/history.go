@@ -111,8 +111,8 @@ func History(ctx context.Context, m model.Model, raw []history.Op, opts HistoryO
 	// If the model provides a sound, provable certificate (e.g. cycle or stale register read),
 	// verify if that witness alone violates.
 	if d, ok := m.(model.Decider); ok {
-		bad, idx, diag, _ := d.Decide(violatingOps)
-		if bad && len(idx) > 0 {
+		st, idx, diag, _ := d.Decide(violatingOps)
+		if st == model.DecisionViolation && len(idx) > 0 {
 			witness := make([]history.Operation, len(idx))
 			for i, j := range idx {
 				witness[i] = violatingOps[j]

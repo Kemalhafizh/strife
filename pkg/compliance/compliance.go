@@ -243,11 +243,12 @@ func Evaluate(opts Options) (*Dossier, error) {
 		sum.SLABreached = true
 		sum.SLABreachReason = strings.Join(breachReasons, "; ")
 	}
-	meth := buildMethodology(sum)
+	meth := buildMethodology(sum, (opts.Report != nil && opts.Report.Check.IsIncomplete()) || (opts.Campaign != nil && opts.Campaign.IsIncomplete()))
 
+	incomplete := (opts.Report != nil && opts.Report.Check.IsIncomplete()) || (opts.Campaign != nil && opts.Campaign.IsIncomplete())
 	var controls []ControlResult
 	for _, fw := range fws {
-		controls = append(controls, evaluateFramework(fw, sum)...)
+		controls = append(controls, evaluateFramework(fw, sum, incomplete)...)
 	}
 
 	overall := StatusPass
@@ -409,12 +410,25 @@ func applySLAGate(cr ControlResult, sum EvidenceSummary) ControlResult {
 	return cr
 }
 
-func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
+type safetyState uint8
+
+const (
+	safetyFail safetyState = iota
+	safetyIncomplete
+	safetyPass
+)
+
+func evaluateFramework(fw FrameworkID, sum EvidenceSummary, incomplete bool) []ControlResult {
 	hasNetFault := hasAnyFault(sum.FaultKindsExercised, nemesis.Partition, nemesis.Latency, nemesis.Loss)
 	hasCrashFault := hasAnyFault(sum.FaultKindsExercised, nemesis.Kill, nemesis.Pause, nemesis.Freeze)
 	hasStorageFault := hasAnyFault(sum.FaultKindsExercised, nemesis.IOStall, nemesis.Kill)
 	hasClockFault := hasAnyFault(sum.FaultKindsExercised, nemesis.ClockSkew)
-	isClean := sum.Verdict == checker.Linearizable && sum.SeedsViolating == 0
+	safety := safetyFail
+	if sum.Verdict == checker.Linearizable && sum.SeedsViolating == 0 {
+		safety = safetyPass
+	} else if incomplete && sum.SeedsViolating == 0 {
+		safety = safetyIncomplete
+	}
 
 	switch fw {
 	case FrameworkDORA:
@@ -424,7 +438,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"dora.resilience-testing",
 				"Digital Operational Resilience Testing",
 				"ICT systems supporting critical functions must undergo resilience testing under adverse network and infrastructure disruption scenarios.",
-				isClean,
+				safety,
 				hasNetFault && hasCrashFault,
 				fmt.Sprintf("Target %q (%s) tested across %d seed(s) and %d operations with fault classes [%s]; verdict=%s.",
 					sum.Target, sum.RunKind, sum.SeedsTested, sum.TotalOperations, formatFaultList(sum.FaultKindsExercised), sum.Verdict),
@@ -435,7 +449,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"dora.data-integrity",
 				"Protection of Data Integrity Under Disruption",
 				"ICT systems must prevent data corruption, stale reads, lost updates, or split-brain divergence during network or storage failures.",
-				isClean,
+				safety,
 				sum.TotalOperations > 0,
 				fmt.Sprintf("Model %q verified %d client operations across %d seed(s): %d linearizable, %d violating (fingerprint %s).",
 					sum.Model, sum.TotalOperations, sum.SeedsTested, sum.SeedsLinearizable, sum.SeedsViolating, shortHash(sum.Fingerprint)),
@@ -446,7 +460,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"dora.recovery",
 				"Crash Recovery & Storage Durability Verification",
 				"Recovery procedures and write-ahead log / fsync durability must preserve committed data across sudden termination and I/O stalls.",
-				isClean,
+				safety,
 				hasStorageFault,
 				fmt.Sprintf("Storage/crash fault coverage: [%s] on %d-node cluster; verdict=%s.",
 					formatFaultList(sum.FaultKindsExercised), sum.Nodes, sum.Verdict),
@@ -461,7 +475,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"soc2.processing-integrity",
 				"Processing Integrity (Completeness & Accuracy)",
 				"System processing is complete, valid, accurate, and authorized without anomaly cycles or stale state transitions.",
-				isClean,
+				safety,
 				sum.TotalOperations > 0,
 				fmt.Sprintf("WGL/Elle formal checker verified %d operations against %q specification; verdict=%s.",
 					sum.TotalOperations, sum.Model, sum.Verdict),
@@ -472,7 +486,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"soc2.recovery",
 				"Availability & Environmental Disruption Recovery",
 				"System maintains safety invariants and recovers processing capacity during network partitions and node failures.",
-				isClean,
+				safety,
 				len(sum.FaultKindsExercised) > 0,
 				fmt.Sprintf("Executed %d fault injection transition(s) across fault classes [%s] on %d nodes.",
 					sum.FaultCount, formatFaultList(sum.FaultKindsExercised), sum.Nodes),
@@ -483,7 +497,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"soc2.test-evidence",
 				"Signed Evidence of Control Testing",
 				"Resilience test results used in a separate evaluation of controls are tamper-evident and attributable to the party that ran them.",
-				true,
+				safetyPass,
 				sum.Attested,
 				attestEvidenceString(sum),
 				"Sign the report with 'strife sign --report report.json --key auditor.key' and pass '--bundle bundle.json --key auditor.pub' to bind cryptographic non-repudiation.",
@@ -497,7 +511,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"iso27001.redundancy",
 				"Information Backup & Redundancy of Processing Facilities",
 				"Redundant cluster nodes preserve committed state and quorum safety when minority nodes fail or disconnect.",
-				isClean,
+				safety,
 				sum.Nodes >= 3 && (hasNetFault || hasCrashFault),
 				fmt.Sprintf("Cluster of %d node(s) tested under [%s]; verdict=%s.",
 					sum.Nodes, formatFaultList(sum.FaultKindsExercised), sum.Verdict),
@@ -508,7 +522,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"iso27001.clock-sync",
 				"Clock Synchronization & Drift Resilience",
 				"Distributed coordination and leader leases remain safe under local clock skew or wall-clock jumps.",
-				isClean,
+				safety,
 				hasClockFault,
 				fmt.Sprintf("Clock fault exercised=%v (faults: [%s]); verdict=%s.",
 					hasClockFault, formatFaultList(sum.FaultKindsExercised), sum.Verdict),
@@ -519,7 +533,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"iso27001.security-testing",
 				"Security & Resilience Testing in Development and Acceptance",
 				"Automated, reproducible chaos and consistency verification gates are executed with deterministic seed tracking.",
-				isClean,
+				safety,
 				sum.Fingerprint != "",
 				fmt.Sprintf("Deterministic run fingerprint %s (%d seed(s), %d operations).",
 					shortHash(sum.Fingerprint), sum.SeedsTested, sum.TotalOperations),
@@ -534,7 +548,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"bi-ojk.pemulihan-bencana",
 				"Ketahanan Sistem & Uji Pemulihan Bencana (Failover / Split-Brain)",
 				"Sistem pemrosesan transaksi mampu bertahan terhadap gangguan jaringan (partisi/latensi) dan kegagalan node tanpa mengalami split-brain.",
-				isClean,
+				safety,
 				hasNetFault && hasCrashFault,
 				fmt.Sprintf("Target %q diuji pada %d node dengan injeksi gangguan [%s] (%d seed, %d operasi); hasil=%s.",
 					sum.Target, sum.Nodes, formatFaultList(sum.FaultKindsExercised), sum.SeedsTested, sum.TotalOperations, sum.Verdict),
@@ -545,7 +559,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"bi-ojk.integritas-data",
 				"Integritas & Konsistensi Data Transaksi",
 				"Tidak terdapat kehilangan transaksi yang telah diakui (lost update), pembacaan basi (stale read), maupun anomali siklus transaksi.",
-				isClean,
+				safety,
 				sum.TotalOperations > 0,
 				fmt.Sprintf("Pemeriksaan formal model %q atas %d operasi: %d seed linearizable, %d pelanggaran.",
 					sum.Model, sum.TotalOperations, sum.SeedsLinearizable, sum.SeedsViolating),
@@ -556,7 +570,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"bi-ojk.jejak-audit",
 				"Integritas Bukti Audit Kriptografis (Non-Repudiation)",
 				"Artefak hasil pengujian memiliki jejak audit SHA-256 dan tanda tangan kriptografis Ed25519 (in-toto v0.1) yang dapat diverifikasi ulang secara independen.",
-				true,
+				safetyPass,
 				sum.Attested,
 				attestEvidenceString(sum),
 				"Tandatangani laporan dengan kunci privat Ed25519 ('strife sign') untuk memenuhi bukti non-repudiation auditor.",
@@ -568,7 +582,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"bi-ojk.rekonsiliasi-buku-besar",
 				"Rekonsiliasi Buku Besar Berpasangan & Konservasi Saldo (Double-Entry Ledger / Settlement)",
 				"Seluruh mutasi rekening dan kliring memenuhi keseimbangan jurnal berpasangan (debit = kredit), atomisitas outbox/settlement, konservasi total dana (ΣB_i = M_0), bebas saldo negatif, dan idempotensi retry.",
-				isClean,
+				safety,
 				sum.TotalOperations > 0,
 				fmt.Sprintf("Pemeriksa buku besar / settlement (model %q) memverifikasi %d transaksi/audit pada %q (%d pelanggaran konservasi/settlement/idempotensi).",
 					sum.Model, sum.TotalOperations, sum.Target, sum.SeedsViolating),
@@ -584,7 +598,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"pcidss.data-integrity",
 				"Payment Transaction & Account State Integrity",
 				"Payment and account state transitions must preserve atomic consistency without lost updates, dirty reads, or race-condition state corruption during infrastructure faults.",
-				isClean,
+				safety,
 				sum.TotalOperations > 0,
 				fmt.Sprintf("Model %q verified %d payment/state operations across %d seed(s) on %q; verdict=%s (fingerprint %s).",
 					sum.Model, sum.TotalOperations, sum.SeedsTested, sum.Target, sum.Verdict, shortHash(sum.Fingerprint)),
@@ -595,7 +609,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"pcidss.resilience-change-verification",
 				"Pre-Release Fault Injection & Change Resilience Verification",
 				"Changes to critical transaction processing systems must be verified under network partitions and node/storage disruptions with deterministic reproducibility.",
-				isClean,
+				safety,
 				hasNetFault && hasCrashFault && sum.Fingerprint != "",
 				fmt.Sprintf("Target %q tested under fault classes [%s] (%d fault transitions, fingerprint %s); verdict=%s.",
 					sum.Target, formatFaultList(sum.FaultKindsExercised), sum.FaultCount, shortHash(sum.Fingerprint), sum.Verdict),
@@ -606,7 +620,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"pcidss.tamper-evidence",
 				"Tamper-Evident Audit Trails & Signed Verification Evidence",
 				"Audit histories, fault schedules, and verification reports must be bound by SHA-256 digests and cryptographic Ed25519 signatures to prevent undetectable tampering.",
-				true,
+				safetyPass,
 				sum.Attested,
 				attestEvidenceString(sum),
 				"Sign the verification report with 'strife sign --report report.json --key auditor.key' and supply '--bundle bundle.json --key auditor.pub'.",
@@ -620,7 +634,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"bi-sp.keandalan-sistem",
 				"Keandalan Operasional & Pemulihan Gangguan Sistem Pembayaran (PJP/PIP)",
 				"Infrastruktur penyelenggara sistem pembayaran wajib mempertahankan ketersediaan layanan dan pulih secara deterministik dari gangguan jaringan maupun kegagalan perangkat keras/node.",
-				isClean,
+				safety,
 				hasNetFault && hasCrashFault,
 				fmt.Sprintf("Target %q (%d node) diuji terhadap gangguan [%s] pada %d seed (%d operasi); hasil=%s.",
 					sum.Target, sum.Nodes, formatFaultList(sum.FaultKindsExercised), sum.SeedsTested, sum.TotalOperations, sum.Verdict),
@@ -631,7 +645,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"bi-sp.pencegahan-duplikasi",
 				"Konsistensi Transaksi & Pencegahan Duplikasi / Double-Spend",
 				"Pemrosesan instruksi pembayaran wajib bebas dari anomali eksekusi ganda (double-spend), pembacaan basi (stale read), atau kehilangan mutasi saat terjadi timeout dan pengulangan (retry) jaringan.",
-				isClean,
+				safety,
 				sum.TotalOperations > 0,
 				fmt.Sprintf("Pemeriksa formal model %q memverifikasi %d operasi pada %q: %d seed linearizable, %d pelanggaran.",
 					sum.Model, sum.TotalOperations, sum.Target, sum.SeedsLinearizable, sum.SeedsViolating),
@@ -642,7 +656,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"bi-sp.integritas-bukti-audit",
 				"Bukti Audit Kriptografis & Non-Repudiation Pengujian Sistem Pembayaran",
 				"Bukti pengujian ketahanan dan konsistensi sistem pembayaran wajib memiliki sidik jari SHA-256 dan tanda tangan digital Ed25519 yang dapat diverifikasi ulang oleh pengawas/auditor.",
-				true,
+				safetyPass,
 				sum.Attested,
 				attestEvidenceString(sum),
 				"Tandatangani artefak hasil pengujian dengan kunci privat Ed25519 ('strife sign') untuk menjamin keaslian bukti audit.",
@@ -654,7 +668,7 @@ func evaluateFramework(fw FrameworkID, sum EvidenceSummary) []ControlResult {
 				"bi-sp.finalitas-settlement",
 				"Kepastian Penyelesaian Akhir (Settlement Finality) & Rekonsiliasi Dana",
 				"Setiap instruksi transfer dana dan kliring lintas-sistem wajib memenuhi kepastian penyelesaian akhir (settlement finality), atomisitas outbox, konservasi saldo nol-sum, dan bebas dari kredit yatim (orphan credit).",
-				isClean,
+				safety,
 				sum.TotalOperations > 0,
 				fmt.Sprintf("Model finansial %q memverifikasi %d mutasi/settlement pada %q (%d pelanggaran konservasi/atomisitas/idempotensi).",
 					sum.Model, sum.TotalOperations, sum.Target, sum.SeedsViolating),
@@ -692,7 +706,7 @@ var Citations = map[string]string{
 	"bi-sp.finalitas-settlement":            "PBI No. 23/7/PBI/2021 tentang Penyelenggara Infrastruktur Sistem Pembayaran (Pasal 2: penyelenggaraan kliring dan kepastian penyelesaian akhir / settlement finality) serta PBI No. 23/6/PBI/2021",
 }
 
-func evalControl(fw FrameworkID, id, title, req string, safetyOK, coverageOK bool, evidence, gapHint string) ControlResult {
+func evalControl(fw FrameworkID, id, title, req string, safety safetyState, coverageOK bool, evidence, gapHint string) ControlResult {
 	cr := ControlResult{
 		Framework:   fw,
 		ControlID:   id,
@@ -701,9 +715,17 @@ func evalControl(fw FrameworkID, id, title, req string, safetyOK, coverageOK boo
 		Requirement: req,
 		Evidence:    evidence,
 	}
-	if !safetyOK {
+	switch safety {
+	case safetyFail:
 		cr.Status = StatusFail
 		cr.Gap = "Consistency violation or inconclusive verdict detected during test execution."
+		return cr
+	case safetyIncomplete:
+		cr.Status = StatusPartial
+		cr.Gap = "No consistency anomaly was detected, but the decision procedure is sound-incomplete (not an exhaustive proof of linearizability)."
+		if !coverageOK && gapHint != "" {
+			cr.Gap += " " + gapHint
+		}
 		return cr
 	}
 	if !coverageOK {
@@ -734,7 +756,7 @@ func shortHash(h string) string {
 	return h
 }
 
-func buildMethodology(sum EvidenceSummary) Methodology {
+func buildMethodology(sum EvidenceSummary, incomplete bool) Methodology {
 	tested := []string{
 		fmt.Sprintf("Consistency model %q checked across %d operation(s) and %d seed(s) on target %q (%d node(s)).",
 			sum.Model, sum.TotalOperations, sum.SeedsTested, sum.Target, sum.Nodes),
@@ -778,6 +800,11 @@ func buildMethodology(sum EvidenceSummary) Methodology {
 			"Offline history checks verify that a pre-recorded history.jsonl satisfies the consistency model specification.",
 		)
 	}
+	if incomplete {
+		limits = append(limits,
+			"Consistency check found no anomalies using a sound-incomplete procedure (exceeded exhaustive-search bounds); absence of detected anomalies is empirical evidence, not a complete proof of linearizability.",
+		)
+	}
 
 	return Methodology{
 		WhatIsTested:    tested,
@@ -802,7 +829,14 @@ func Markdown(w io.Writer, d *Dossier) error {
 	b.WriteString("| Metric | Value |\n|---|---|\n")
 	fmt.Fprintf(&b, "| Target System | `%s` |\n", d.Summary.Target)
 	fmt.Fprintf(&b, "| Cluster Nodes | %d |\n", d.Summary.Nodes)
-	fmt.Fprintf(&b, "| Seeds Tested | %d (%d linearizable, %d violating) |\n", d.Summary.SeedsTested, d.Summary.SeedsLinearizable, d.Summary.SeedsViolating)
+	inconclusive := d.Summary.SeedsTested - d.Summary.SeedsLinearizable - d.Summary.SeedsViolating
+	if inconclusive > 0 {
+		fmt.Fprintf(&b, "| Seeds Tested | %d (%d linearizable, %d violating, %d inconclusive) |\n",
+			d.Summary.SeedsTested, d.Summary.SeedsLinearizable, d.Summary.SeedsViolating, inconclusive)
+	} else {
+		fmt.Fprintf(&b, "| Seeds Tested | %d (%d linearizable, %d violating) |\n",
+			d.Summary.SeedsTested, d.Summary.SeedsLinearizable, d.Summary.SeedsViolating)
+	}
 	fmt.Fprintf(&b, "| Client Operations | %d |\n", d.Summary.TotalOperations)
 	if d.Summary.OverallAvailability > 0 || d.Summary.SLABreached {
 		fmt.Fprintf(&b, "| Service Availability (Goodput) | %.1f%% |\n", 100*d.Summary.OverallAvailability)

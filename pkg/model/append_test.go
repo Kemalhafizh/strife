@@ -36,8 +36,18 @@ func TestAppendModel(t *testing.T) {
 		appendOp(1, 1, 20, 30, history.OK, rd("x", 1), app("x", 2)),
 		appendOp(2, 0, 40, 50, history.OK, rd("x", 1, 2)),
 	}
-	if bad, _, _, _ := m.Decide(good); bad {
-		t.Fatal("serial history flagged")
+	st, _, _, _ := m.Decide(good)
+	if st != DecisionInconclusive {
+		t.Fatalf("serial non-empty append history should be DecisionInconclusive (sound incomplete), got %s", st)
+	}
+	if stEmpty, _, _, _ := m.Decide(nil); stEmpty != DecisionVerified {
+		t.Fatalf("empty append history should be DecisionVerified, got %s", stEmpty)
+	}
+	if !m.SupportsCompleteSearch(good) {
+		t.Fatal("strict-serializable append model should support complete search")
+	}
+	if (Append{Level: "serializable"}).SupportsCompleteSearch(good) {
+		t.Fatal("serializable append model must not use strict-serializable Step fallback")
 	}
 	// The sequential spec agrees.
 	s := m.Init()
@@ -52,15 +62,15 @@ func TestAppendModel(t *testing.T) {
 	}
 
 	stale := append(good, appendOp(3, 1, 60, 70, history.OK, rd("x", 1)))
-	bad, witness, diag, kinds := m.Decide(stale)
-	if !bad || len(witness) == 0 || !strings.Contains(diag, "G-realtime") || kinds[0] != "G-realtime" {
-		t.Fatalf("stale read after completion must be a real-time violation: %v %v %q", bad, witness, diag)
+	st, witness, diag, kinds := m.Decide(stale)
+	if st != DecisionViolation || len(witness) == 0 || !strings.Contains(diag, "G-realtime") || kinds[0] != "G-realtime" {
+		t.Fatalf("stale read after completion must be a real-time violation: %s %v %q", st, witness, diag)
 	}
 	if ok, _ := m.Step(s, stale[3].Input, stale[3].Output); ok {
 		t.Fatal("step must reject a stale list")
 	}
 	// Serializable (not strict) allows ordering the stale reader earlier.
-	if bad, _, _, _ := (Append{Level: "serializable"}).Decide(stale); bad {
-		t.Fatal("serializability does not forbid this history")
+	if stSer, _, _, _ := (Append{Level: "serializable"}).Decide(stale); stSer != DecisionInconclusive {
+		t.Fatalf("serializability does not forbid this history, expected DecisionInconclusive, got %s", stSer)
 	}
 }

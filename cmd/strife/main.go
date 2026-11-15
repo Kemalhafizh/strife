@@ -127,7 +127,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if hint == "" {
 				hint = "-"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Name, s.Expect, hint, s.Description)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Name, s.ExpectFlag(), hint, s.Description)
 		}
 		tw.Flush()
 	case "version", "-v", "--version":
@@ -158,6 +158,32 @@ func verdictCode(v checker.Verdict) int {
 		return exitViolation
 	}
 	return exitUnknown
+}
+
+func verdictLine(rep checker.Report) string {
+	if rep.Verdict != checker.Unknown {
+		return strings.ToUpper(string(rep.Verdict))
+	}
+	if rep.IsIncomplete() {
+		return "UNKNOWN (sound incomplete — no anomaly found)"
+	}
+	for _, k := range rep.Keys {
+		if k.Verdict == checker.Unknown && k.Reason == checker.ReasonTime {
+			return "UNKNOWN (time budget exhausted)"
+		}
+	}
+	return "UNKNOWN (step budget exhausted)"
+}
+
+func matchesExpectReport(rep checker.Report, expect string) bool {
+	switch expect {
+	case string(checker.Linearizable), string(checker.Violation):
+		return string(rep.Verdict) == expect
+	case "no-anomaly":
+		return rep.NoAnomalyFound()
+	default:
+		return false
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +244,7 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 	keep := fs.Int("keep", 3, "when exploring, write reports for this many failing seeds")
 	workers := fs.Int("workers", 0, "parallel simulations (default: GOMAXPROCS)")
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
-	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the outcome matches (for CI)")
+	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-anomaly\": exit 0 iff the outcome matches (for CI)")
 	shrinkIt := fs.Bool("shrink", false, "minimise the (first) violating scenario and report it")
 	push := pushFlags(fs)
 	slo := sloFlags(fs)
@@ -236,8 +262,10 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 	if err := push.resolve(); err != nil {
 		return exitUsage, err
 	}
-	if *expect != "" && *expect != string(checker.Linearizable) && *expect != string(checker.Violation) {
-		return exitUsage, fmt.Errorf("--expect must be linearizable or violation")
+	switch *expect {
+	case "", string(checker.Linearizable), string(checker.Violation), "no-anomaly":
+	default:
+		return exitUsage, fmt.Errorf("--expect must be linearizable, violation, or no-anomaly")
 	}
 
 	o := simOptions{out: *out, keep: *keep, workers: *workers, determinism: *determinism, expect: *expect, slo: *slo, ci: *ci, push: *push}
@@ -506,15 +534,15 @@ func simOne(cfg explore.Config, o simOptions, stdout io.Writer) (int, error) {
 	suite := report.SuiteFromReport(rep, time.Since(start))
 	code, verr := verdictCode(res.Check.Verdict), error(nil)
 	if o.expect != "" {
-		// The expectation is the test: a violation that was expected passes.
+		// The expectation is the test: a violation or sound-incomplete check that was expected passes.
 		c := report.Case{Name: "expect " + o.expect, Class: suiteDefaultClass(rep, suite), Time: time.Since(start), Status: report.Passed}
-		if string(res.Check.Verdict) == o.expect {
+		if matchesExpectReport(res.Check, o.expect) {
 			code = exitOK
 		} else {
-			code, verr = exitViolation, fmt.Errorf("expected %s, got %s", o.expect, res.Check.Verdict)
+			code, verr = exitViolation, fmt.Errorf("expected %s, got %s", o.expect, verdictLine(res.Check))
 			c.Status, c.Message = report.Failed, verr.Error()
 		}
-		c.Output = fmt.Sprintf("verdict: %s", res.Check.Verdict)
+		c.Output = fmt.Sprintf("verdict: %s", verdictLine(res.Check))
 		suite.Cases = []report.Case{c}
 	}
 	code, verr = applySLOGate(stdout, rep, o.slo, &suite, code, verr)
@@ -544,7 +572,7 @@ func printResult(w io.Writer, res *explore.Result) {
 	}
 	fmt.Fprintf(w, "ops:     %d (%d ok, %d fail, %d info)   history %s   trace %s\n",
 		c.Stats.Invocations, c.Stats.OK, c.Stats.Fail, c.Stats.Info, short(res.HistoryHash), short(res.TraceHash))
-	fmt.Fprintf(w, "verdict: %s\n", strings.ToUpper(string(c.Verdict)))
+	fmt.Fprintf(w, "verdict: %s\n", verdictLine(c))
 	for _, k := range c.Failures() {
 		if ce := k.Counterexample; ce != nil {
 			fmt.Fprintf(w, "  key %s: %s\n", k.Key, ce.Summary())
@@ -583,7 +611,7 @@ func simMany(base explore.Config, seeds []uint64, o simOptions, stdout io.Writer
 				}
 			}
 		}
-		if res.Check.Verdict == checker.Linearizable || o.out == "" || len(kept) >= o.keep {
+		if res.Check.Verdict == checker.Linearizable || (o.expect == "no-anomaly" && res.Check.IsIncomplete()) || o.out == "" || len(kept) >= o.keep {
 			return
 		}
 		dir := filepath.Join(o.out, fmt.Sprintf("%s-seed%d", res.Config.System, res.Config.Seed))
@@ -645,14 +673,18 @@ func simMany(base explore.Config, seeds []uint64, o simOptions, stdout io.Writer
 		}
 	}
 
+	allIncompleteOK := counts[checker.Unknown] > 0 && len(errs) == 0 && len(failing) == 0
 	results := make([]report.SeedResult, len(sums))
 	for i, s := range sums {
+		if s.Verdict == checker.Unknown && s.Reason != checker.ReasonIncomplete {
+			allIncompleteOK = false
+		}
 		c := base
 		c.Seed = s.Seed
-		results[i] = report.SeedResult{Seed: s.Seed, Verdict: s.Verdict, Ops: s.Ops, Faults: s.Faults,
+		results[i] = report.SeedResult{Seed: s.Seed, Verdict: s.Verdict, Reason: s.Reason, Ops: s.Ops, Faults: s.Faults,
 			Explanation: s.Explanation, Reproduce: reproduce(c, ""), Error: s.Error, Elapsed: s.Elapsed}
 	}
-	suite := report.ExplorationSuite(base.System, faults, results, o.expect == string(checker.Violation), time.Since(start))
+	suite := report.ExplorationSuiteExpect(base.System, faults, results, o.expect, time.Since(start))
 
 	var code int
 	var err error
@@ -666,6 +698,10 @@ func simMany(base explore.Config, seeds []uint64, o simOptions, stdout io.Writer
 	case o.expect == string(checker.Linearizable):
 		if len(failing) > 0 || counts[checker.Unknown] > 0 {
 			code, err = exitViolation, fmt.Errorf("expected every seed to be linearizable")
+		}
+	case o.expect == "no-anomaly":
+		if len(failing) > 0 || (counts[checker.Unknown] > 0 && !allIncompleteOK) {
+			code, err = exitViolation, fmt.Errorf("expected every seed to have no anomaly")
 		}
 	case len(failing) > 0:
 		code = exitViolation
@@ -1089,6 +1125,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn and append): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
 	out := fs.String("out", "", "write a report directory here")
 	exportEDN := fs.String("export-edn", "", "optional path to export the parsed history in canonical Jepsen EDN format")
+	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-anomaly\": exit 0 iff the verdict matches (for CI)")
 	push := pushFlags(fs)
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
 	timeout := fs.Duration("check-timeout", 0, "wall-clock budget per key (0 = none)")
@@ -1102,6 +1139,11 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	if err := push.resolve(); err != nil {
 		return exitUsage, err
+	}
+	switch *expect {
+	case "", string(checker.Linearizable), string(checker.Violation), "no-anomaly":
+	default:
+		return exitUsage, fmt.Errorf("--expect must be linearizable, violation, or no-anomaly")
 	}
 	if *path == "" && fs.NArg() > 0 {
 		*path = fs.Arg(0)
@@ -1166,7 +1208,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	addWitnesses(m, ops, &rep)
 	findings := probe.Correlate(ops, rep, sched, probeEvents)
 	fmt.Fprintf(stdout, "checked %d operations (%d relevant) across %d keys in %v\n", rep.Operations, rep.Checked, len(rep.Keys), time.Since(start).Round(time.Millisecond))
-	fmt.Fprintf(stdout, "verdict: %s\n", strings.ToUpper(string(rep.Verdict)))
+	fmt.Fprintf(stdout, "verdict: %s\n", verdictLine(rep))
 	for _, k := range rep.Failures() {
 		if ce := k.Counterexample; ce != nil {
 			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Summary())
@@ -1188,7 +1230,19 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 		fmt.Fprintf(stdout, "report:  %s\n", filepath.Join(*out, "report.html"))
 	}
 	suite := report.SuiteFromReport(rr, time.Since(start))
-	code, verr := applySLOGate(stdout, rr, *slo, &suite, verdictCode(rep.Verdict), nil)
+	code, verr := verdictCode(rep.Verdict), error(nil)
+	if *expect != "" {
+		c := report.Case{Name: "expect " + *expect, Class: suiteDefaultClass(rr, suite), Time: time.Since(start), Status: report.Passed,
+			Output: fmt.Sprintf("verdict: %s", verdictLine(rep))}
+		if matchesExpectReport(rep, *expect) {
+			code = exitOK
+		} else {
+			code, verr = exitViolation, fmt.Errorf("expected %s, got %s", *expect, verdictLine(rep))
+			c.Status, c.Message = report.Failed, verr.Error()
+		}
+		suite.Cases = []report.Case{c}
+	}
+	code, verr = applySLOGate(stdout, rr, *slo, &suite, code, verr)
 	if perr := push.send(context.Background(), rr, "", "", stdout); perr != nil {
 		verr = joinErr(verr, fmt.Errorf("push: %w", perr))
 		if code == exitOK {
@@ -1300,7 +1354,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	seed := fs.Int64("seed", -1, "override the config seed")
 	duration := fs.Duration("duration", 0, "override the config duration")
 	quiet := fs.Bool("quiet", false, "less progress output")
-	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the verdict matches (for CI)")
+	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-anomaly\": exit 0 iff the verdict matches (for CI)")
 	faults := fs.String("faults", "", "override the config's fault kinds (comma separated, \"none\" for a baseline)")
 	schedPath := fs.String("schedule", "", "replay this fault schedule (JSON, e.g. from strife shrink --live) instead of the seeded one")
 	push := pushFlags(fs)
@@ -1315,12 +1369,14 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	if err := push.resolve(); err != nil {
 		return exitUsage, err
 	}
+	switch *expect {
+	case "", string(checker.Linearizable), string(checker.Violation), "no-anomaly":
+	default:
+		return exitUsage, fmt.Errorf("--expect must be linearizable, violation, or no-anomaly")
+	}
 	cfg, err := runner.Load(*cfgPath)
 	if err != nil {
 		return exitUsage, err
-	}
-	if *expect != "" && *expect != string(checker.Linearizable) && *expect != string(checker.Violation) {
-		return exitUsage, fmt.Errorf("--expect must be linearizable or violation")
 	}
 	if *seed >= 0 {
 		cfg.Seed = uint64(*seed)
@@ -1397,7 +1453,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 	c := res.Check
 	fmt.Fprintf(stdout, "ops: %d (%d ok, %d fail, %d info)\nverdict: %s\nreport: %s\n",
-		c.Stats.Invocations, c.Stats.OK, c.Stats.Fail, c.Stats.Info, strings.ToUpper(string(c.Verdict)), filepath.Join(dir, "report.html"))
+		c.Stats.Invocations, c.Stats.OK, c.Stats.Fail, c.Stats.Info, verdictLine(c), filepath.Join(dir, "report.html"))
 	for _, k := range c.Failures() {
 		if ce := k.Counterexample; ce != nil {
 			fmt.Fprintf(stdout, "  key %s: %s\n", k.Key, ce.Summary())
@@ -1411,11 +1467,11 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	if *expect != "" {
 		// The expectation is the verdict test case; fault injection stays.
 		vc := report.Case{Name: "expect " + *expect, Class: suiteDefaultClass(rep, suite), Time: time.Since(start), Status: report.Passed,
-			Output: fmt.Sprintf("verdict: %s", c.Verdict)}
-		if string(c.Verdict) == *expect {
+			Output: fmt.Sprintf("verdict: %s", verdictLine(c))}
+		if matchesExpectReport(c, *expect) {
 			code = exitOK
 		} else {
-			code, rerr = exitViolation, fmt.Errorf("expected %s, got %s", *expect, c.Verdict)
+			code, rerr = exitViolation, fmt.Errorf("expected %s, got %s", *expect, verdictLine(c))
 			vc.Status, vc.Message = report.Failed, rerr.Error()
 		}
 		if n := len(suite.Cases); n > 0 && suite.Cases[n-1].Name == "fault injection" {
@@ -1605,7 +1661,7 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 	keep := fs.Int("keep", 5, "write detailed report.html for up to this many violating seeds")
 	shrinkCount := fs.Int("shrink", 0, "minimise up to this many violating seeds")
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
-	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-regression\"")
+	expect := fs.String("expect", "", "\"linearizable\", \"violation\", \"no-anomaly\", or \"no-regression\"")
 	push := pushFlags(fs)
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -1619,9 +1675,9 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 		return exitUsage, err
 	}
 	switch *expect {
-	case "", string(checker.Linearizable), string(checker.Violation), "no-regression":
+	case "", string(checker.Linearizable), string(checker.Violation), "no-anomaly", "no-regression":
 	default:
-		return exitUsage, fmt.Errorf("--expect must be linearizable, violation, or no-regression")
+		return exitUsage, fmt.Errorf("--expect must be linearizable, violation, no-anomaly, or no-regression")
 	}
 	seedList, err := explore.ParseSeeds(*seeds)
 	if err != nil {
@@ -1649,8 +1705,12 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 
 	fmt.Fprintf(stdout, "campaign: %s   system: %s   seeds: %d   events: %d   ops: %d   wall: %dms\n",
 		m.CampaignID, m.System, m.TotalSeeds, m.TotalEvents, m.TotalOps, m.DurationMs)
-	fmt.Fprintf(stdout, "results:  %d linearizable, %d violations, %d unknown, %d errors\n",
-		m.Passed, m.Violations, m.Unknown, m.Errors)
+	resSuffix := ""
+	if m.IsIncomplete() {
+		resSuffix = " (sound incomplete — no anomaly found)"
+	}
+	fmt.Fprintf(stdout, "results:  %d linearizable, %d violations, %d unknown, %d errors%s\n",
+		m.Passed, m.Violations, m.Unknown, m.Errors, resSuffix)
 
 	if comp := m.Comparison; comp != nil {
 		fmt.Fprintf(stdout, "baseline: %d regressed, %d fixed, %d persistent, %d new failures, %d trace drifts\n",
@@ -1692,6 +1752,10 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 	case *expect == string(checker.Linearizable):
 		if m.Violations > 0 || m.Unknown > 0 {
 			code, verr = exitViolation, fmt.Errorf("expected every seed to be linearizable")
+		}
+	case *expect == "no-anomaly":
+		if m.Violations > 0 || (m.Unknown > 0 && !m.IsIncomplete()) {
+			code, verr = exitViolation, fmt.Errorf("expected every seed to have no anomaly")
 		}
 	case m.Comparison != nil && m.Comparison.HasRegressions():
 		code = exitViolation
@@ -1887,52 +1951,12 @@ func withIsolation(m model.Model, level string) model.Model {
 }
 
 func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	listen := fs.String("listen", "127.0.0.1:8080", "TCP address to listen on")
-	storeDir := fs.String("store", "strife-registry", "directory for persistent run registry and artifacts")
-	token := fs.String("token", "", "optional Bearer token required for POST endpoints (supports env:VAR or file:PATH)")
-	keyPath := fs.String("key", "", "optional Ed25519 private key (.key) to sign ingested reports automatically")
-	tenantKeysStr := fs.String("tenant-keys", "", "optional comma-separated tenant=path.key pairs for per-tenant Ed25519 signing")
-	signer := fs.String("signer", "strife-serve", "signer identity recorded in automatic in-toto attestations")
-	webhook := fs.String("webhook", "", "comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations, regressions, and SLA breaches")
-	maxMTTR := fs.Duration("max-mttr", 0, "optional post-heal MTTR P95 threshold (e.g. 500ms) that triggers report.sla_breach webhook alerts")
-	minAvail := fs.Float64("min-availability", 0, "optional minimum availability ratio or percentage (e.g. 0.99 or 99) that triggers report.sla_breach webhook alerts")
-	if err := fs.Parse(args); err != nil {
-		return exitUsage, err
-	}
-	if err := validateSLOGate(report.SLOGate{MaxMTTR: *maxMTTR, MinAvailability: *minAvail}); err != nil {
-		return exitUsage, err
-	}
-	resolvedToken, err := secret.Resolve(*token)
+	cfg, code, err := parseServeConfig(args, stderr)
 	if err != nil {
-		return exitUsage, err
+		return code, err
 	}
 
-	tenantKeyPaths := make(map[string]string)
-	for _, item := range strings.Split(*tenantKeysStr, ",") {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		kv := strings.SplitN(item, "=", 2)
-		if len(kv) != 2 || strings.TrimSpace(kv[0]) == "" || strings.TrimSpace(kv[1]) == "" {
-			return exitUsage, fmt.Errorf("invalid --tenant-keys entry %q (expected tenant=path.key)", item)
-		}
-		tenantKeyPaths[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
-	}
-
-	srv, err := serve.NewServer(serve.Config{
-		ListenAddr:      *listen,
-		StoreDir:        *storeDir,
-		Token:           resolvedToken,
-		SigningKeyPath:  *keyPath,
-		TenantKeyPaths:  tenantKeyPaths,
-		Signer:          *signer,
-		Webhooks:        serve.ParseWebhookURLs(*webhook),
-		MaxMTTR:         *maxMTTR,
-		MinAvailability: *minAvail,
-	})
+	srv, err := serve.NewServer(cfg)
 	if err != nil {
 		return exitError, err
 	}
@@ -1947,11 +1971,91 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	fmt.Fprintf(stdout, "strife serve listening on http://%s (store: %s)\n", *listen, *storeDir)
+	fmt.Fprintf(stdout, "strife serve listening on http://%s (store: %s)\n", cfg.ListenAddr, cfg.StoreDir)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return exitError, err
 	}
 	return exitOK, nil
+}
+
+func parseServeConfig(args []string, stderr io.Writer) (serve.Config, int, error) {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	listen := fs.String("listen", "127.0.0.1:8080", "TCP address to listen on")
+	storeDir := fs.String("store", "strife-registry", "directory for persistent run registry and artifacts")
+	token := fs.String("token", "", "optional admin Bearer token required across UI and API endpoints (supports env:VAR or file:PATH)")
+	tenantTokensStr := fs.String("tenant-tokens", "", "optional comma-separated tenant=token pairs for tenant-scoped Bearer authentication (token supports env:VAR or file:PATH)")
+	keyPath := fs.String("key", "", "optional Ed25519 private key (.key) to sign ingested reports automatically")
+	tenantKeysStr := fs.String("tenant-keys", "", "optional comma-separated tenant=path.key pairs for per-tenant Ed25519 signing")
+	signer := fs.String("signer", "strife-serve", "signer identity recorded in automatic in-toto attestations")
+	webhook := fs.String("webhook", "", "comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations, regressions, and SLA breaches")
+	maxMTTR := fs.Duration("max-mttr", 0, "optional post-heal MTTR P95 threshold (e.g. 500ms) that triggers report.sla_breach webhook alerts")
+	minAvail := fs.Float64("min-availability", 0, "optional minimum availability ratio or percentage (e.g. 0.99 or 99) that triggers report.sla_breach webhook alerts")
+	jobLease := fs.Duration("job-lease", 2*time.Minute, "lease duration before an unrenewed claimed worker job may be reclaimed")
+	if err := fs.Parse(args); err != nil {
+		return serve.Config{}, exitUsage, err
+	}
+	if err := validateSLOGate(report.SLOGate{MaxMTTR: *maxMTTR, MinAvailability: *minAvail}); err != nil {
+		return serve.Config{}, exitUsage, err
+	}
+	if *jobLease <= 0 {
+		return serve.Config{}, exitUsage, fmt.Errorf("--job-lease %v must be positive", *jobLease)
+	}
+	resolvedToken, err := secret.Resolve(*token)
+	if err != nil {
+		return serve.Config{}, exitUsage, err
+	}
+
+	tenantTokens := make(map[string]string)
+	for _, item := range strings.Split(*tenantTokensStr, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		kv := strings.SplitN(item, "=", 2)
+		if len(kv) != 2 || strings.TrimSpace(kv[0]) == "" || strings.TrimSpace(kv[1]) == "" {
+			return serve.Config{}, exitUsage, fmt.Errorf("invalid --tenant-tokens entry %q (expected tenant=token)", item)
+		}
+		resolved, err := secret.Resolve(strings.TrimSpace(kv[1]))
+		if err != nil {
+			return serve.Config{}, exitUsage, fmt.Errorf("resolve --tenant-tokens entry %q: %w", strings.TrimSpace(kv[0]), err)
+		}
+		if resolved == "" {
+			return serve.Config{}, exitUsage, fmt.Errorf("invalid --tenant-tokens entry %q: empty resolved token", strings.TrimSpace(kv[0]))
+		}
+		tName := strings.TrimSpace(kv[0])
+		if _, dup := tenantTokens[tName]; dup {
+			return serve.Config{}, exitUsage, fmt.Errorf("duplicate --tenant-tokens entry for tenant %q", tName)
+		}
+		tenantTokens[tName] = resolved
+	}
+
+	tenantKeyPaths := make(map[string]string)
+	for _, item := range strings.Split(*tenantKeysStr, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		kv := strings.SplitN(item, "=", 2)
+		if len(kv) != 2 || strings.TrimSpace(kv[0]) == "" || strings.TrimSpace(kv[1]) == "" {
+			return serve.Config{}, exitUsage, fmt.Errorf("invalid --tenant-keys entry %q (expected tenant=path.key)", item)
+		}
+		tenantKeyPaths[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+	}
+
+	return serve.Config{
+		ListenAddr:      *listen,
+		StoreDir:        *storeDir,
+		Token:           resolvedToken,
+		TenantTokens:    tenantTokens,
+		SigningKeyPath:  *keyPath,
+		TenantKeyPaths:  tenantKeyPaths,
+		Signer:          *signer,
+		Webhooks:        serve.ParseWebhookURLs(*webhook),
+		MaxMTTR:         *maxMTTR,
+		MinAvailability: *minAvail,
+		JobLease:        *jobLease,
+	}, exitOK, nil
 }
 
 func cmdWorker(args []string, stdout, stderr io.Writer) (int, error) {
@@ -2023,12 +2127,18 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 	frameworksStr := fs.String("frameworks", "", "optional compliance frameworks to evaluate (e.g. dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp,all)")
 	outPath := fs.String("out", "", "optional file path to write the Markdown PR digest")
 	jsonPath := fs.String("json", "", "optional file path (or - for stdout) to write structured JSON verdict")
+	expect := fs.String("expect", "", "optional expected consistency verdict for report/campaign gates: \"\", \"linearizable\", or \"no-anomaly\"")
 	slo := sloFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
 	if err := validateSLOGate(*slo); err != nil {
 		return exitUsage, err
+	}
+	switch *expect {
+	case "", string(checker.Linearizable), "no-anomaly":
+	default:
+		return exitUsage, fmt.Errorf("--expect must be linearizable or no-anomaly")
 	}
 	if *reportPath == "" && *campaignPath == "" && *dossierPath == "" {
 		return exitUsage, fmt.Errorf("at least one of --report, --campaign, or --dossier is required")
@@ -2051,7 +2161,7 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 		}
 	}
 
-	var opts report.PRDigestOptions
+	opts := report.PRDigestOptions{Expect: *expect}
 	if *reportPath != "" {
 		data, err := os.ReadFile(*reportPath)
 		if err != nil {
@@ -2142,6 +2252,7 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 			Passed:      camp.Passed,
 			Violations:  camp.Violations,
 			Unknown:     camp.Unknown,
+			Incomplete:  camp.IsIncomplete(),
 			Errors:      camp.Errors,
 			HasBaseline: camp.Comparison != nil,
 		}
@@ -2165,9 +2276,17 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 		}
 		if cs.Reproduce == "" && (camp.Violations > 0 || camp.Unknown > 0) {
 			for _, sr := range camp.Seeds {
-				if sr.Verdict != checker.Linearizable && sr.Reproduce != "" {
+				if sr.Verdict == checker.Violation && sr.Reproduce != "" {
 					cs.Reproduce = sr.Reproduce
 					break
+				}
+			}
+			if cs.Reproduce == "" {
+				for _, sr := range camp.Seeds {
+					if sr.Verdict != checker.Linearizable && (*expect != "no-anomaly" || sr.Reason != checker.ReasonIncomplete) && sr.Reproduce != "" {
+						cs.Reproduce = sr.Reproduce
+						break
+					}
 				}
 			}
 		}

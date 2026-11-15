@@ -46,6 +46,9 @@ type Options struct {
 	// SearchOnly disables the diagnosis fast path, so every verdict comes
 	// from the exhaustive search (benchmarks and cross-checks).
 	SearchOnly bool
+	// Unexported toggles for differential testing against the brute-force oracle.
+	disableEagerRead bool
+	disablePruner    bool
 }
 
 // Counterexample explains why a partition is not linearizable.
@@ -95,8 +98,8 @@ type Step struct {
 type KeyResult struct {
 	Key     string  `json:"key"`
 	Verdict Verdict `json:"verdict"`
-	// Reason says why the verdict is unknown ("step budget" or "time
-	// budget"); empty otherwise.
+	// Reason says why the verdict is unknown ("step budget", "time budget",
+	// or "sound incomplete"); empty otherwise.
 	Reason         string          `json:"reason,omitempty"`
 	Operations     int             `json:"operations"`
 	Steps          uint64          `json:"steps"`
@@ -122,6 +125,31 @@ func (r Report) Failures() []KeyResult {
 		}
 	}
 	return out
+}
+
+// IsIncomplete reports whether no violations or budget exhaustions occurred,
+// yet completeness was not established because one or more partitions ended in
+// a sound-incomplete unknown verdict.
+func (r Report) IsIncomplete() bool {
+	if r.Verdict != Unknown || len(r.Keys) == 0 {
+		return false
+	}
+	hasUnknown := false
+	for _, k := range r.Keys {
+		if k.Verdict == Unknown {
+			if k.Reason != ReasonIncomplete {
+				return false
+			}
+			hasUnknown = true
+		}
+	}
+	return hasUnknown
+}
+
+// NoAnomalyFound reports whether the history is either proved linearizable or
+// free of detected anomalies under a sound-incomplete decision procedure.
+func (r Report) NoAnomalyFound() bool {
+	return r.Verdict == Linearizable || r.IsIncomplete()
 }
 
 // Check pairs a raw history and checks it.
@@ -210,29 +238,66 @@ type cacheEntry struct {
 	state model.State
 }
 
+const (
+	completeSearchMaxOps     = 16
+	completeSearchMaxInfoOps = 4
+	completeSearchMaxSteps   = uint64(500_000)
+)
+
+func countInfoOps(ops []history.Operation) int {
+	n := 0
+	for _, o := range ops {
+		if o.Status() == history.Info {
+			n++
+		}
+	}
+	return n
+}
+
 // checkKey checks one partition. A model that can diagnose a provable anomaly
 // short-circuits the search: proving non-linearizability exhaustively is the
 // expensive direction (every order must be refuted), while a diagnosis is a
-// direct certificate found in O(n log n).
+// direct certificate found in O(n log n). When a sound-incomplete Decider finds
+// no anomaly, small eligible histories fall back to bounded exhaustive WGL
+// search before reporting Unknown with ReasonIncomplete.
 func checkKey(m model.Model, ops []history.Operation, opts Options) KeyResult {
 	if d, ok := m.(model.Decider); ok && !opts.SearchOnly {
-		bad, idx, diag, kinds := d.Decide(ops)
-		if !bad {
+		status, idx, diag, kinds := d.Decide(ops)
+		switch status {
+		case model.DecisionVerified:
 			return KeyResult{Operations: len(ops), Verdict: Linearizable}
+		case model.DecisionViolation:
+			ce := &Counterexample{
+				Anomalies:   kinds,
+				Diagnosis:   diag,
+				Explanation: "Proved by dependency-graph analysis; no search was needed.",
+				StateAfter:  "?",
+			}
+			for _, i := range idx {
+				ce.Witness = append(ce.Witness, step(ops[i]))
+			}
+			if len(idx) > 0 {
+				ce.Stuck = step(ops[idx[len(idx)-1]])
+			}
+			return KeyResult{Operations: len(ops), Verdict: Violation, Counterexample: ce}
+		case model.DecisionInconclusive:
+			if len(ops) == 0 {
+				return KeyResult{Operations: 0, Verdict: Linearizable}
+			}
+			if cs, ok := m.(model.CompleteSearcher); ok && cs.SupportsCompleteSearch(ops) &&
+				len(ops) <= completeSearchMaxOps && countInfoOps(ops) <= completeSearchMaxInfoOps {
+				budget := opts.MaxSteps
+				if budget == 0 || budget > completeSearchMaxSteps {
+					budget = completeSearchMaxSteps
+				}
+				res := checkPartitionWithOptions(m, ops, budget, opts.Timeout, opts)
+				if res.Verdict != Unknown {
+					return res
+				}
+				return KeyResult{Operations: len(ops), Verdict: Unknown, Reason: ReasonIncomplete, Steps: res.Steps}
+			}
+			return KeyResult{Operations: len(ops), Verdict: Unknown, Reason: ReasonIncomplete}
 		}
-		ce := &Counterexample{
-			Anomalies:   kinds,
-			Diagnosis:   diag,
-			Explanation: "Proved by dependency-graph analysis; no search was needed.",
-			StateAfter:  "?",
-		}
-		for _, i := range idx {
-			ce.Witness = append(ce.Witness, step(ops[i]))
-		}
-		if len(idx) > 0 {
-			ce.Stuck = step(ops[idx[len(idx)-1]])
-		}
-		return KeyResult{Operations: len(ops), Verdict: Violation, Counterexample: ce}
 	}
 	if d, ok := m.(model.Diagnoser); ok && !opts.SearchOnly {
 		if idx, diag, ok := d.Diagnose(ops); ok {
@@ -248,13 +313,14 @@ func checkKey(m model.Model, ops []history.Operation, opts Options) KeyResult {
 			return KeyResult{Operations: len(ops), Verdict: Violation, Counterexample: ce}
 		}
 	}
-	return checkPartition(m, ops, opts.MaxSteps, opts.Timeout)
+	return checkPartitionWithOptions(m, ops, opts.MaxSteps, opts.Timeout, opts)
 }
 
 // Reasons for an unknown verdict.
 const (
-	ReasonSteps = "step budget"
-	ReasonTime  = "time budget"
+	ReasonSteps      = "step budget"
+	ReasonTime       = "time budget"
+	ReasonIncomplete = "sound incomplete"
 )
 
 // checkPartition decides one partition. The search runs without any
@@ -263,9 +329,13 @@ const (
 // deepest dead end, which made large linearizable histories quadratic for
 // no benefit.
 func checkPartition(m model.Model, ops []history.Operation, maxSteps uint64, timeout time.Duration) KeyResult {
-	res, _ := search(m, ops, maxSteps, timeout, false)
+	return checkPartitionWithOptions(m, ops, maxSteps, timeout, Options{})
+}
+
+func checkPartitionWithOptions(m model.Model, ops []history.Operation, maxSteps uint64, timeout time.Duration, opts Options) KeyResult {
+	res, _ := search(m, ops, maxSteps, timeout, false, opts)
 	if res.Verdict == Violation {
-		_, best := search(m, ops, maxSteps, timeout, true)
+		_, best := search(m, ops, maxSteps, timeout, true, opts)
 		res.Counterexample = best.counterexample(ops)
 	}
 	return res
@@ -332,7 +402,7 @@ func (d *deadEnd) counterexample(ops []history.Operation) *Counterexample {
 	return ce
 }
 
-func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout time.Duration, record bool) (KeyResult, *deadEnd) {
+func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout time.Duration, record bool, opts Options) (KeyResult, *deadEnd) {
 	res := KeyResult{Operations: len(ops), Verdict: Linearizable}
 	var deadline time.Time
 	if timeout > 0 {
@@ -416,7 +486,10 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 
 	state := m.Init()
 	lin := newLinSet(n)
-	pruner := newKVPruner(m, ops, lin)
+	var pruner *kvPruner
+	if !opts.disablePruner {
+		pruner = newKVPruner(m, ops, lin)
+	}
 	cache := map[uint64][]cacheEntry{}
 	var stack []frame
 	bestDepth := -1
@@ -442,7 +515,7 @@ func search(m model.Model, ops []history.Operation, maxSteps uint64, timeout tim
 		return false
 	}
 	eagerRead := func() *entry {
-		if ro == nil {
+		if ro == nil || opts.disableEagerRead {
 			return nil
 		}
 		for c := head.next; c != nil && c.call; c = c.next {

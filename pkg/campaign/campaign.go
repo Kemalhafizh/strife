@@ -7,9 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"syscall"
 
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/explore"
@@ -20,6 +23,7 @@ import (
 type SeedRecord struct {
 	Seed          uint64          `json:"seed"`
 	Verdict       checker.Verdict `json:"verdict"`
+	Reason        string          `json:"reason,omitempty"`
 	Ops           int             `json:"ops"`
 	Faults        int             `json:"faults"`
 	MinimalFaults int             `json:"minimal_faults,omitempty"`
@@ -111,6 +115,28 @@ func (m *Manifest) Verdict() checker.Verdict {
 	return checker.Linearizable
 }
 
+// IsIncomplete reports whether the campaign saw no errors or violations, yet at
+// least one seed ended in a sound-incomplete unknown verdict (rather than an
+// exhausted search budget).
+func (m *Manifest) IsIncomplete() bool {
+	if m == nil || m.Errors > 0 || m.Violations > 0 || m.Unknown == 0 {
+		return false
+	}
+	seen := false
+	for _, s := range m.Seeds {
+		if s.Error != "" {
+			return false
+		}
+		if s.Verdict == checker.Unknown {
+			if s.Reason != checker.ReasonIncomplete {
+				return false
+			}
+			seen = true
+		}
+	}
+	return seen
+}
+
 // LoadManifest reads a campaign Manifest from a JSON file on disk.
 func LoadManifest(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
@@ -125,12 +151,54 @@ func LoadManifest(path string) (*Manifest, error) {
 	return &m, nil
 }
 
-// WriteManifest writes the campaign Manifest as indented JSON to path.
+// WriteManifest writes the campaign Manifest atomically as indented JSON to path.
 func WriteManifest(path string, m *Manifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	if errors.Is(err, syscall.EINVAL) || errors.Is(err, errors.ErrUnsupported) {
+		return nil
+	}
+	return err
 }

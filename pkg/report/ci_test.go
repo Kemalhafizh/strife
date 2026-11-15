@@ -263,3 +263,55 @@ func TestWriteSARIF(t *testing.T) {
 		}
 	}
 }
+
+func TestSoundIncompleteCIAndMarkdown(t *testing.T) {
+	incReport := &Report{
+		Tool:    "strife",
+		Version: Version,
+		Kind:    KindSimulation,
+		Target:  "raft-ledger",
+		Seed:    5,
+		Verdict: checker.Unknown,
+		Check: checker.Report{
+			Model:   "ledger",
+			Verdict: checker.Unknown,
+			Keys: []checker.KeyResult{
+				{Key: "ledger", Verdict: checker.Unknown, Reason: checker.ReasonIncomplete, Operations: 40, Steps: 1},
+			},
+		},
+		Reproduce: "strife sim --system raft-ledger --seed 5",
+	}
+
+	var md bytes.Buffer
+	if err := Markdown(&md, incReport); err != nil {
+		t.Fatalf("Markdown: %v", err)
+	}
+	if !strings.Contains(md.String(), "check incomplete") || !strings.Contains(md.String(), "unknown (sound incomplete)") {
+		t.Fatalf("expected sound-incomplete details in Markdown report:\n%s", md.String())
+	}
+
+	s := SuiteFromReport(incReport, time.Second)
+	if !strings.Contains(s.Headline, "sound incomplete") {
+		t.Fatalf("expected sound incomplete in SuiteFromReport headline, got %q", s.Headline)
+	}
+	if len(s.Cases) != 1 || s.Cases[0].Status != Errored || !strings.Contains(s.Cases[0].Message, "sound incomplete") {
+		t.Fatalf("expected KeyCase error message for sound incomplete, got %+v", s.Cases)
+	}
+
+	seeds := []SeedResult{
+		{Seed: 1, Verdict: checker.Linearizable, Ops: 10, Faults: 1},
+		{Seed: 2, Verdict: checker.Unknown, Reason: checker.ReasonIncomplete, Ops: 40, Faults: 2},
+	}
+	expPass := ExplorationSuiteExpect("raft-ledger", "all", seeds, "no-anomaly", time.Second)
+	if expPass.Count(Failed) != 0 || expPass.Count(Errored) != 0 || expPass.Count(Passed) != 2 {
+		t.Fatalf("expected no-anomaly ExplorationSuiteExpect to pass ReasonIncomplete, got %+v", expPass.Cases)
+	}
+	expStrict := ExplorationSuiteExpect("raft-ledger", "all", seeds, "linearizable", time.Second)
+	if expStrict.Count(Errored) != 1 {
+		t.Fatalf("expected strict ExplorationSuiteExpect to error on ReasonIncomplete, got %+v", expStrict.Cases)
+	}
+	budgetSeeds := []SeedResult{{Seed: 3, Verdict: checker.Unknown, Reason: checker.ReasonSteps}}
+	if got := ExplorationSuiteExpect("raft", "all", budgetSeeds, "no-anomaly", time.Second); got.Count(Errored) != 1 {
+		t.Fatalf("no-anomaly must still error on step-budget exhaustion, got %+v", got.Cases)
+	}
+}

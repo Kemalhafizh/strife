@@ -163,13 +163,35 @@ func TestServeIngestReportCampaignAndPersistence(t *testing.T) {
 		t.Fatalf("expected 1 automatic seed regression on seed 2, got %+v", resC2)
 	}
 
-	// 3. Check GET / dashboard and GET /api/v1/runs.
-	uiResp, err := http.Get(baseURL + "/")
+	// 3. Check GET / dashboard and GET /api/v1/runs require Bearer token and render expected content when authorized.
+	unauthUI, err := http.Get(baseURL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthUI.Body.Close()
+	if unauthUI.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated GET /, got %d", unauthUI.StatusCode)
+	}
+	unauthRuns, err := http.Get(baseURL + "/api/v1/runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthRuns.Body.Close()
+	if unauthRuns.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated GET /api/v1/runs, got %d", unauthRuns.StatusCode)
+	}
+
+	uiReq, _ := http.NewRequest(http.MethodGet, baseURL+"/", nil)
+	uiReq.Header.Set("Authorization", "Bearer ci-token-secret")
+	uiResp, err := http.DefaultClient.Do(uiReq)
 	if err != nil {
 		t.Fatal(err)
 	}
 	uiBytes, _ := io.ReadAll(uiResp.Body)
 	uiResp.Body.Close()
+	if uiResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for authenticated GET /, got %d: %s", uiResp.StatusCode, string(uiBytes))
+	}
 	if !strings.Contains(string(uiBytes), "Strife Continuous Verification") || !strings.Contains(string(uiBytes), res1.Entry.ID) {
 		t.Fatalf("dashboard HTML missing expected content")
 	}
@@ -499,15 +521,25 @@ func TestServeMultiTenantIsolationSeriesAndPush(t *testing.T) {
 		t.Fatalf("tenant B must be isolated from tenant A's baseline, got: %+v", resB.Entry)
 	}
 
-	// Query GET /api/v1/series?tenant=bank-alpha
-	sResp, err := http.Get(baseURL + "/api/v1/series?tenant=bank-alpha")
+	// Query GET /api/v1/series?tenant=bank-alpha requires auth and isolates tenants
+	unauthSeries, err := http.Get(baseURL + "/api/v1/series?tenant=bank-alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthSeries.Body.Close()
+	if unauthSeries.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /api/v1/series, got %d", unauthSeries.StatusCode)
+	}
+	sReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/series?tenant=bank-alpha", nil)
+	sReq.Header.Set("Authorization", "Bearer push-secret")
+	sResp, err := http.DefaultClient.Do(sReq)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sBody, _ := io.ReadAll(sResp.Body)
 	sResp.Body.Close()
 	if sResp.StatusCode != http.StatusOK || !strings.Contains(string(sBody), `"tenant": "bank-alpha"`) || strings.Contains(string(sBody), "fintech-beta") {
-		t.Fatalf("unexpected /api/v1/series response: %s", string(sBody))
+		t.Fatalf("unexpected /api/v1/series response (status=%d): %s", sResp.StatusCode, string(sBody))
 	}
 }
 
@@ -748,13 +780,24 @@ func TestWorkerPullJobQueueAndTrends(t *testing.T) {
 		t.Fatalf("expected worker to process 1 job, got %d", n)
 	}
 
-	// 3. Verify job status is completed and linked to ingested RunID
-	jobResp, err := http.Get(baseURL + "/api/v1/jobs/" + created.ID)
-	if err != nil {
-		t.Fatal(err)
+	// 3. Verify job status is completed and linked to ingested RunID (requires auth)
+	authGet := func(url, tok string) (*http.Response, []byte) {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, b
 	}
-	jobBody, _ := io.ReadAll(jobResp.Body)
-	jobResp.Body.Close()
+	jobResp, jobBody := authGet(baseURL+"/api/v1/jobs/"+created.ID, "vpc-worker-secret")
+	if jobResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET job status=%d body=%s", jobResp.StatusCode, string(jobBody))
+	}
 	var completed Job
 	if err := json.Unmarshal(jobBody, &completed); err != nil {
 		t.Fatal(err)
@@ -764,12 +807,10 @@ func TestWorkerPullJobQueueAndTrends(t *testing.T) {
 	}
 
 	// 4. Verify GET /api/v1/trends returns the ingested run with resilience metrics
-	trResp, err := http.Get(baseURL + "/api/v1/trends?target=raft")
-	if err != nil {
-		t.Fatal(err)
+	trResp, trBody := authGet(baseURL+"/api/v1/trends?target=raft", "vpc-worker-secret")
+	if trResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET trends status=%d body=%s", trResp.StatusCode, string(trBody))
 	}
-	trBody, _ := io.ReadAll(trResp.Body)
-	trResp.Body.Close()
 	var trData struct {
 		Total  int          `json:"total"`
 		Points []TrendPoint `json:"points"`
@@ -796,7 +837,7 @@ func TestWorkerPullJobQueueAndTrends(t *testing.T) {
 		t.Fatalf("expected 409 Conflict when re-completing job, got %d", replayResp.StatusCode)
 	}
 
-	// 6. Verify unauthenticated GET /api/v1/jobs/<id> redacts live_config when --token is enabled
+	// 6. Verify unauthenticated GET /api/v1/jobs/<id> is rejected with 401 and does not leak live_config
 	runJobPayload := []byte(`{"kind":"run","tenant":"payments","live_config":{"name":"pg-ha","protocol":"postgres","nodes":[{"id":0,"addr":"10.0.0.1:5432"}]}}`)
 	runReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs", bytes.NewReader(runJobPayload))
 	runReq.Header.Set("Authorization", "Bearer vpc-worker-secret")
@@ -811,26 +852,14 @@ func TestWorkerPullJobQueueAndTrends(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	unauthResp, err := http.Get(baseURL + "/api/v1/jobs/" + createdRunJob.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unauthBody, _ := io.ReadAll(unauthResp.Body)
-	unauthResp.Body.Close()
-	if strings.Contains(string(unauthBody), "10.0.0.1:5432") {
-		t.Fatalf("expected unauthenticated GET /api/v1/jobs/<id> to redact live_config, got %s", string(unauthBody))
+	unauthResp, unauthBody := authGet(baseURL+"/api/v1/jobs/"+createdRunJob.ID, "")
+	if unauthResp.StatusCode != http.StatusUnauthorized || strings.Contains(string(unauthBody), "10.0.0.1:5432") {
+		t.Fatalf("expected 401 without live_config leak on unauthenticated GET /api/v1/jobs/<id>, got status=%d body=%s", unauthResp.StatusCode, string(unauthBody))
 	}
 
-	authGetReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/jobs/"+createdRunJob.ID, nil)
-	authGetReq.Header.Set("Authorization", "Bearer vpc-worker-secret")
-	authGetResp, err := http.DefaultClient.Do(authGetReq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authGetBody, _ := io.ReadAll(authGetResp.Body)
-	authGetResp.Body.Close()
-	if !strings.Contains(string(authGetBody), "10.0.0.1:5432") {
-		t.Fatalf("expected authenticated GET /api/v1/jobs/<id> to include live_config, got %s", string(authGetBody))
+	authGetResp, authGetBody := authGet(baseURL+"/api/v1/jobs/"+createdRunJob.ID, "vpc-worker-secret")
+	if authGetResp.StatusCode != http.StatusOK || !strings.Contains(string(authGetBody), "10.0.0.1:5432") {
+		t.Fatalf("expected authenticated GET /api/v1/jobs/<id> to include live_config, got status=%d body=%s", authGetResp.StatusCode, string(authGetBody))
 	}
 }
 
@@ -844,6 +873,9 @@ func TestServeHardeningValidationJobPermissionsAndUI(t *testing.T) {
 	}
 	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "bad-avail-high"), MinAvailability: 101}); err == nil {
 		t.Fatal("expected NewServer to reject MinAvailability > 100")
+	}
+	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "neg-lease"), JobLease: -time.Second}); err == nil {
+		t.Fatal("expected NewServer to reject negative JobLease")
 	}
 
 	corruptDir := filepath.Join(tmp, "corrupt-jobs")
@@ -880,6 +912,18 @@ func TestServeHardeningValidationJobPermissionsAndUI(t *testing.T) {
 		_ = ln.Close()
 	}()
 	baseURL := "http://" + ln.Addr().String()
+
+	authGet := func(path string) (*http.Response, []byte) {
+		req, _ := http.NewRequest(http.MethodGet, baseURL+path, nil)
+		req.Header.Set("Authorization", "Bearer sec")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, b
+	}
 
 	// Enqueue jobs for two tenants and verify WorkerConfig.Tenant scoping + jobs.json mode 0600.
 	for _, payload := range []string{
@@ -941,14 +985,9 @@ func TestServeHardeningValidationJobPermissionsAndUI(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("RunWorker tenant=payments got n=%d err=%v", n, err)
 	}
-	listResp, err := http.Get(baseURL + "/api/v1/jobs?tenant=billing")
-	if err != nil {
-		t.Fatal(err)
-	}
-	listBody, _ := io.ReadAll(listResp.Body)
-	listResp.Body.Close()
-	if !strings.Contains(string(listBody), `"status": "pending"`) {
-		t.Fatalf("expected billing job to remain pending, got %s", string(listBody))
+	listResp, listBody := authGet("/api/v1/jobs?tenant=billing")
+	if listResp.StatusCode != http.StatusOK || !strings.Contains(string(listBody), `"status": "pending"`) {
+		t.Fatalf("expected billing job to remain pending, got status=%d body=%s", listResp.StatusCode, string(listBody))
 	}
 
 	// Reload server from storeDir and verify job persistence.
@@ -961,14 +1000,9 @@ func TestServeHardeningValidationJobPermissionsAndUI(t *testing.T) {
 	}
 
 	// Check combined filter links on GET /?target=raft-ledger&tenant=payments
-	uiResp, err := http.Get(baseURL + "/?target=raft-ledger&tenant=payments")
-	if err != nil {
-		t.Fatal(err)
-	}
-	uiBody, _ := io.ReadAll(uiResp.Body)
-	uiResp.Body.Close()
-	if !strings.Contains(string(uiBody), "target=raft-ledger&amp;tenant=payments") {
-		t.Fatalf("expected UI filter pills to preserve combined target and tenant, got:\n%s", string(uiBody))
+	uiResp, uiBody := authGet("/?target=raft-ledger&tenant=payments")
+	if uiResp.StatusCode != http.StatusOK || !strings.Contains(string(uiBody), "target=raft-ledger&amp;tenant=payments") {
+		t.Fatalf("expected UI filter pills to preserve combined target and tenant, got status=%d:\n%s", uiResp.StatusCode, string(uiBody))
 	}
 
 	// Query param validation + corrupt bundle check on /api/v1/runs/<id>/dossier.
@@ -978,11 +1012,7 @@ func TestServeHardeningValidationJobPermissionsAndUI(t *testing.T) {
 	}
 	runID := runs[0].ID
 	for _, q := range []string{"max_mttr=-1s", "max_mttr=nope", "min_availability=101", "min_availability=nope"} {
-		dResp, err := http.Get(baseURL + "/api/v1/runs/" + runID + "/dossier?" + q)
-		if err != nil {
-			t.Fatal(err)
-		}
-		dResp.Body.Close()
+		dResp, _ := authGet("/api/v1/runs/" + runID + "/dossier?" + q)
 		if dResp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("query %s: expected 400, got %d", q, dResp.StatusCode)
 		}
@@ -991,12 +1021,435 @@ func TestServeHardeningValidationJobPermissionsAndUI(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(storeDir, "runs", runID, "bundle.json"), []byte("{corrupt"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	errResp, err := http.Get(baseURL + "/api/v1/runs/" + runID + "/dossier")
+	errResp, _ := authGet("/api/v1/runs/" + runID + "/dossier")
+	if errResp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on corrupt bundle.json, got %d", errResp.StatusCode)
+	}
+}
+
+func TestServeAuthEnforcementAndTenantTokenIsolation(t *testing.T) {
+	tmp := t.TempDir()
+	// Reject ambiguous / empty / duplicate tokens across admin and tenants.
+	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "dup1"), Token: "shared", TenantTokens: map[string]string{"alpha": "shared"}}); err == nil {
+		t.Fatal("expected error when tenant token duplicates admin token")
+	}
+	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "dup2"), TenantTokens: map[string]string{"alpha": "same", "beta": "same"}}); err == nil {
+		t.Fatal("expected error when two tenants share the same token")
+	}
+	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "empty-k"), TenantTokens: map[string]string{"": "tok"}}); err == nil {
+		t.Fatal("expected error for empty tenant key")
+	}
+	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "empty-v"), TenantTokens: map[string]string{"alpha": ""}}); err == nil {
+		t.Fatal("expected error for empty tenant token")
+	}
+
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   filepath.Join(tmp, "reg"),
+		Token:      "admin-secret",
+		TenantTokens: map[string]string{
+			"alpha": "alpha-secret",
+			"beta":  "beta-secret",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	errResp.Body.Close()
-	if errResp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500 on corrupt bundle.json, got %d", errResp.StatusCode)
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	doReq := func(method, path, tok, body string) (int, []byte) {
+		var rdr io.Reader
+		if body != "" {
+			rdr = strings.NewReader(body)
+		}
+		req, err := http.NewRequest(method, baseURL+path, rdr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	makeReport := func(target string) *report.Report {
+		v := int64(1)
+		ops := []history.Op{
+			{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: 10},
+			{Index: 1, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: 20},
+		}
+		rep, err := report.New(
+			report.KindSimulation,
+			target,
+			1,
+			map[string]any{"nodes": 3},
+			nemesis.Schedule{Nodes: 3, Duration: time.Second},
+			ops,
+			checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 1, Checked: 1},
+			"trace-"+target,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rep
+	}
+
+	// Push reports as alpha and beta (omitting ?tenant binds to token's own tenant).
+	resA, err := Push(context.Background(), baseURL, "alpha-secret", "", "c1", "main", makeReport("target-alpha"))
+	if err != nil || resA.Entry.Tenant != "alpha" {
+		t.Fatalf("alpha push failed: res=%+v err=%v", resA, err)
+	}
+	resB, err := Push(context.Background(), baseURL, "beta-secret", "", "c2", "main", makeReport("target-beta"))
+	if err != nil || resB.Entry.Tenant != "beta" {
+		t.Fatalf("beta push failed: res=%+v err=%v", resB, err)
+	}
+
+	// Cross-tenant push is rejected with 403.
+	rawB, _ := json.Marshal(makeReport("target-cross"))
+	if code, _ := doReq(http.MethodPost, "/api/v1/ingest?tenant=beta", "alpha-secret", string(rawB)); code != http.StatusForbidden {
+		t.Fatalf("expected 403 on cross-tenant ingest, got %d", code)
+	}
+
+	// Enqueue one job per tenant.
+	code, jobABody := doReq(http.MethodPost, "/api/v1/jobs", "alpha-secret", `{"kind":"sim","system":"raft","seed":1,"duration":"500ms"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("alpha enqueue failed: %d %s", code, string(jobABody))
+	}
+	var jobA Job
+	_ = json.Unmarshal(jobABody, &jobA)
+	if jobA.Tenant != "alpha" {
+		t.Fatalf("expected empty tenant on enqueue to bind to alpha, got %+v", jobA)
+	}
+	code, jobBBody := doReq(http.MethodPost, "/api/v1/jobs", "beta-secret", `{"kind":"sim","system":"raft","seed":2,"duration":"500ms"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("beta enqueue failed: %d %s", code, string(jobBBody))
+	}
+	var jobB Job
+	_ = json.Unmarshal(jobBBody, &jobB)
+
+	// Public /api/v1/health and /api/v1/keys stay 200 without auth, but omit tenant/target lists unauthenticated.
+	if code, hBody := doReq(http.MethodGet, "/api/v1/health", "", ""); code != http.StatusOK || strings.Contains(string(hBody), "target-beta") || strings.Contains(string(hBody), "alpha") {
+		t.Fatalf("unauthenticated /api/v1/health leaked tenant/target metadata: code=%d body=%s", code, string(hBody))
+	}
+	if code, _ := doReq(http.MethodGet, "/api/v1/keys", "", ""); code != http.StatusOK {
+		t.Fatalf("expected 200 on public /api/v1/keys, got %d", code)
+	}
+
+	// All sensitive endpoints reject unauthenticated callers with 401.
+	sensitive := []struct{ method, path string }{
+		{http.MethodGet, "/"},
+		{http.MethodGet, "/api/v1/runs"},
+		{http.MethodGet, "/api/v1/runs/" + resA.Entry.ID},
+		{http.MethodGet, "/api/v1/runs/" + resA.Entry.ID + "/dossier"},
+		{http.MethodGet, "/api/v1/series"},
+		{http.MethodGet, "/api/v1/trends"},
+		{http.MethodGet, "/api/v1/webhooks"},
+		{http.MethodGet, "/api/v1/jobs"},
+		{http.MethodGet, "/api/v1/jobs/" + jobA.ID},
+		{http.MethodPost, "/api/v1/jobs/claim"},
+	}
+	for _, ep := range sensitive {
+		if c, _ := doReq(ep.method, ep.path, "", ""); c != http.StatusUnauthorized {
+			t.Errorf("%s %s without token: want 401, got %d", ep.method, ep.path, c)
+		}
+	}
+
+	// Alpha cannot read Beta's runs, dossier, UI, series, trends, jobs, or webhooks.
+	forbiddenForAlpha := []struct{ method, path, body string }{
+		{http.MethodGet, "/?tenant=beta", ""},
+		{http.MethodGet, "/api/v1/runs?tenant=beta", ""},
+		{http.MethodGet, "/api/v1/runs/" + resB.Entry.ID, ""},
+		{http.MethodGet, "/api/v1/runs/" + resB.Entry.ID + "/dossier", ""},
+		{http.MethodGet, "/api/v1/series?tenant=beta", ""},
+		{http.MethodGet, "/api/v1/trends?tenant=beta", ""},
+		{http.MethodGet, "/api/v1/webhooks", ""},
+		{http.MethodGet, "/api/v1/jobs?tenant=beta", ""},
+		{http.MethodPost, "/api/v1/jobs", `{"tenant":"beta","kind":"sim"}`},
+		{http.MethodGet, "/api/v1/jobs/" + jobB.ID, ""},
+		{http.MethodPost, "/api/v1/jobs/claim", `{"worker_id":"w","tenant":"beta"}`},
+		{http.MethodPost, "/api/v1/jobs/" + jobB.ID + "/heartbeat", `{"worker_id":"w","claim_token":"x"}`},
+		{http.MethodPost, "/api/v1/jobs/" + jobB.ID + "/complete", `{"worker_id":"w"}`},
+	}
+	for _, ep := range forbiddenForAlpha {
+		if c, _ := doReq(ep.method, ep.path, "alpha-secret", ep.body); c != http.StatusForbidden {
+			t.Errorf("%s %s with alpha token: want 403, got %d", ep.method, ep.path, c)
+		}
+	}
+
+	// Alpha reads its own UI, runs, series, trends without any leakage of beta's targets/tenants.
+	for _, path := range []string{"/", "/api/v1/runs", "/api/v1/series", "/api/v1/trends", "/api/v1/jobs"} {
+		c, b := doReq(http.MethodGet, path, "alpha-secret", "")
+		if c != http.StatusOK {
+			t.Fatalf("GET %s as alpha: status=%d body=%s", path, c, string(b))
+		}
+		if strings.Contains(string(b), "target-beta") || strings.Contains(string(b), resB.Entry.ID) || strings.Contains(string(b), jobB.ID) {
+			t.Fatalf("GET %s as alpha leaked beta resource: %s", path, string(b))
+		}
+	}
+
+	// Admin can read webhook history and both tenants' runs.
+	if c, _ := doReq(http.MethodGet, "/api/v1/webhooks", "admin-secret", ""); c != http.StatusOK {
+		t.Fatalf("admin GET /api/v1/webhooks failed: %d", c)
+	}
+	if c, b := doReq(http.MethodGet, "/api/v1/runs", "admin-secret", ""); c != http.StatusOK || !strings.Contains(string(b), resA.Entry.ID) || !strings.Contains(string(b), resB.Entry.ID) {
+		t.Fatalf("admin GET /api/v1/runs missing both tenants: %d %s", c, string(b))
+	}
+
+	// Claim token is returned on /claim, never exposed on GET /jobs or GET /jobs/<id>.
+	c, claimBody := doReq(http.MethodPost, "/api/v1/jobs/claim", "alpha-secret", `{"worker_id":"alpha-w1"}`)
+	if c != http.StatusOK {
+		t.Fatalf("alpha claim failed: %d %s", c, string(claimBody))
+	}
+	var claimedA Job
+	_ = json.Unmarshal(claimBody, &claimedA)
+	if claimedA.ID != jobA.ID || claimedA.ClaimToken == "" {
+		t.Fatalf("expected alpha worker to claim alpha's job with non-empty claim_token, got %+v", claimedA)
+	}
+	if _, listBody := doReq(http.MethodGet, "/api/v1/jobs", "admin-secret", ""); strings.Contains(string(listBody), claimedA.ClaimToken) {
+		t.Fatal("GET /api/v1/jobs leaked claim_token")
+	}
+	if _, itemBody := doReq(http.MethodGet, "/api/v1/jobs/"+jobA.ID, "admin-secret", ""); strings.Contains(string(itemBody), claimedA.ClaimToken) {
+		t.Fatal("GET /api/v1/jobs/<id> leaked claim_token")
+	}
+}
+
+func TestServeJobLeaseHeartbeatReclaimAndTOCTOU(t *testing.T) {
+	var hookCount int
+	var hookMu sync.Mutex
+	hookLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hookMu.Lock()
+		hookCount++
+		hookMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = hookSrv.Serve(hookLn) }()
+	defer func() {
+		_ = hookSrv.Shutdown(context.Background())
+		_ = hookLn.Close()
+	}()
+
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   t.TempDir(),
+		Token:      "lease-sec",
+		Webhooks:   []string{"http://" + hookLn.Addr().String() + "/hook"},
+		JobLease:   120 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	postJSON := func(path, payload string) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, baseURL+path, strings.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer lease-sec")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	c, jBody := postJSON("/api/v1/jobs", `{"kind":"sim","system":"raft","seed":1,"duration":"500ms"}`)
+	if c != http.StatusCreated {
+		t.Fatalf("enqueue status=%d body=%s", c, string(jBody))
+	}
+	var job Job
+	_ = json.Unmarshal(jBody, &job)
+
+	// Completing a pending job must fail with 409 Conflict.
+	if c, _ := postJSON("/api/v1/jobs/"+job.ID+"/complete", `{"worker_id":"w1"}`); c != http.StatusConflict {
+		t.Fatalf("expected 409 completing pending job, got %d", c)
+	}
+
+	// Worker 1 claims the job.
+	c, cBody1 := postJSON("/api/v1/jobs/claim", `{"worker_id":"w1"}`)
+	if c != http.StatusOK {
+		t.Fatalf("claim w1 status=%d body=%s", c, string(cBody1))
+	}
+	var claim1 Job
+	_ = json.Unmarshal(cBody1, &claim1)
+	if claim1.Attempts != 1 || claim1.ClaimToken == "" || claim1.LeaseExpiresAt == "" {
+		t.Fatalf("unexpected initial claim: %+v", claim1)
+	}
+
+	// Wrong/missing claim_token on heartbeat or complete must return 409 Conflict.
+	if c, _ := postJSON("/api/v1/jobs/"+job.ID+"/heartbeat", `{"worker_id":"w1","claim_token":"wrong"}`); c != http.StatusConflict {
+		t.Fatalf("expected 409 for wrong claim_token heartbeat, got %d", c)
+	}
+	if c, _ := postJSON("/api/v1/jobs/"+job.ID+"/complete", `{"worker_id":"w1","claim_token":"wrong"}`); c != http.StatusConflict {
+		t.Fatalf("expected 409 for wrong claim_token complete, got %d", c)
+	}
+
+	// Renew lease across > 120ms; second worker must receive 204 No Content while heartbeats keep lease alive.
+	for i := 0; i < 3; i++ {
+		time.Sleep(55 * time.Millisecond)
+		hbPayload, _ := json.Marshal(JobHeartbeatRequest{WorkerID: "w1", ClaimToken: claim1.ClaimToken})
+		if c, _ := postJSON("/api/v1/jobs/"+job.ID+"/heartbeat", string(hbPayload)); c != http.StatusOK {
+			t.Fatalf("heartbeat %d failed: %d", i, c)
+		}
+	}
+	if c, _ := postJSON("/api/v1/jobs/claim", `{"worker_id":"w2"}`); c != http.StatusNoContent {
+		t.Fatalf("expected active lease to block w2 reclaim (204), got %d", c)
+	}
+
+	// Let lease expire, then w2 reclaims the same job with attempt=2 and a new claim token.
+	time.Sleep(150 * time.Millisecond)
+	c, cBody2 := postJSON("/api/v1/jobs/claim", `{"worker_id":"w2"}`)
+	if c != http.StatusOK {
+		t.Fatalf("expected w2 reclaim after lease expiry, got status=%d body=%s", c, string(cBody2))
+	}
+	var claim2 Job
+	_ = json.Unmarshal(cBody2, &claim2)
+	if claim2.ID != job.ID || claim2.Attempts != 2 || claim2.ClaimToken == "" || claim2.ClaimToken == claim1.ClaimToken {
+		t.Fatalf("unexpected reclaimed job metadata: %+v (prev token %q)", claim2, claim1.ClaimToken)
+	}
+
+	// Zombie worker w1 cannot heartbeat or complete after reclaim.
+	staleComplete, _ := json.Marshal(JobCompleteRequest{WorkerID: "w1", ClaimToken: claim1.ClaimToken})
+	if c, _ := postJSON("/api/v1/jobs/"+job.ID+"/complete", string(staleComplete)); c != http.StatusConflict {
+		t.Fatalf("expected 409 for stale w1 completion, got %d", c)
+	}
+
+	// Concurrent /complete calls with valid w2 credentials must execute ingest/webhook exactly once.
+	v := int64(1)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: 10},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: 20},
+	}
+	badRep, err := report.New(report.KindSimulation, "raft-viol", 9, map[string]any{"nodes": 3}, nemesis.Schedule{Nodes: 3, Duration: time.Second}, ops, checker.Report{Model: "kv", Verdict: checker.Violation, Operations: 1, Checked: 1}, "t9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeBody, _ := json.Marshal(JobCompleteRequest{WorkerID: "w2", ClaimToken: claim2.ClaimToken, Report: badRep})
+
+	const racing = 4
+	codes := make(chan int, racing)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < racing; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			code, _ := postJSON("/api/v1/jobs/"+job.ID+"/complete", string(completeBody))
+			codes <- code
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(codes)
+
+	okCount, conflictCount := 0, 0
+	for code := range codes {
+		switch code {
+		case http.StatusOK:
+			okCount++
+		case http.StatusConflict:
+			conflictCount++
+		default:
+			t.Fatalf("unexpected status code in concurrent complete race: %d", code)
+		}
+	}
+	if okCount != 1 || conflictCount != racing-1 {
+		t.Fatalf("expected exactly 1 200 OK and %d 409 Conflicts, got ok=%d conflict=%d", racing-1, okCount, conflictCount)
+	}
+	if runs := srv.Store().List("", ""); len(runs) != 1 {
+		t.Fatalf("expected exactly 1 ingested run from concurrent completes, got %d", len(runs))
+	}
+	hookMu.Lock()
+	gotHooks := hookCount
+	hookMu.Unlock()
+	if gotHooks != 1 {
+		t.Fatalf("expected exactly 1 webhook delivery from concurrent completes, got %d", gotHooks)
+	}
+}
+
+func TestServeStoreTornRegistryRecovery(t *testing.T) {
+	dir := t.TempDir()
+	st, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := int64(7)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: 10},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: 20},
+	}
+	rep1, err := report.New(report.KindSimulation, "raft", 1, map[string]any{"nodes": 3}, nemesis.Schedule{Nodes: 3, Duration: time.Second}, ops, checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 1, Checked: 1}, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.IngestReport(rep1, "c1", "main", nil, "", "t1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate crash leaving a partial unterminated JSON line at EOF of registry.jsonl.
+	regPath := filepath.Join(dir, "registry.jsonl")
+	f, err := os.OpenFile(regPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"id":"run-torn","target":"crash`); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	reopened, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store after torn tail: %v", err)
+	}
+	if runs := reopened.List("", ""); len(runs) != 1 {
+		t.Fatalf("expected 1 valid run after torn tail repair, got %d", len(runs))
+	}
+
+	rep2, err := report.New(report.KindSimulation, "raft", 2, map[string]any{"nodes": 3}, nemesis.Schedule{Nodes: 3, Duration: time.Second}, ops, checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 1, Checked: 1}, "t2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.IngestReport(rep2, "c2", "main", nil, "", "t1"); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedAgain, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store after post-recovery ingest: %v", err)
+	}
+	if runs := reopenedAgain.List("", ""); len(runs) != 2 {
+		t.Fatalf("expected 2 valid runs persisted cleanly after torn tail recovery, got %d", len(runs))
 	}
 }

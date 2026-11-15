@@ -50,6 +50,14 @@ func (c *Comparison) HasRegressions() bool {
 	return c != nil && len(c.Regressed) > 0
 }
 
+func isCleanSeed(s SeedRecord) bool {
+	if s.Error != "" {
+		return false
+	}
+	return s.Verdict == checker.Linearizable ||
+		(s.Verdict == checker.Unknown && s.Reason == checker.ReasonIncomplete)
+}
+
 // Compare computes the seed-by-seed regression analysis between baseline and current.
 func Compare(baseline, current *Manifest) *Comparison {
 	if baseline == nil || current == nil {
@@ -69,7 +77,7 @@ func Compare(baseline, current *Manifest) *Comparison {
 
 	for _, curr := range current.Seeds {
 		prev, existed := prevBySeed[curr.Seed]
-		currOK := curr.Verdict == checker.Linearizable && curr.Error == ""
+		currOK := isCleanSeed(curr)
 		if !existed {
 			if !currOK {
 				comp.NewFailures = append(comp.NewFailures, SeedDelta{
@@ -86,7 +94,7 @@ func Compare(baseline, current *Manifest) *Comparison {
 			continue
 		}
 
-		prevOK := prev.Verdict == checker.Linearizable && prev.Error == ""
+		prevOK := isCleanSeed(prev)
 		switch {
 		case prevOK && !currOK:
 			comp.Regressed = append(comp.Regressed, SeedDelta{
@@ -152,7 +160,7 @@ func MergeSeeds(requested []uint64, baseline *Manifest, replayFailing bool) []ui
 	}
 	if replayFailing && baseline != nil {
 		for _, rec := range baseline.Seeds {
-			if rec.Verdict != checker.Linearizable || rec.Error != "" {
+			if !isCleanSeed(rec) {
 				if _, ok := seen[rec.Seed]; !ok {
 					seen[rec.Seed] = struct{}{}
 					out = append(out, rec.Seed)
