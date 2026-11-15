@@ -9,7 +9,7 @@ translationKey: compliance
 ## What you get
 
 - **A print-ready dossier** (HTML, Markdown and JSON) from a single test report or a multi-seed campaign.
-- **Every control graded from empirical evidence:** PASS, PARTIAL (fault coverage or signing incomplete) or FAIL, with the gap and how to close it.
+- **Every control graded from empirical evidence:** PASS, PARTIAL (fault coverage, signing, or consistency proof completeness incomplete) or FAIL, with the gap and how to close it.
 - **A “Methodology & Scope Boundaries” section** in every dossier: what was tested, which fault classes were left out, and how deterministic simulation differs from a live cluster.
 - **A cryptographic signature.** Reports are signed with Ed25519 (in-toto v0.1) using your team's key, and anyone can re-verify them, including on the [verification page](/verify) without installing anything.
 
@@ -45,7 +45,7 @@ See a [sample dossier](/demos/dossier.html) (simulated data) and the full guide 
 
 - **Simulation** proves an algorithm's behaviour deterministically and replays bit for bit, but it tests a model of the system, not your production system.
 - **Live-cluster tests** produce evidence about your system but cannot replay exactly: the fault schedule and the workload are identical, the timing is not. The dossier states which mode was used.
-- **Finding no violation does not prove a system is bug-free.** It means none was found within the faults and duration tested, and the dossier records that scope.
+- **Finding no violation does not prove a system is bug-free.** It means none was found within the faults and duration tested, and the dossier records that scope. When a sound-incomplete transactional checker (`append`, `ledger`, `settlement`) finds no anomaly beyond bounded complete search, affected controls are graded `PARTIAL` and disclosed as empirical no-anomaly evidence rather than a complete proof of linearizability.
 
 ## Take it into your next audit
 

@@ -98,12 +98,12 @@ seed violates. `--shrink` attaches a minimal reproducer to the reports:
     command: check --model kv --max-mttr 500ms --min-availability 0.99 traces.json
 ```
 
-**Generate a compliance dossier (`dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp`) with SLA gates and SARIF rules:**
+**Generate a compliance dossier (`dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp`) with SLA gates and SARIF rules** (transactional models like `outbox-settlement` use `--expect no-anomaly` when large histories exceed bounded complete search):
 
 ```yaml
 - uses: kemalhafizh/strife@v1.0.0
   with:
-    command: sim --system outbox-settlement --seed 7 --expect linearizable
+    command: sim --system outbox-settlement --seed 7 --expect no-anomaly
     out: settle-out
 - uses: kemalhafizh/strife@v1.0.0
   with:
@@ -151,7 +151,7 @@ reporter action, for example:
 ```yaml
 - uses: kemalhafizh/strife@v1.0.0
   with:
-    command: sim --system outbox-settlement --seeds 1..100 --expect linearizable
+    command: sim --system outbox-settlement --seeds 1..100 --expect no-anomaly
     sarif: strife.sarif.json
 - uses: github/codeql-action/upload-sarif@v3
   if: always()
@@ -171,15 +171,18 @@ The `testcase` elements depend on the command:
 | `sim --seed N`, `shrink`, `check` | one per key of the history | that key's history violates the model; the body holds the counterexample and reproduction command |
 | `sim --seeds A..B` | one per seed | that seed violates; the body holds its explanation and reproduction command |
 | `sim --seeds A..B --expect violation` | one: `finds a violation` | no seed in the range violated (finding the bug *is* the test) |
-| `sim --seed N --expect …` | one: `expect …` | the verdict differs from the expectation |
+| `sim --seed N --expect …` | one: `expect …` | the verdict differs from the expectation (`linearizable`, `violation`, or `no-anomaly`) |
 | `campaign` | one per seed (`seed N`), or `finds a violation` with `--expect violation` | that seed violated or regressed; under `--expect no-regression`, known baseline failures are recorded as `skipped` |
 | `run` | one per key, plus `fault injection` | as above; `fault injection` is an error when fault commands failed, because the cluster did not see the planned schedule |
 | `compliance` | one per evaluated control (`[FW] control_id — Title`) | the control evaluated to `FAIL` (or `PARTIAL` when `--strict` is set) |
 
 Outcomes map as follows:
 
-- An inconclusive check (search budget exhausted) is a JUnit `error`, not a
-  pass.
+- An inconclusive check (search budget exhausted, or `sound incomplete` on a
+  transactional model without `--expect no-anomaly`) is a JUnit `error`, not a
+  pass. With `--expect no-anomaly`, clean `linearizable` and `sound incomplete`
+  outcomes both pass, while budget exhaustion (`step budget` / `time budget`)
+  and `violation` fail.
 - A run that cannot complete at all (bad config, unreachable cluster,
   nondeterminism detected) is reported as a single `error` case, so CI never
   shows green for a run that did not happen.

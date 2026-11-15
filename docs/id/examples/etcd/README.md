@@ -14,8 +14,8 @@ strife plan --config strife.json
 # Jalankan uji linearizability key-value (2 menit) dan tulis laporan ke ./strife-out/
 strife run --config strife.json
 
-# Jalankan transaksi list-append dan periksa pada tingkat strict serializability
-strife run --config strife-append.json
+# Jalankan transaksi list-append pada strict serializability (--expect no-anomaly meluluskan CI bila tidak ada anomali)
+strife run --config strife-append.json --expect no-anomaly
 
 docker compose down -v
 ```
@@ -27,7 +27,7 @@ docker compose down -v
 | Konfigurasi / Berkas | Model & Transport | Gangguan | Dijalankan di CI (`live.yml`) |
 |---|---|---|---|
 | `strife.json` | `kv` lewat `docker` | `partition`, `kill`, `pause`, `latency`, `loss` | job `etcd` (linearizable) |
-| `strife-append.json` | `append` (`strict-serializable`) lewat `docker` | `partition`, `kill`, `pause`, `latency`, `loss` | job `etcd` (strict serializable) |
+| `strife-append.json` | `append` (`strict-serializable`) lewat `docker` | `partition`, `kill`, `pause`, `latency`, `loss` | job `etcd` (`--expect no-anomaly`) |
 | `strife-agent.json` + `docker-compose.agent.yml` | `kv` lewat `agent` (`strife-agent` port 9292) | `partition`, `kill`, `pause` | job `agent` + `strife bench inject` |
 | `strife-cgroup.json` | `kv` lewat `docker` (`cgroup: auto`, `io_device: auto`, `sudo: true`) | `freeze`, `io-stall` | job `cgroup` |
 

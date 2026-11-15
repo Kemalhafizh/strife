@@ -11,8 +11,8 @@ MySQL protocol, so Strife uses the same client as for MySQL.
 cd examples/tidb
 docker compose up -d
 
-strife run --config strife-optimistic.json          # optimistic mode, frozen and thawed
-strife run --config strife.json --faults none       # pessimistic mode (TiDB's default)
+strife run --config strife-optimistic.json --expect no-anomaly   # optimistic mode, frozen and thawed
+strife run --config strife.json --faults none --expect violation # pessimistic mode (TiDB's default)
 
 docker compose down -v
 ```
@@ -21,7 +21,7 @@ docker compose down -v
 
 | Config | Transaction mode | Checked as | Faults | Expected |
 |---|---|---|---|---|
-| `strife-optimistic.json` | optimistic (`init_sql`) | snapshot isolation | `freeze` | pass |
+| `strife-optimistic.json` | optimistic (`init_sql`) | snapshot isolation | `freeze` | no anomaly (`--expect no-anomaly`) |
 | `strife.json` | pessimistic | snapshot isolation | none | **violation** |
 
 TiDB documents its REPEATABLE READ as snapshot isolation. In optimistic mode

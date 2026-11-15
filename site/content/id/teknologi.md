@@ -33,11 +33,11 @@ Lewat `strife-agent`, median keterlambatan injeksi pause adalah 1,36 ms, dibandi
 | `kv` | Linearizability register baca/tulis/CAS (pencarian Wing & Gong / Lowe dengan memoisasi bitset, pemangkasan interval nilai `kvPruner`, dan P-compositionality per kunci) |
 | `set`, `queue`, `counter`, `idgen` | Linearizability set, antrean FIFO, penghitung, dan pembangkit ID unik |
 | `txn` | Isolasi transaksi lewat Direct Serialization Graph: anomali Adya G0, G1a, G1b, G1c, G2, dan G-realtime pada enam level isolasi |
-| `append` | List-append bergaya Elle: G0–G2, G-single, G-realtime, append yang hilang, urutan yang tidak cocok, duplikat, dan konsistensi internal |
+| `append` | List-append bergaya Elle: G0–G2, G-single, G-realtime, append yang hilang, urutan yang tidak cocok, duplikat, dan konsistensi internal (pencarian tuntas berbatas pada riwayat kecil; `unknown (sound incomplete)` pada riwayat lebih besar) |
 | `ledger` | Buku besar keuangan berpasangan (double-entry): konservasi saldo total (`LEDGER-CONSERVATION`), deteksi saldo negatif/overdraft (`LEDGER-OVERDRAFT` & write skew `G2-item`), idempotensi retry (`LEDGER-DOUBLE-SPEND`), dan keseimbangan debit/kredit (`LEDGER-UNBALANCED`) |
 | `settlement` | Kliring lintas-sistem dan transaksional outbox settlement: propagasi atomik buku besar ke kliring (`SETTLEMENT-ATOMICITY`), pencegahan kredit yatim (`SETTLEMENT-NO-ORPHAN-CREDIT`), dan deduplikasi idempoten (`SETTLEMENT-IDEMPOTENCY`) |
 
-Bila anggaran pencarian habis, verdict-nya **tidak pasti**, tidak pernah lulus. Kecepatan dan ketepatan checker diukur di [tolok ukur](/docs/benchmarks#2-throughput-checker), termasuk batasnya. Detail setiap model ada di [Model Konsistensi](/docs/models).
+Bila anggaran pencarian habis—atau bila checker transaksional *sound-incomplete* (`append`, `ledger`, `settlement`) tidak menemukan anomali pada riwayat yang melampaui batas pencarian tuntas (`<= 16` operasi, `<= 4` operasi `info`)—verdict-nya **tidak pasti** (`sound incomplete`), tidak pernah klaim `linearizable` palsu. Pipeline CI dapat memvalidasi ketiadaan anomali menggunakan `--expect no-anomaly`, sementara seluruh optimasi WGL (`eagerRead`, `kvPruner`) diuji diferensial terhadap oracle *brute-force*. Kecepatan dan ketepatan checker diukur di [tolok ukur](/docs/benchmarks#2-throughput-checker), termasuk batasnya. Detail setiap model ada di [Model Konsistensi](/docs/models).
 
 ## Klien database tanpa dependensi
 

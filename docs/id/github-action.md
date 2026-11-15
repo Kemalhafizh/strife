@@ -93,12 +93,12 @@ jobs:
     command: check --model kv --max-mttr 500ms --min-availability 0.99 traces.json
 ```
 
-**Hasilkan dossier kepatuhan (`dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp`) lengkap dengan gerbang SLA dan aturan SARIF:**
+**Hasilkan dossier kepatuhan (`dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp`) lengkap dengan gerbang SLA dan aturan SARIF** (model transaksional seperti `outbox-settlement` memakai `--expect no-anomaly` bila ukuran riwayat melebihi batas pencarian tuntas):
 
 ```yaml
 - uses: kemalhafizh/strife@v1.0.0
   with:
-    command: sim --system outbox-settlement --seed 7 --expect linearizable
+    command: sim --system outbox-settlement --seed 7 --expect no-anomaly
     out: settle-out
 - uses: kemalhafizh/strife@v1.0.0
   with:
@@ -145,7 +145,7 @@ jobs:
 ```yaml
 - uses: kemalhafizh/strife@v1.0.0
   with:
-    command: sim --system outbox-settlement --seeds 1..100 --expect linearizable
+    command: sim --system outbox-settlement --seeds 1..100 --expect no-anomaly
     sarif: strife.sarif.json
 - uses: github/codeql-action/upload-sarif@v3
   if: always()
@@ -165,14 +165,14 @@ Elemen `testcase` bergantung pada perintah yang dijalankan:
 | `sim --seed N`, `shrink`, `check` | satu per kunci di dalam riwayat | riwayat kunci tersebut melanggar model; tubuh XML memuat contoh tandingan dan perintah reproduksinya |
 | `sim --seeds A..B` | satu per seed | seed tersebut melanggar; tubuh memuat penjelasannya dan perintah reproduksi |
 | `sim --seeds A..B --expect violation` | satu: `finds a violation` | tidak ada seed dalam rentang tersebut yang melanggar (menemukan bug *adalah* tujuan uji) |
-| `sim --seed N --expect …` | satu: `expect …` | verdict berbeda dari ekspektasi |
+| `sim --seed N --expect …` | satu: `expect …` | verdict berbeda dari ekspektasi (`linearizable`, `violation`, atau `no-anomaly`) |
 | `campaign` | satu per seed (`seed N`), atau `finds a violation` dengan `--expect violation` | seed tersebut melanggar atau mengalami regresi; di bawah `--expect no-regression`, kegagalan baseline yang sudah diketahui dicatat sebagai `skipped` |
 | `run` | satu per kunci, ditambah `fault injection` | sama seperti di atas; `fault injection` bernilai error bila perintah gangguan gagal, sehingga cluster tidak menerima jadwal yang direncanakan |
 | `compliance` | satu per kontrol yang dievaluasi (`[FW] control_id — Judul`) | kontrol dinilai `FAIL` (atau `PARTIAL` saat `--strict` diaktifkan) |
 
 Pemetaan status eksekusi:
 
-- Pemeriksaan yang tidak konklusif (`unknown`, anggaran pencarian habis) menjadi `error` JUnit, bukan lulus.
+- Pemeriksaan yang tidak konklusif (`unknown` karena anggaran pencarian habis, maupun `sound incomplete` pada model transaksional tanpa `--expect no-anomaly`) menjadi `error` JUnit, bukan lulus. Dengan `--expect no-anomaly`, hasil `linearizable` maupun `sound incomplete` sama-sama lulus, sedangkan kehabisan anggaran (`step budget` / `time budget`) dan `violation` tetap gagal.
 - Eksekusi yang sama sekali tidak bisa diselesaikan (konfigurasi salah, cluster tak terjangkau, terdeteksi nondeterminisme) dilaporkan sebagai satu kasus `error`, sehingga CI tidak pernah menampilkan hijau untuk uji yang sebenarnya gagal berjalan.
 
 Atribut `properties` suite membawa jejak audit lengkap:

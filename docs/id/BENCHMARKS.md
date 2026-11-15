@@ -109,11 +109,16 @@ go test ./pkg/txn -run 'AppendAgainstBruteForce|RegisterTxnAgainstBruteForce' -v
 
 *Soundness* (tidak pernah menandai melanggar sebuah riwayat yang sebenarnya punya urutan sah) diwajibkan dan ditegakkan oleh seluruh rangkaian pengujian. Kelengkapan (*completeness*) tidak mungkin 100% penuh bagi list-append: sebuah anomali dapat bersembunyi di balik transaksi `info` yang tak pasti, atau pembacaan rusak dapat tetap terjelaskan oleh urutan versi lain. Seluruh 93 riwayat yang lolos berasal dari kasus semacam itu.
 
+Karena checker transaksional berbasis graf kebergantungan (`append`, `ledger`, `settlement`) bersifat *sound* tetapi tidak lengkap (*incomplete*), `model.Decider` membedakan `DecisionVerified`, `DecisionViolation`, dan `DecisionInconclusive`:
+
+- Bila model *sound-incomplete* tidak menemukan anomali pada riwayat tak kosong yang memenuhi syarat eksekusi langkah *strict-serializable* (`model.CompleteSearcher`), `pkg/checker` menjalankan pencarian WGL lengkap berbatas (`<= 16` op, `<= 4` op `info`, dibatasi `500.000` langkah). Hanya pencarian yang tuntas yang menghasilkan `linearizable`; riwayat lebih besar atau non-strict menghasilkan `unknown` dengan alasan `sound incomplete` (dipenuhi oleh `--expect no-anomaly`).
+- [`TestDifferentialOptimizerEquivalence`](../../pkg/checker/linearizable_test.go) (`pkg/checker`) menguji silang seluruh jalur eksekusi WGL—jalur cepat default, `SearchOnly`, `eagerRead` nonaktif, `kvPruner` nonaktif, dan WGL tanpa optimasi—terhadap oracle *brute force* pada model `kv`, `set`, `counter`, `queue`, `idgen`, serta `append` (*strict-serializable*).
+
 Fuzzing berkelanjutan (`ci.yml`, job `fuzz`) menjalankan `FuzzCheckAppendSound`, `FuzzReadJSONL`, `FuzzReadEDN`, `FuzzParseWasm`, serta dekoder protokol jaringan (`FuzzPostgresMessages`, `FuzzMySQLPackets`, `FuzzKafkaRecords`, `FuzzRESP`). Fuzzing sebelumnya menemukan panic *stack-underflow* pada interpreter Wasm dan *integer overflow* pada dekoder paket MySQL, keduanya telah diperbaiki; masukan pemicunya disimpan sebagai korpus regresi di bawah `pkg/*/testdata/fuzz`. Setiap dekoder membatasi alokasi memorinya berdasarkan byte yang benar-benar tiba, bukan panjang yang diklaim pada wire.
 
 ## 4. Deteksi Bug di Simulator
 
-Setiap baris menyapu cluster 5-node selama 10 detik waktu simulasi (`--seeds 1..200`, atau `--seeds 1..60` untuk `raft-ledger-overdraft`, `2pc-ledger-torn-commit`, dan `outbox-dual-write`). Sistem yang memiliki bug terpasang selalu tertangkap, sedangkan implementasi referensi yang benar tidak pernah salah ditandai.
+Setiap baris menyapu cluster 5-node selama 10 detik waktu simulasi (`--seeds 1..200`, atau `--seeds 1..60` untuk `raft-ledger-overdraft`, `2pc-ledger-torn-commit`, dan `outbox-dual-write`). Sistem yang memiliki bug terpasang selalu tertangkap, sedangkan implementasi referensi yang benar tidak pernah melaporkan pelanggaran (`--expect no-anomaly` pada sistem transaksional `raft-ledger`, `2pc-ledger`, dan `outbox-settlement`; `--expect linearizable` pada `raft`).
 
 ```sh
 strife sim --system raft-stale-reads       --faults partition           --seeds 1..200
@@ -122,10 +127,10 @@ strife sim --system raft-unsafe-fsync      --faults kill,io-stall        --seeds
 strife sim --system raft-ledger-overdraft  --faults partition,latency    --seeds 1..60
 strife sim --system 2pc-ledger-torn-commit --faults partition,kill       --seeds 1..60
 strife sim --system outbox-dual-write      --faults partition,kill       --seeds 1..60
-strife sim --system outbox-settlement      --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --determinism --expect linearizable
-strife sim --system 2pc-ledger  --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
-strife sim --system raft-ledger --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
-strife sim --system raft        --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
+strife sim --system outbox-settlement      --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --determinism --expect no-anomaly
+strife sim --system 2pc-ledger  --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --expect no-anomaly
+strife sim --system raft-ledger --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --expect no-anomaly
+strife sim --system raft        --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --expect linearizable
 ```
 
 | Sistem | Bug | Gangguan | Seed melanggar |
@@ -145,25 +150,25 @@ Delapan penyapuan pertama memakan waktu 17–34 detik masing-masing di host 4-vC
 
 ## 5. Cluster Sungguhan
 
-Setiap push menjalankan [`.github/workflows/live.yml`](../../.github/workflows/live.yml). Setiap baris adalah asersi tegas: eksekusi yang tidak menghasilkan verdict yang diharapkan otomatis menggagalkan job CI.
+Setiap push menjalankan [`.github/workflows/live.yml`](../../.github/workflows/live.yml). Setiap baris adalah asersi tegas: eksekusi yang tidak menghasilkan verdict yang diharapkan otomatis menggagalkan job CI. Pengujian transaksional (`append` dan `ledger`) memeriksa `--expect no-anomaly`, sedangkan pengujian register (`kv`) memeriksa `--expect linearizable`.
 
 | Job | Sistem | Gangguan | Diperiksa sebagai | Ekspektasi dan hasil teramati |
 |---|---|---|---|---|
-| etcd | etcd 3.5, 3 node | partition, kill, pause, latency ², loss ² | linearizable (kv) | lulus |
-| etcd | sama, transaksi | sama | strict serializable (list-append) | lulus |
-| agent | etcd via strife-agent | partition, kill, pause | linearizable | lulus |
-| cgroup | etcd | freeze, io-stall | linearizable | lulus |
-| kubernetes | etcd StatefulSet di kind | partition, kill, pause, latency ², loss ² | linearizable | lulus |
+| etcd | etcd 3.5, 3 node | partition, kill, pause, latency ², loss ² | linearizable (kv) | lulus (`--expect linearizable`) |
+| etcd | sama, transaksi | sama | strict serializable (list-append) | lulus (`--expect no-anomaly`) |
+| agent | etcd via strife-agent | partition, kill, pause | linearizable | lulus (`--expect linearizable`) |
+| cgroup | etcd | freeze, io-stall | linearizable | lulus (`--expect linearizable`) |
+| kubernetes | etcd StatefulSet di kind | partition, kill, pause, latency ², loss ² | linearizable | lulus (`--expect linearizable`) |
 | valkey | Valkey 8, primary + 2 replika asinkron | partition, pause | linearizable | **pelanggaran** (pembacaan basi replika) |
-| valkey | Valkey 8, primary tunggal, `appendfsync always` | kill -9 | linearizable | lulus |
-| postgres | PostgreSQL 17 primary, SERIALIZABLE | kill -9, pause | strict serializable | lulus |
-| postgres | PostgreSQL 17 primary, buku besar berpasangan (`SERIALIZABLE`) | kill -9, pause | strict serializable (`ledger`) | lulus |
-| postgres | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation | lulus |
+| valkey | Valkey 8, primary tunggal, `appendfsync always` | kill -9 | linearizable | lulus (`--expect linearizable`) |
+| postgres | PostgreSQL 17 primary, SERIALIZABLE | kill -9, pause | strict serializable | lulus (`--expect no-anomaly`) |
+| postgres | PostgreSQL 17 primary, buku besar berpasangan (`SERIALIZABLE`) | kill -9, pause | strict serializable (`ledger`) | lulus (`--expect no-anomaly`) |
+| postgres | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation | lulus (`--expect no-anomaly`) |
 | postgres | riwayat yang sama | – | serializable | **pelanggaran** (G2, *write skew*) |
 | postgres | standby asinkron | partition | strict serializable | **pelanggaran** (G-realtime); `shrink --live` mereduksinya menjadi nol gangguan |
-| mysql | MySQL 8.4, SERIALIZABLE | freeze | strict serializable | lulus |
+| mysql | MySQL 8.4, SERIALIZABLE | freeze | strict serializable | lulus (`--expect no-anomaly`) |
 | mysql | MySQL 8.4, REPEATABLE READ | none | snapshot isolation | **pelanggaran** (internal, G-single) |
-| tidb | TiDB 8.5, optimistik | freeze | snapshot isolation | lulus |
+| tidb | TiDB 8.5, optimistik | freeze | snapshot isolation | lulus (`--expect no-anomaly`) |
 | tidb | TiDB 8.5, pesimistik | none | snapshot isolation | **pelanggaran** (internal, G-single) |
 | kafka | Kafka 3.9.1 dan 4.1.0 KRaft | partition, kill -9, pause | strict serializable (list-append) | tidak ada rekaman hilang atau terbalik; pembacaan basi (G-realtime) ditoleransi |
 

@@ -33,11 +33,11 @@ Through `strife-agent` the median delay of a pause is 1.36 ms, against 43.7 ms t
 | `kv` | Linearizability of read/write/CAS registers (Wing & Gong / Lowe search with bitset memoisation, value-interval dead-gap pruning `kvPruner`, and per-key P-compositionality) |
 | `set`, `queue`, `counter`, `idgen` | Linearizability of sets, FIFO queues, counters and unique-ID generators |
 | `txn` | Transaction isolation through a Direct Serialization Graph: Adya's G0, G1a, G1b, G1c, G2 and G-realtime across six isolation levels |
-| `append` | Elle-style list-append: G0–G2, G-single, G-realtime, lost appends, incompatible orders, duplicates and internal consistency |
+| `append` | Elle-style list-append: G0–G2, G-single, G-realtime, lost appends, incompatible orders, duplicates and internal consistency (bounded exhaustive search on tiny histories; `unknown (sound incomplete)` when larger) |
 | `ledger` | Double-entry financial ledger: conservation of total money (`LEDGER-CONSERVATION`), overdraft & concurrent write-skew detection (`LEDGER-OVERDRAFT` / `G2-item`), retry idempotency (`LEDGER-DOUBLE-SPEND`), and balanced postings (`LEDGER-UNBALANCED`) |
 | `settlement` | Cross-system clearing and transactional outbox settlement: atomic ledger-to-clearing propagation (`SETTLEMENT-ATOMICITY`), orphan credit prevention (`SETTLEMENT-NO-ORPHAN-CREDIT`), and idempotent deduplication (`SETTLEMENT-IDEMPOTENCY`) |
 
-When the search budget runs out the verdict is **unknown**, never a pass. Checker speed and accuracy are measured in the [benchmarks](/docs/benchmarks#2-checker-throughput), limits included; each model is described in [Consistency Models](/docs/models).
+When the search budget runs out—or when a sound-incomplete transactional checker (`append`, `ledger`, `settlement`) finds no anomaly beyond the bounded complete search limit (`<= 16` operations, `<= 4` indeterminate `info` operations)—the verdict is **unknown** (`sound incomplete`), never a false `linearizable`. CI can gate on clean runs of those models with `--expect no-anomaly`, and every WGL optimization (`eagerRead`, `kvPruner`) is continuously differential-tested against a brute-force oracle. Checker speed and accuracy are measured in the [benchmarks](/docs/benchmarks#2-checker-throughput), limits included; each model is described in [Consistency Models](/docs/models).
 
 ## Dependency-free database clients
 

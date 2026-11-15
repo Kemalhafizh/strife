@@ -158,6 +158,21 @@ enforced by the tests. Completeness cannot be total for list-append: an
 anomaly can hide behind an indeterminate transaction, or a corrupted read can
 remain explainable by another version order. The 93 misses are of that kind.
 
+Because graph-based transactional checkers (`append`, `ledger`, `settlement`)
+are sound but incomplete, `model.Decider` distinguishes `DecisionVerified`,
+`DecisionViolation`, and `DecisionInconclusive`:
+
+- When a sound-incomplete model finds no anomaly on a non-empty history that
+  is eligible for strict-serializable step execution (`model.CompleteSearcher`),
+  `pkg/checker` runs bounded exhaustive WGL search (`<= 16` ops, `<= 4`
+  `info` ops, capped at `500,000` steps). Only a successful search returns
+  `linearizable`; larger or non-strict histories return `unknown` with reason
+  `sound incomplete` (satisfied by `--expect no-anomaly`).
+- `TestDifferentialOptimizerEquivalence` (`pkg/checker`) cross-checks all WGL
+  execution paths—default fast paths, `SearchOnly`, disabled `eagerRead`,
+  disabled `kvPruner`, and unoptimized WGL—against the brute-force oracle across
+  `kv`, `set`, `counter`, `queue`, `idgen`, and `append` (strict-serializable).
+
 Continuous fuzzing (`ci.yml`, job `fuzz`) runs `FuzzCheckAppendSound`,
 `FuzzReadJSONL`, `FuzzReadEDN`, `FuzzParseWasm`, and the wire-protocol decoders
 (`FuzzPostgresMessages`, `FuzzMySQLPackets`, `FuzzKafkaRecords`, `FuzzRESP`).
@@ -171,7 +186,9 @@ allocates by what actually arrives, not by lengths announced on the wire.
 Each row sweeps a 5-node cluster for 10 simulated seconds (`--seeds 1..200`, or
 `--seeds 1..60` for `raft-ledger-overdraft`, `2pc-ledger-torn-commit`, and
 `outbox-dual-write`). A system with a known bug is only ever reported as
-violating; the correct reference implementations never are.
+violating; the correct reference implementations never report violations
+(`--expect no-anomaly` on transactional systems `raft-ledger`, `2pc-ledger`,
+and `outbox-settlement`; `--expect linearizable` on `raft`).
 
 ```sh
 strife sim --system raft-stale-reads       --faults partition           --seeds 1..200
@@ -180,10 +197,10 @@ strife sim --system raft-unsafe-fsync      --faults kill,io-stall        --seeds
 strife sim --system raft-ledger-overdraft  --faults partition,latency    --seeds 1..60
 strife sim --system 2pc-ledger-torn-commit --faults partition,kill       --seeds 1..60
 strife sim --system outbox-dual-write      --faults partition,kill       --seeds 1..60
-strife sim --system outbox-settlement      --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --determinism --expect linearizable
-strife sim --system 2pc-ledger  --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
-strife sim --system raft-ledger --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
-strife sim --system raft        --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200
+strife sim --system outbox-settlement      --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --determinism --expect no-anomaly
+strife sim --system 2pc-ledger  --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --expect no-anomaly
+strife sim --system raft-ledger --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --expect no-anomaly
+strife sim --system raft        --faults partition,latency,loss,kill,pause,freeze,io-stall,clock-skew --seeds 1..200 --expect linearizable
 ```
 
 | System | Bug | Faults | Violating seeds |
@@ -204,25 +221,27 @@ The first eight sweeps take 17–34 s each on the 4-vCPU host above. The `outbox
 ## 5. Live clusters
 
 Every push runs `.github/workflows/live.yml`. Each row is an assertion: a run
-that does not produce the expected verdict fails the job.
+that does not produce the expected verdict fails the job. Transactional runs
+(`append` and `ledger`) gate on `--expect no-anomaly`, whereas register (`kv`)
+runs gate on `--expect linearizable`.
 
 | Job | System | Faults | Checked as | Expected and observed |
 |---|---|---|---|---|
-| etcd | etcd 3.5, 3 nodes | partition, kill, pause, latency ², loss ² | linearizable (kv) | pass |
-| etcd | same, transactions | same | strict serializable (list-append) | pass |
-| agent | etcd via strife-agent | partition, kill, pause | linearizable | pass |
-| cgroup | etcd | freeze, io-stall | linearizable | pass |
-| kubernetes | etcd StatefulSet in kind | partition, kill, pause, latency ², loss ² | linearizable | pass |
+| etcd | etcd 3.5, 3 nodes | partition, kill, pause, latency ², loss ² | linearizable (kv) | pass (`--expect linearizable`) |
+| etcd | same, transactions | same | strict serializable (list-append) | pass (`--expect no-anomaly`) |
+| agent | etcd via strife-agent | partition, kill, pause | linearizable | pass (`--expect linearizable`) |
+| cgroup | etcd | freeze, io-stall | linearizable | pass (`--expect linearizable`) |
+| kubernetes | etcd StatefulSet in kind | partition, kill, pause, latency ², loss ² | linearizable | pass (`--expect linearizable`) |
 | valkey | Valkey 8, primary + 2 async replicas | partition, pause | linearizable | **violation** (stale replica reads) |
-| valkey | Valkey 8, single primary, `appendfsync always` | kill -9 | linearizable | pass |
-| postgres | PostgreSQL 17 primary, SERIALIZABLE | kill -9, pause | strict serializable | pass |
-| postgres | PostgreSQL 17 primary, double-entry ledger (`SERIALIZABLE`) | kill -9, pause | strict serializable (`ledger`) | pass |
-| postgres | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation | pass |
+| valkey | Valkey 8, single primary, `appendfsync always` | kill -9 | linearizable | pass (`--expect linearizable`) |
+| postgres | PostgreSQL 17 primary, SERIALIZABLE | kill -9, pause | strict serializable | pass (`--expect no-anomaly`) |
+| postgres | PostgreSQL 17 primary, double-entry ledger (`SERIALIZABLE`) | kill -9, pause | strict serializable (`ledger`) | pass (`--expect no-anomaly`) |
+| postgres | PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation | pass (`--expect no-anomaly`) |
 | postgres | same history | – | serializable | **violation** (G2, write skew) |
 | postgres | async standbys | partition | strict serializable | **violation** (G-realtime); `shrink --live` reduces it to zero faults |
-| mysql | MySQL 8.4, SERIALIZABLE | freeze | strict serializable | pass |
+| mysql | MySQL 8.4, SERIALIZABLE | freeze | strict serializable | pass (`--expect no-anomaly`) |
 | mysql | MySQL 8.4, REPEATABLE READ | none | snapshot isolation | **violation** (internal, G-single) |
-| tidb | TiDB 8.5, optimistic | freeze | snapshot isolation | pass |
+| tidb | TiDB 8.5, optimistic | freeze | snapshot isolation | pass (`--expect no-anomaly`) |
 | tidb | TiDB 8.5, pessimistic | none | snapshot isolation | **violation** (internal, G-single) |
 | kafka | Kafka 3.9.1 and 4.1.0 KRaft | partition, kill -9, pause | strict serializable (list-append) | no lost or reordered records; stale reads (G-realtime) tolerated |
 

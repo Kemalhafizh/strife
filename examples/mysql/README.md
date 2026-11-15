@@ -14,10 +14,10 @@ docker compose up -d
 
 # SERIALIZABLE, checked as strict serializable, while the server's cgroup is
 # frozen and thawed (needs root or passwordless sudo on the docker host):
-strife run --config strife.json
+strife run --config strife.json --expect no-anomaly
 
 # REPEATABLE READ, checked as snapshot isolation, no faults:
-strife run --config strife-repeatable-read.json
+strife run --config strife-repeatable-read.json --expect violation
 
 docker compose down -v
 ```
@@ -26,7 +26,7 @@ docker compose down -v
 
 | Config | Isolation | Checked as | Faults | Expected |
 |---|---|---|---|---|
-| `strife.json` | `SERIALIZABLE` | strict serializable | `freeze` | pass |
+| `strife.json` | `SERIALIZABLE` | strict serializable | `freeze` | no anomaly (`--expect no-anomaly`) |
 | `strife-repeatable-read.json` | `REPEATABLE READ` | snapshot isolation | none | **violation** |
 
 MySQL's REPEATABLE READ is not snapshot isolation: reads come from the

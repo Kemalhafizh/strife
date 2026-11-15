@@ -10,7 +10,7 @@ translationKey: security
 
 - **It runs on your infrastructure.** The CLI and `strife-agent` run on your own machines and network. Strife only talks to the targets you configure: database endpoints, agents, Docker, SSH or Kubernetes. There is no telemetry and no connection to our servers.
 - **Target credentials** are given as `env:NAME` or `file:PATH` references, so they never land in configuration files or reports.
-- **The agent** refuses to listen beyond loopback without a token, and compares tokens in constant time.
+- **The agent and registry** enforce token authentication in constant time: `strife-agent` refuses to listen beyond loopback without a token, while `strife serve` enforces fail-closed Bearer auth (`--token`, `--tenant-tokens`), `403` tenant isolation across runs and jobs, unguessable `claim_token` job leases (`--job-lease`) with worker heartbeats, and atomic file persistence.
 - **The tools on this site** (playground, studio, verifier) run the engine as WebAssembly in your browser. The files you choose are not uploaded anywhere.
 - **This site** uses no cookies and no third-party trackers.
 

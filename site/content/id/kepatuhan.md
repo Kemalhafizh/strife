@@ -9,7 +9,7 @@ translationKey: compliance
 ## Yang dihasilkan
 
 - **Dossier siap cetak** (HTML, Markdown, dan JSON) dari satu laporan uji atau dari kampanye banyak seed.
-- **Setiap kontrol dinilai dari bukti empiris:** LULUS, PARSIAL (cakupan gangguan atau penandatanganan belum lengkap), atau GAGAL. Dossier juga menyebutkan celahnya dan cara menutupnya.
+- **Setiap kontrol dinilai dari bukti empiris:** LULUS, PARSIAL (cakupan gangguan, penandatanganan, atau kelengkapan pembuktian konsistensi belum tuntas), atau GAGAL. Dossier juga menyebutkan celahnya dan cara menutupnya.
 - **Bagian “Metodologi & Batasan Cakupan”** di setiap dossier: apa yang diuji, jenis gangguan yang tidak dicakup, dan bedanya simulasi deterministik dengan uji pada cluster sungguhan.
 - **Tanda tangan kriptografis.** Laporan ditandatangani dengan Ed25519 (in-toto v0.1) memakai kunci milik tim Anda, dan siapa pun bisa memverifikasinya ulang, termasuk lewat [halaman verifikasi](/verifikasi) tanpa memasang apa pun.
 
@@ -45,7 +45,7 @@ Lihat [contoh dossier](/demos/dossier.html) (data simulasi) dan panduan lengkapn
 
 - **Simulasi** membuktikan perilaku algoritma secara deterministik dan bisa diputar ulang bit per bit. Namun yang diuji adalah model sistemnya, bukan sistem produksi Anda.
 - **Uji cluster sungguhan** memberi bukti tentang sistem Anda, tetapi tidak bisa diputar ulang persis sama: jadwal gangguan dan beban kerjanya identik, sedangkan waktu eksekusinya tidak. Dossier menyebutkan mode mana yang dipakai.
-- **Tidak menemukan pelanggaran bukan bukti bahwa sistem bebas bug.** Artinya, dalam cakupan gangguan dan durasi yang diuji, tidak ada pelanggaran yang ditemukan. Cakupan itu tertulis di dossier.
+- **Tidak menemukan pelanggaran bukan bukti bahwa sistem bebas bug.** Artinya, dalam cakupan gangguan dan durasi yang diuji, tidak ada pelanggaran yang ditemukan. Cakupan itu tertulis di dossier. Ketika checker transaksional *sound-incomplete* (`append`, `ledger`, `settlement`) tidak menemukan anomali di luar batas pencarian tuntas, kontrol terkait dinilai `PARSIAL` dan diungkapkan sebagai bukti empiris bebas anomali, bukan pembuktian linearizability menyeluruh.
 
 ## Bawa ke audit berikutnya
 

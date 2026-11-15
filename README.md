@@ -43,7 +43,7 @@ In the trace above, a Raft implementation acknowledges log appends before `fsync
 
 - **Zero external dependencies.** Both `strife` and `strife-agent` compile from the Go 1.23 standard library alone (`go.mod` has no `require` block). Wire protocols for etcd v3, Redis/Valkey (RESP2), PostgreSQL (v3 protocol with SCRAM-SHA-256 and TLS), MySQL/TiDB (`caching_sha2_password`, TLS), Kafka (Produce v3 / Fetch v4, RecordBatch v2 with CRC-32C), Linux `AF_NETLINK` route sockets, Ed25519 `in-toto` signing, and the WebAssembly 1.0 bytecode interpreter are implemented in-tree.
 - **Pinned randomness.** Standard `math/rand` algorithms are not guaranteed to stay identical across Go releases. Strife uses a self-contained `xoshiro256**` PRNG seeded via `SplitMix64` ([`internal/rng`](internal/rng/rng.go)) with per-actor FNV-1a stream forking (`root.Fork("client/3")`), so adding a client or node does not perturb another actor's random draws.
-- **Honest verdicts.** When a checker exhausts its step or wall-clock budget without finding either a valid linearization or a proof of impossibility, the verdict is `unknown` (exit code `3`), never a false `linearizable`. A live run in which no operation succeeded is `unknown` too.
+- **Honest verdicts.** When a checker exhausts its step or wall-clock budget without finding either a valid linearization or a proof of impossibility, the verdict is `unknown` (exit code `3`), never a false `linearizable`. A live run in which no operation succeeded is `unknown` too. Sound-incomplete transactional checkers (`append`, `ledger`, `settlement`) likewise return `unknown` (`sound incomplete`) when no anomaly is detected beyond bounded complete search (`<= 16` ops, `<= 4` `info` ops, `<= 500,000` steps at `strict-serializable`); use `--expect no-anomaly` in CI when gating on zero detected anomalies.
 - **Measured claims.** Every performance or detection number in this README links to [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), which gives the command, machine and date that produced it.
 
 ---
@@ -175,13 +175,13 @@ strife check --history otlp-traces.json --model kv --max-mttr 500ms --min-availa
 
 | Model | Operations | Verification Engine & Complexity |
 | :--- | :--- | :--- |
-| `kv` | `read`, `write`, `cas` | Wing & Gong / Lowe linearizability search with bitset state memoization, value-interval dead-gap pruning (`kvPruner`), per-key P-compositionality, symmetry reduction, and $O(N \log N)$ stale-read diagnosis (~18.7k–508k ops/s per core on a single key up to 50 concurrent processes; [measured](docs/BENCHMARKS.md#2-checker-throughput)). |
+| `kv` | `read`, `write`, `cas` | Wing & Gong / Lowe linearizability search with bitset state memoization, value-interval dead-gap pruning (`kvPruner`), per-key P-compositionality, symmetry reduction, and $O(N \log N)$ stale-read diagnosis (~18.7k–508k ops/s per core on a single key up to 50 concurrent processes; [measured](docs/BENCHMARKS.md#2-checker-throughput); fast paths cross-checked via `TestDifferentialOptimizerEquivalence`). |
 | `set` | `add`, `read` | Grow-only set linearizability + missing-element counterexample witnesses. |
 | `queue` | `enqueue`, `dequeue` | FIFO queue linearizability; diagnoses phantom dequeues, FIFO order inversions, and premature empty returns. |
 | `counter` | `inc` / `add`, `read` | Shared integer counter linearizability; diagnoses lost increments and overstated reads. |
 | `idgen` | `generate` | Unique monotonic/non-colliding ID verification with duplicate witness extraction. |
 | `txn` | `txn` (`[r(k), w(k,v), ...]`) | Direct Serialization Graph (DSG) construction (`wr`, `ww`, `rw`, `so`, `ro` edges) + Tarjan SCC shortest-cycle extraction across 6 isolation levels. |
-| `append` | `txn` of `append(k, v)` / `r(k) → [v…]` | Elle-style list-append: version orders recovered from reads, `ww`/`wr`/`rw` and real-time edges, lost appends, incompatible orders, duplicates and internal-consistency checks (~40k–57k txns/s; 0 false positives and 99.81 % of invalid histories caught in a brute-force cross-check, [measured](docs/BENCHMARKS.md#3-checker-correctness)). |
+| `append` | `txn` of `append(k, v)` / `r(k) → [v…]` | Elle-style list-append: version orders recovered from reads, `ww`/`wr`/`rw` and real-time edges, lost appends, incompatible orders, duplicates and internal-consistency checks (~40k–57k txns/s; 0 false positives and 99.81 % of invalid histories caught in a brute-force cross-check, [measured](docs/BENCHMARKS.md#3-checker-correctness)); bounded complete WGL search under `strict-serializable` for small histories, otherwise `unknown (sound incomplete)`. |
 | `ledger` | `txn` of account transfers & balance audits | Double-entry financial ledger & conservation-of-money checker (`LEDGER-CONSERVATION` $\sum B_i = M_0$, `LEDGER-OVERDRAFT` $B_i < 0$ & concurrent `G2-item` write skew, `LEDGER-DOUBLE-SPEND` across `info` timeout retries, and `LEDGER-UNBALANCED` $\sum \Delta_k \ne 0$). |
 | `settlement` | `txn` of ledger/broker appends & reconciliation reads | Cross-system settlement & transactional-outbox verification (`SETTLEMENT-ATOMICITY`, `SETTLEMENT-NO-ORPHAN-CREDIT`, and `SETTLEMENT-IDEMPOTENCY`). |
 
@@ -197,6 +197,9 @@ The transactional checker ([`pkg/txn`](pkg/txn/txn.go)) reconstructs item versio
 - **`G-realtime` (Real-Time Inversion):** Serialization order contradicts wall-clock completion order (`ro` edge), violating `strict-serializable`.
 
 Supported `--isolation` flags (applies to `--model txn`, `append`, and `ledger`): `read-uncommitted`, `read-committed`, `repeatable-read`, `snapshot-isolation`, `serializable`, `strict-serializable`.
+
+> [!NOTE]
+> The dependency-graph decision procedures for `append`, `ledger`, and `settlement` are **sound but incomplete**. When no anomaly is found, Strife verifies small `strict-serializable` histories (`<= 16` operations and `<= 4` indeterminate `info` ops, up to `500,000` steps) with bounded exhaustive WGL search (`linearizable` only when exhausted completely), and returns `unknown` (`sound incomplete`) when bounds are exceeded. Pass `--expect no-anomaly` in CI when you want to assert zero detected anomalies without misclaiming a complete formal proof.
 
 ---
 
@@ -376,7 +379,7 @@ strife compliance --report strife-out/raft-seed7/report.json \
 
 Control IDs are Strife's own labels for its technical checks, not identifiers issued by a regulator or standard body; every control in a dossier cites the provision it supports. A dossier is technical evidence for an auditor, not a certification or a legal opinion.
 
-Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` when fault coverage or cryptographic signing is incomplete, or `FAIL`). Every dossier includes an explicit **Methodology & Scope Boundaries** disclosure detailing what was tested, which fault classes were omitted, and the difference between deterministic simulation and live cluster execution.
+Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` when fault coverage, cryptographic signing, or consistency proof completeness is partial, or `FAIL`). When transactional checks end in `unknown (sound incomplete)`, affected integrity controls are graded `PARTIAL` and noted as no-anomaly empirical evidence. Every dossier includes an explicit **Methodology & Scope Boundaries** disclosure detailing what was tested, which fault classes were omitted, and the difference between deterministic simulation and live cluster execution.
 
 ---
 
@@ -384,30 +387,30 @@ Each control is evaluated strictly from empirical evidence (`PASS`, `PARTIAL` wh
 
 `strife serve` ([`pkg/serve`](pkg/serve/server.go), full reference in [`docs/server.md`](docs/server.md)) runs a self-hosted HTTP daemon and embedded web dashboard that keeps every CI run and regression campaign inside your own network:
 
-- **Verified on arrival & multi-tenant isolated:** Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; baselines and time-series rollups (`GET /api/v1/series`, `GET /api/v1/trends`) are isolated by `(tenant, target)`.
-- **Pull-based remote worker queue (`strife worker`):** Isolated staging clusters and private VPCs can run `strife worker --server http://... --token ...` ([`pkg/serve/worker.go`](pkg/serve/worker.go)) to claim queued simulation, campaign, or live database chaos jobs over outbound HTTP (`POST /api/v1/jobs/claim`) and report verified results back (`POST /api/v1/jobs/<id>/complete`) without opening inbound firewall ports.
+- **Fail-closed authentication & multi-tenant isolation:** When configured with `--token` (admin) or `--tenant-tokens tenant=secret` (per-tenant), Bearer auth is enforced across both the web dashboard (`/`) and `/api/v1/*` endpoints (`GET /api/v1/keys` remains public; unauthenticated `GET /api/v1/health` returns a redacted payload) with strict `403` tenant isolation and admin-only webhook visibility (`GET /api/v1/webhooks`). Every ingested `report.json` or `campaign.json` has its SHA-256 fingerprint recomputed before storage; baselines and time-series rollups (`GET /api/v1/series`, `GET /api/v1/trends`) are isolated by `(tenant, target)`.
+- **Lease-guarded remote worker queue (`strife worker`):** Isolated staging clusters and private VPCs can run `strife worker --server http://... --token ...` ([`pkg/serve/worker.go`](pkg/serve/worker.go)) to claim queued simulation, campaign, or live database chaos jobs over outbound HTTP (`POST /api/v1/jobs/claim`) using unguessable per-claim `claim_token` leases (`--job-lease`, default `2m`) renewed automatically via `POST /api/v1/jobs/<id>/heartbeat`, reclaiming expired worker leases automatically without opening inbound firewall ports. State files (`jobs.json`, `campaign.json`) are written atomically.
 - **Automatic baseline regression diffing:** Ingested campaigns are automatically compared against the latest stored campaign for the same `(tenant, target)` pair, recording `regressed`, `fixed`, and `trace_drift` seed transitions.
 - **Per-tenant Ed25519 signing & on-demand dossiers:** Sign ingested reports automatically with `--key` or per-tenant keys (`--tenant-keys tenant=path.key`), discover active public keys via `GET /api/v1/keys`, and generate verified regulatory dossiers on demand (`GET /api/v1/runs/<id>/dossier`).
 - **Consistency & SLA webhook alerting:** When started with `--webhook <urls>`, `strife serve` dispatches Slack, Discord, or generic JSON alerts on consistency violations (`report.violation`), campaign regressions/violations (`campaign.regression` / `campaign.violation`), and recovery SLA breaches (`report.sla_breach` via `--max-mttr` and `--min-availability`).
 
 ```sh
-# Start the registry with Bearer auth, per-tenant Ed25519 keys, SLA gates, and webhook alerts
+# Start the registry with fail-closed Bearer auth, per-tenant tokens & keys, job leases, SLA gates, and webhook alerts
 strife serve --listen 127.0.0.1:8080 --store ./strife-registry \
-  --token "$STRIFE_REGISTRY_TOKEN" --key audit-key.key \
-  --tenant-keys "payments=payments.key" --signer "ci-registry" \
-  --max-mttr 500ms --min-availability 0.99 \
+  --token "$STRIFE_REGISTRY_TOKEN" --tenant-tokens "payments=$STRIFE_PAYMENTS_TOKEN" \
+  --key audit-key.key --tenant-keys "payments=payments.key" --signer "ci-registry" \
+  --job-lease 2m --max-mttr 500ms --min-availability 0.99 \
   --webhook "https://hooks.slack.com/services/T00/B00/X00"
 
 # Start a pull-based remote worker inside a private staging VPC
-strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --id staging-worker-1 --tenant payments
+strife worker --server http://127.0.0.1:8080 --token "$STRIFE_PAYMENTS_TOKEN" --id staging-worker-1 --tenant payments
 
 # Push reports or campaigns directly from CLI (`sim --seed`, `campaign`, `run`, `check`), or POST JSON to /api/v1/ingest
 strife check --model settlement --history history.jsonl \
-  --push http://127.0.0.1:8080 --push-token "$STRIFE_REGISTRY_TOKEN" --tenant payments
+  --push http://127.0.0.1:8080 --push-token "$STRIFE_PAYMENTS_TOKEN" --tenant payments
 strife campaign --system raft --seeds 1..100 --commit "$(git rev-parse --short HEAD)" --branch main \
-  --push http://127.0.0.1:8080 --push-token "$STRIFE_REGISTRY_TOKEN" --tenant payments
+  --push http://127.0.0.1:8080 --push-token "$STRIFE_PAYMENTS_TOKEN" --tenant payments
 curl -fsSL -X POST \
-  -H "Authorization: Bearer $STRIFE_REGISTRY_TOKEN" \
+  -H "Authorization: Bearer $STRIFE_PAYMENTS_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @strife-out/raft-seed7/report.json \
   "http://127.0.0.1:8080/api/v1/ingest?tenant=payments&commit=$(git rev-parse --short HEAD)&branch=main"
@@ -419,7 +422,7 @@ curl -fsSL -X POST \
 
 Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-**Simulated bug corpus** (200 seeds, or 60 seeds for deterministic bug-injection models, 5 nodes, 10 simulated seconds):
+**Simulated bug corpus** (200 seeds, or 60 seeds for deterministic bug-injection models, 5 nodes, 10 simulated seconds; transactional clean models `raft-ledger`, `2pc-ledger`, and `outbox-settlement` pass `--expect no-anomaly` with 0 detected anomalies and report `unknown (sound incomplete)` when exceeding bounded complete search):
 
 | System | Bug | Required faults | Violating seeds |
 | :--- | :--- | :--- | :--- |
@@ -434,20 +437,20 @@ Everything below is reproduced by a command in [`docs/BENCHMARKS.md`](docs/BENCH
 | `2pc-ledger-torn-commit` | non-atomic 2PC / Saga commits debit leg before credit leg (`LEDGER-CONSERVATION`) | `partition` + `kill` | **60 / 60** |
 | `outbox-dual-write` | async dual-write drops clearing event on crash/partition (`SETTLEMENT-ATOMICITY`) | `partition` + `kill` | **60 / 60** |
 
-**Live clusters in CI** ([`.github/workflows/live.yml`](.github/workflows/live.yml), every push). Correct configurations must pass and known-weak ones must be caught:
+**Live clusters in CI** ([`.github/workflows/live.yml`](.github/workflows/live.yml), every push). Correct configurations must pass (`--expect linearizable` for `kv`, `--expect no-anomaly` for sound-incomplete `append`/`ledger`) and known-weak ones must be caught:
 
 | System | Faults | Verdict |
 | :--- | :--- | :--- |
-| etcd 3.5 (Docker, via `strife-agent`, and on Kubernetes in kind) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable; transactions strictly serializable |
-| PostgreSQL 17, SERIALIZABLE primary | kill -9, pause | strictly serializable |
-| PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation holds; **write skew (G2)** caught at serializable |
+| etcd 3.5 (Docker, via `strife-agent`, and on Kubernetes in kind) | partition, kill, pause, latency, loss, freeze, io-stall | linearizable (`kv`); no anomalies detected (`append` at `strict-serializable`, `--expect no-anomaly`) |
+| PostgreSQL 17, SERIALIZABLE primary | kill -9, pause | no anomalies detected at `strict-serializable` (`append`, `ledger`; `--expect no-anomaly`) |
+| PostgreSQL 17, REPEATABLE READ | kill -9, pause | snapshot isolation holds (`--expect no-anomaly`); **write skew (G2)** caught at serializable |
 | PostgreSQL 17, async standbys | partition | **stale reads** caught; `shrink --live` shows no fault is needed |
-| MySQL 8.4 | freeze | SERIALIZABLE strictly serializable; **REPEATABLE READ violates snapshot isolation** |
-| TiDB 8.5 | freeze | optimistic mode satisfies snapshot isolation; **pessimistic mode does not** |
+| MySQL 8.4 | freeze | SERIALIZABLE passes `--expect no-anomaly` at `strict-serializable`; **REPEATABLE READ violates snapshot isolation** |
+| TiDB 8.5 | freeze | optimistic mode passes `--expect no-anomaly` at snapshot isolation; **pessimistic mode does not** |
 | Valkey 8 | partition, pause, kill -9 | **stale replica reads** caught; single primary with `appendfsync always` linearizable |
 | Kafka 3.9.1 and 4.1.0 (KRaft) | partition, kill -9, pause | no acknowledged record lost or reordered; stale reads after leader changes reported |
 
-**Checker correctness:** in brute-force cross-checks the list-append checker flagged none of 150,030 valid histories and caught 99.81 % of 49,970 invalid ones; the register-transaction checker flagged none of 40,000. Every parser of untrusted bytes (wire protocols, JSONL, Jepsen EDN, OpenTelemetry Span JSON, Wasm) is fuzzed in CI.
+**Checker correctness:** in brute-force cross-checks the list-append checker flagged none of 150,030 valid histories and caught 99.81 % of 49,970 invalid ones; the register-transaction checker flagged none of 40,000, and `TestDifferentialOptimizerEquivalence` cross-checks WGL fast paths (`eagerRead`, `kvPruner`) against a brute-force oracle on small histories. Every parser of untrusted bytes (wire protocols, JSONL, Jepsen EDN, OpenTelemetry Span JSON, Wasm) is fuzzed in CI.
 
 ---
 
@@ -511,12 +514,12 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 
 | Command | Description |
 | :--- | :--- |
-| `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`, `--max-mttr`, `--min-availability`, `--junit`, `--sarif`, `--push` for single seed) |
-| `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect no-regression`, `--junit`, `--sarif`, `--push`) |
+| `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--expect linearizable|violation|no-anomaly`, `--shrink`, `--workload`, `--max-mttr`, `--min-availability`, `--junit`, `--sarif`, `--push` for single seed) |
+| `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect linearizable|violation|no-anomaly|no-regression`, `--junit`, `--sarif`, `--push`) |
 | `strife shrink [flags]` | Minimize a failing simulation (`--seed` / `--report`) or recorded trace (`--history FILE`) to 1-minimality, or a live schedule (`--live --config`) to a candidate reproducer |
-| `strife check [flags]` | Verify a recorded `history.jsonl` / `.edn` / OTel `.json` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`), export EDN (`--export-edn`), enforce SLOs (`--max-mttr`, `--min-availability`), emit `--sarif`, or push to `strife serve` (`--push`) |
+| `strife check [flags]` | Verify a recorded `history.jsonl` / `.edn` / OTel `.json` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`), gate with `--expect` (`linearizable`, `violation`, `no-anomaly`), export EDN (`--export-edn`), enforce SLOs (`--max-mttr`, `--min-availability`), emit `--sarif`, or push to `strife serve` (`--push`) |
 | `strife plan [flags]` | Print the seeded fault schedule and exact host/container commands without executing them |
-| `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`, `--max-mttr`, `--min-availability`, `--sarif`, `--push`) |
+| `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect linearizable|violation|no-anomaly`, `--schedule`, `--max-mttr`, `--min-availability`, `--sarif`, `--push`) |
 | `strife doctor [flags]` | Inspect host OS/cgroup capabilities, transports, and cluster endpoint reachability (`--config`, `--json`) |
 | `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent`, `--json`, `--markdown`) |
 | `strife workload [flags]` | List presets (`--list`), compile specs to `.wasm` (`--compile --out`), or inspect `.wasm` plugins (`--inspect`) |
@@ -525,17 +528,17 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife verify [flags]` | Verify a signed `bundle.json` (and optional `history.jsonl`) or a release directory (`--release-dir`) against an Ed25519 public key |
 | `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp` (`--max-mttr`, `--min-availability`, `--sarif`, `--strict`) |
 | `strife ci-report [flags]` | Compare candidate and baseline reports, campaigns, or compliance dossiers for PR gating and Markdown digests (`--report`, `--baseline-report`, `--campaign`, `--baseline-campaign`, `--dossier`, `--max-mttr`, `--min-availability`, `--out`, `--json`) |
-| `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--tenant-keys`, `--token`, `--webhook`, `--max-mttr`, `--min-availability`) |
+| `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--tenant-keys`, `--token`, `--tenant-tokens`, `--job-lease`, `--webhook`, `--max-mttr`, `--min-availability`) |
 | `strife worker [flags]` | Run a pull-based remote worker that claims and executes jobs from `strife serve` (`--server`, `--token`, `--id`/`--worker-id`, `--tenant`, `--once`, `--poll-interval`/`--poll`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 
 **Exit Codes:**
 
-- `0` — `linearizable` (or matches `--expect` / all compliance & SLO controls pass)
+- `0` — `linearizable` (or matches `--expect`, including `--expect no-anomaly` on clean sound-incomplete checks / all compliance & SLO controls pass)
 - `1` — `violation` (or regression / SLO breach / compliance failure / signature mismatch)
 - `2` — invalid CLI usage or configuration error
-- `3` — `unknown` (checker search budget or timeout reached without a conclusive verdict)
+- `3` — `unknown` (checker search budget or timeout exhausted, or `sound incomplete` decision without `--expect no-anomaly`)
 - `4` — runtime or transport execution error
 
 ---
