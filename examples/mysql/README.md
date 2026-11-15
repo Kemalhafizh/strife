@@ -1,5 +1,7 @@
 # Example: MySQL 8.4 under Strife
 
+> **Language:** English · [Bahasa Indonesia](../../docs/id/examples/mysql/README.md)
+
 One MySQL 8.4 server with its default authentication, `caching_sha2_password`
 (Strife implements the fast path, and the full exchange over TLS or with the
 server's RSA key). Workloads are list-append transactions; each list is a

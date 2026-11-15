@@ -19,6 +19,7 @@ on:
       - docs/**
       - examples/**
       - README.md
+      - README.id.md
       - CHANGELOG.md
       - cmd/**
       - pkg/**

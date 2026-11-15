@@ -1,5 +1,7 @@
 # Strife Roadmap
 
+> **Language:** English · [Bahasa Indonesia](id/ROADMAP.md)
+
 This roadmap turns the architectural blueprint (`STRF-BLPRNT-01`) into an
 ordered plan. Two things decide the order:
 

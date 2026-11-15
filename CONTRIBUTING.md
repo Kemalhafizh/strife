@@ -1,5 +1,7 @@
 # Contributing to Strife
 
+> **Language:** English · [Bahasa Indonesia](docs/id/CONTRIBUTING.md)
+
 Thank you for contributing to **Strife**. To keep the engine fast, auditable, and bit-for-bit reproducible, every contribution must follow four core engineering invariants described here and in [`GOVERNANCE.md`](GOVERNANCE.md).
 
 ---
@@ -46,7 +48,7 @@ go build -o bin/strife ./cmd/strife
 
 ### Website & WebAssembly Bridge Checks
 
-[`site/`](site) builds directly from `README.md`, `CHANGELOG.md`, `docs/*.md`, `examples/*/README.md`, and compiles core engine packages (`pkg/explore`, `pkg/checker`, `pkg/report`, `pkg/attest`, `pkg/compliance`) to WebAssembly via `site/wasm`. When touching those files:
+[`site/`](site) builds directly from the repository's bilingual documentation (`README.md`, `README.id.md`, `CHANGELOG.md`, `docs/id/CHANGELOG.md`, `docs/*.md`, `docs/id/*.md`, `examples/*/README.md`, `docs/id/examples/*/README.md`), and compiles core engine packages (`pkg/explore`, `pkg/checker`, `pkg/report`, `pkg/attest`, `pkg/compliance`) to WebAssembly via `site/wasm`. When touching those files:
 
 ```sh
 # Check the WebAssembly bridge module (required by pages.yml)
@@ -57,7 +59,7 @@ OFFLINE=1 site/build.sh
 ```
 
 > [!NOTE]
-> - [`site/layouts/_partials/docs-adapter.html`](site/layouts/_partials/docs-adapter.html) splits [`README.md`](README.md) on top-level `## ` headings. If you add or rename a `## ` section in `README.md`, register its slug and metadata in `docs-adapter.html`.
+> - [`site/layouts/_partials/docs-adapter.html`](site/layouts/_partials/docs-adapter.html) splits [`README.md`](README.md) and [`README.id.md`](README.id.md) on top-level `## ` headings. If you add or rename a `## ` section in either README, register its slug and metadata in `docs-adapter.html`.
 > - Preserve the `## Wording guidelines` table in [`docs/ROADMAP.md`](docs/ROADMAP.md); [`site/scripts/check-wording.sh`](site/scripts/check-wording.sh) reads the "Avoid" column and fails CI if disallowed wording or regulatory certification claims appear in generated HTML.
 
 ### Fuzzing Parsers of Untrusted Bytes

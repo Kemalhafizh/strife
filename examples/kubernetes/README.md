@@ -1,5 +1,7 @@
 # Example: etcd on Kubernetes under Strife
 
+> **Language:** English · [Bahasa Indonesia](../../docs/id/examples/kubernetes/README.md)
+
 The same three-member etcd cluster as [`examples/etcd`](../etcd), deployed
 as a StatefulSet and driven through `kubectl exec`. Strife needs only a
 kubeconfig: no SSH, no agent, no access to the nodes. CI runs this example in

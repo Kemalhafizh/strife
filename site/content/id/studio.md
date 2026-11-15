@@ -19,4 +19,4 @@ Satu operasi per baris (JSONL): setiap pemanggilan dicatat sebagai `invoke`, lal
 {"process":3,"type":"ok","f":"read","key":"k0","value":2,"time":12000000}
 ```
 
-Model `kv` cocok untuk register baca/tulis/compare-and-set. Untuk transaksi multi-kunci, pakai `txn` atau `append` dengan level isolasi yang ingin dibuktikan. Penjelasan setiap model ada di [Consistency Models](/docs/models). Riwayat yang sangat besar lebih cepat diperiksa dengan CLI, karena di browser engine berjalan beberapa kali lebih lambat.
+Model `kv` cocok untuk register baca/tulis/compare-and-set. Untuk transaksi multi-kunci, pakai `txn` atau `append` dengan level isolasi yang ingin dibuktikan. Penjelasan setiap model ada di [Model Konsistensi](/docs/models). Riwayat yang sangat besar lebih cepat diperiksa dengan CLI, karena di browser engine berjalan beberapa kali lebih lambat.

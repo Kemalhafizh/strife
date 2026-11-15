@@ -10,7 +10,7 @@ translationKey: engine
 
 **Simulator deterministik** (`strife sim`). Cluster Raft lengkap berjalan di dalam satu proses bergaya FoundationDB. Jaringan, timer, flush disk, dan pergeseran jam semuanya dikendalikan oleh seed, sehingga satu eksekusi bisa diputar ulang bit per bit dan dibuktikan dengan digest SHA-256. Sepuluh detik simulasi selesai dalam hitungan ratusan milidetik, jadi ribuan jadwal gangguan bisa disapu dari satu laptop. Coba langsung di [playground](/coba).
 
-**Cluster sungguhan** (`strife run`). CLI menjalankan klien terhadap etcd, PostgreSQL, MySQL/TiDB, Valkey, atau Kafka, lalu menyuntikkan gangguan lewat Docker, SSH, Kubernetes, atau `strife-agent`. Riwayatnya diperiksa dengan checker yang sama. Panduannya ada di [Live Clusters](/docs/live-clusters).
+**Cluster sungguhan** (`strife run`). CLI menjalankan klien terhadap etcd, PostgreSQL, MySQL/TiDB, Valkey, atau Kafka, lalu menyuntikkan gangguan lewat Docker, SSH, Kubernetes, atau `strife-agent`. Riwayatnya diperiksa dengan checker yang sama. Panduannya ada di [Cluster Sungguhan](/docs/live-clusters).
 
 ## Gangguan yang disuntikkan
 
@@ -24,7 +24,7 @@ translationKey: engine
 | `io-stall` | `io.max` cgroup v2 diturunkan hingga hampir nol, sehingga `fsync` tertahan |
 | `clock-skew` | laju jam dan lompatan jam dinding |
 
-Lewat `strife-agent`, median keterlambatan injeksi pause adalah 1,36 ms, dibandingkan 43,7 ms lewat `docker exec` ([metode dan mesin](/docs/benchmarks#1-fault-injection-latency)).
+Lewat `strife-agent`, median keterlambatan injeksi pause adalah 1,36 ms, dibandingkan 43,7 ms lewat `docker exec` ([metode dan mesin](/docs/benchmarks#1-latensi-injeksi-gangguan)).
 
 ## Checker
 
@@ -37,7 +37,7 @@ Lewat `strife-agent`, median keterlambatan injeksi pause adalah 1,36 ms, dibandi
 | `ledger` | Buku besar keuangan berpasangan (double-entry): konservasi saldo total (`LEDGER-CONSERVATION`), deteksi saldo negatif/overdraft (`LEDGER-OVERDRAFT` & write skew `G2-item`), idempotensi retry (`LEDGER-DOUBLE-SPEND`), dan keseimbangan debit/kredit (`LEDGER-UNBALANCED`) |
 | `settlement` | Kliring lintas-sistem dan transaksional outbox settlement: propagasi atomik buku besar ke kliring (`SETTLEMENT-ATOMICITY`), pencegahan kredit yatim (`SETTLEMENT-NO-ORPHAN-CREDIT`), dan deduplikasi idempoten (`SETTLEMENT-IDEMPOTENCY`) |
 
-Bila anggaran pencarian habis, verdict-nya **tidak pasti**, tidak pernah lulus. Kecepatan dan ketepatan checker diukur di [benchmark](/docs/benchmarks#2-checker-throughput), termasuk batasnya. Detail setiap model ada di [Consistency Models](/docs/models).
+Bila anggaran pencarian habis, verdict-nya **tidak pasti**, tidak pernah lulus. Kecepatan dan ketepatan checker diukur di [tolok ukur](/docs/benchmarks#2-throughput-checker), termasuk batasnya. Detail setiap model ada di [Model Konsistensi](/docs/models).
 
 ## Klien database tanpa dependensi
 
@@ -45,7 +45,7 @@ Semua protokol diimplementasikan langsung di repositori: etcd v3, Redis/Valkey (
 
 ## Memperkecil kegagalan
 
-`strife shrink` memakai delta debugging untuk memperkecil pelanggaran menjadi skenario **1-minimal**, artinya membuang satu gangguan atau operasi mana pun akan menghilangkan pelanggarannya. Untuk cluster sungguhan, hasilnya disebut *kandidat* lengkap dengan tingkat reproduksinya. Detailnya ada di [Shrinking](/docs/shrinking).
+`strife shrink` memakai delta debugging untuk memperkecil pelanggaran menjadi skenario **1-minimal**, artinya membuang satu gangguan atau operasi mana pun akan menghilangkan pelanggarannya. Untuk cluster sungguhan, hasilnya disebut *kandidat* lengkap dengan tingkat reproduksinya. Detailnya ada di [Memperkecil Kegagalan](/docs/shrinking).
 
 ## Artefak yang bisa diaudit & registri run
 
@@ -57,4 +57,4 @@ Setiap run menghasilkan `report.html` (timeline interaktif yang bekerja tanpa ja
 
 ## Beban kerja WebAssembly
 
-Beban kerja kustom bisa ditulis sebagai modul WebAssembly 1.0 yang dijalankan interpreter internal dengan batas fuel, stack, dan memori, sehingga tetap deterministik dan aman dari loop tak berujung. Lihat [Custom Workloads](/docs/workloads).
+Beban kerja kustom bisa ditulis sebagai modul WebAssembly 1.0 yang dijalankan interpreter internal dengan batas fuel, stack, dan memori, sehingga tetap deterministik dan aman dari loop tak berujung. Lihat [Beban Kerja Kustom](/docs/workloads).

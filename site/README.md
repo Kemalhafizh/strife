@@ -1,5 +1,7 @@
 # Website
 
+> **Language:** English · [Bahasa Indonesia](../docs/id/site.md)
+
 The public website: what Strife is, the in-browser playground, history
 studio and verifier, downloads, documentation, compliance and pricing, in
 Indonesian (default) and English. It is a static site, built with
@@ -48,12 +50,16 @@ To preview, serve `public/` under the path in `baseURL`
 The site never copies the engine's text or numbers; it reads them at build
 time, so a change in the engine shows up here (or fails the build):
 
-- `README.md` chapters, `docs/BENCHMARKS.md`, `docs/github-action.md`,
-  `docs/server.md`, `examples/*/README.md` and `CHANGELOG.md` become pages.
-  `docs/ROADMAP.md` stays internal. A README chapter without an entry in
-  `layouts/_partials/docs-adapter.html` is still published, after the chapter
-  before it, with a build warning; add an entry to give it its slug, group
-  and summary.
+- **English documentation** (`/en/docs/` & `/en/changelog/`): built from
+  `README.md`, `docs/BENCHMARKS.md`, `docs/github-action.md`, `docs/server.md`,
+  `examples/*/README.md`, and `CHANGELOG.md`.
+- **Indonesian documentation** (`/docs/` & `/rilis/`): built from
+  `README.id.md`, `docs/id/BENCHMARKS.md`, `docs/id/github-action.md`,
+  `docs/id/server.md`, `docs/id/examples/*/README.md`, and `docs/id/CHANGELOG.md`.
+- `docs/ROADMAP.md` and `docs/id/ROADMAP.md` stay internal. Any README chapter
+  without an entry in `layouts/_partials/docs-adapter.html` is still published,
+  after the chapter before it, with a build warning; add an entry to give it
+  its slug, group and summary.
 - `pkg/explore`, `pkg/checker`, `pkg/report` and `pkg/attest` are compiled
   to WebAssembly through `wasm/bridge`, which adds no logic of its own.
 - Release archives are expected as `strife_<tag>_<os>_<arch>.tar.gz|.zip`

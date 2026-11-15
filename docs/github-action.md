@@ -1,5 +1,7 @@
 # Strife in CI
 
+> **Language:** English · [Bahasa Indonesia](id/github-action.md)
+
 Strife plugs into CI in two layers:
 
 1. **Report formats** that any CI system understands. They are available on

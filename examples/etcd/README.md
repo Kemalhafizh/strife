@@ -1,5 +1,7 @@
 # Example: 3-node etcd under Strife
 
+> **Language:** English · [Bahasa Indonesia](../../docs/id/examples/etcd/README.md)
+
 Requirements: Linux docker host (container IPs must be routable from the host),
 Docker Compose v2, and Strife built from the repository root. CI runs these
 scenarios on every push (`.github/workflows/live.yml`).

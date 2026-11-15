@@ -1,5 +1,7 @@
 # Benchmarks and validation
 
+> **Language:** English · [Bahasa Indonesia](id/BENCHMARKS.md)
+
 Every number in Strife's documentation comes from this page, and every number
 on this page comes with the command that produced it, the machine it ran on
 and the date. Numbers without a reproduction do not belong in the README.

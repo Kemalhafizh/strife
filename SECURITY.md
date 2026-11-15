@@ -1,5 +1,7 @@
 # Security Policy
 
+> **Language:** English · [Bahasa Indonesia](docs/id/SECURITY.md)
+
 Strife is an open-source project built with a minimal, auditable supply chain: **zero external Go dependencies** (`stdlib` only), deterministic builds, and no outbound telemetry.
 
 ## Supported Versions & LTS Security Maintenance

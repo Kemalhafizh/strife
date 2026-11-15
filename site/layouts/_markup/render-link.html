@@ -24,21 +24,23 @@ site, and anything else (source files, scripts) to GitHub.
   {{- with findRESubmatch `^([^#]*)#(.*)$` $dest 1 }}{{ $path = index (index . 0) 1 }}{{ $frag = index (index . 0) 2 }}{{ end }}
   {{- $docs := where site.RegularPages "Section" "docs" }}
   {{- $target := "" }}
-  {{- if and (eq $path "") (eq $src "README.md") }}
+  {{- $isReadme := in (slice "README.md" "README.id.md") $src }}
+  {{- if and (eq $path "") $isReadme }}
     {{- range $docs }}{{ if and (not $target) (in .Params.anchors $frag) }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
     {{- $url = cond (ne $target "") (printf "%s#%s" $target $frag) $dest }}
   {{- else if ne $path "" }}
     {{- $file := path.Clean (path.Join (path.Dir $src) $path) | strings.TrimSuffix "/" }}
-    {{- if eq $file "CHANGELOG.md" }}
+    {{- $fileIsReadme := in (slice "README.md" "README.id.md") $file }}
+    {{- if in (slice "CHANGELOG.md" "docs/id/CHANGELOG.md") $file }}
       {{- with site.GetPage (cond (eq site.Language.Lang "id") "/rilis" "/changelog") }}{{ $target = .RelPermalink }}{{ end }}
-    {{- else if ne $file "README.md" }}
+    {{- else if not $fileIsReadme }}
       {{- /* A file the docs section publishes (docs-adapter.html), by its source. */}}
       {{- range $docs }}{{ if and (not $target) (eq .Params.source $file) }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
     {{- end }}
-    {{- with findRESubmatch `^examples/([^/]+)(/README\.md)?$` $file 1 }}
+    {{- with findRESubmatch `^(?:docs/id/)?examples/([^/]+)(?:/README\.md)?$` $file 1 }}
       {{- with site.GetPage (printf "/docs/examples/%s" (index (index . 0) 1)) }}{{ $target = .RelPermalink }}{{ end }}
     {{- end }}
-    {{- if eq $file "README.md" }}
+    {{- if $fileIsReadme }}
       {{- range $docs }}{{ if and (not $target) (in .Params.anchors $frag) }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
       {{- if not $target }}{{ with site.GetPage "/docs/overview" }}{{ $target = .RelPermalink }}{{ end }}{{ end }}
     {{- end }}

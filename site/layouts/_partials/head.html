@@ -10,11 +10,7 @@
 <meta name="description" content="{{ $desc }}">
 <meta name="theme-color" content="#06080b">
 <meta name="color-scheme" content="dark">
-{{- /* Docs are the same English text in both languages; point search engines at one copy. */}}
 {{- $canonical := .Permalink }}
-{{- if and (eq .Section "docs") (ne site.Language.Lang "en") }}
-  {{- range .Translations }}{{ if eq .Language.Lang "en" }}{{ $canonical = .Permalink }}{{ end }}{{ end }}
-{{- end }}
 <link rel="canonical" href="{{ $canonical }}">
 {{- range .AllTranslations }}
 <link rel="alternate" hreflang="{{ .Language.LanguageCode | default .Language.Lang }}" href="{{ .Permalink }}">

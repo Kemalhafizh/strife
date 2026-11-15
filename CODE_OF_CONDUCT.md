@@ -1,5 +1,7 @@
 # Code of Conduct
 
+> **Language:** English · [Bahasa Indonesia](docs/id/CODE_OF_CONDUCT.md)
+
 ## Our Pledge
 
 We are committed to keeping the **Strife** community welcoming, constructive, and focused on rigorous engineering. Participation in this project—whether in issues, pull requests, code reviews, or discussions—is harassment-free for everyone regardless of background or experience level.

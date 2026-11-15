@@ -265,7 +265,11 @@
       </figure>
 
       <div class="stats-ledger">
-        {{- range slice (slice "raft" "4-bug-detection-in-the-simulator") (slice "sound" "3-checker-correctness") (slice "agent" "1-fault-injection-latency") (slice "wgl" "2-checker-throughput") }}
+        {{- range slice
+          (slice "raft" (cond $isID "4-deteksi-bug-di-simulator" "4-bug-detection-in-the-simulator"))
+          (slice "sound" (cond $isID "3-ketepatan-checker" "3-checker-correctness"))
+          (slice "agent" (cond $isID "1-latensi-injeksi-gangguan" "1-fault-injection-latency"))
+          (slice "wgl" (cond $isID "2-throughput-checker" "2-checker-throughput")) }}
         <div class="stat">
           <div class="stat-top">
             <p class="stat-value">{{ i18n (printf "stat_%s_value" (index . 0)) }}</p>
@@ -347,7 +351,7 @@
       </table>
     </div>
     <p class="small matrix-foot">
-      <a class="text-link" href="{{ $u.bench }}#5-live-clusters">
+      <a class="text-link" href="{{ $u.bench }}#{{ cond $isID "5-cluster-sungguhan" "5-live-clusters" }}">
         <span>{{ i18n "real_source" }}</span>
         {{ partial "icon.html" "arrow-right" }}
       </a>

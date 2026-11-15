@@ -1,5 +1,7 @@
 # Project Governance
 
+> **Language:** English · [Bahasa Indonesia](docs/id/GOVERNANCE.md)
+
 **Strife** is an open-source distributed systems testing, verification, and audit-evidence toolkit licensed under the [Apache License 2.0](LICENSE). This document defines how the repository is governed, how technical decisions are made, and what invariants every change must uphold.
 
 ---

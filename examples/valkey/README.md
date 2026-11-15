@@ -1,5 +1,7 @@
 # Example: Valkey primary + replicas under Strife
 
+> **Language:** English · [Bahasa Indonesia](../../docs/id/examples/valkey/README.md)
+
 One Valkey primary (`n1`) with two asynchronous replicas (`n2`, `n3`). Every
 Strife client is bound to one node, like an application whose connection pool
 spreads reads across replicas:
