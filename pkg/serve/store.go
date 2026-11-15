@@ -29,6 +29,8 @@ import (
 type RunEntry struct {
 	ID                      string          `json:"id"`
 	Tenant                  string          `json:"tenant,omitempty"`
+	JobID                   string          `json:"job_id,omitempty"`
+	IdempotencyKey          string          `json:"idempotency_key,omitempty"`
 	Kind                    string          `json:"kind"` // "report" or "campaign"
 	RunKind                 string          `json:"run_kind,omitempty"`
 	Target                  string          `json:"target"`
@@ -56,12 +58,24 @@ type RunEntry struct {
 	MTTRMaxMs               int64           `json:"mttr_max_ms,omitempty"`
 }
 
+// ErrIdempotencyConflict reports that an idempotency key was already committed
+// for a different artifact payload under the same tenant.
+var ErrIdempotencyConflict = errors.New("serve: idempotency key conflict")
+
+// IngestOptions configures optional deduplication metadata when persisting an
+// ingested Report or campaign Manifest.
+type IngestOptions struct {
+	IdempotencyKey string
+	JobID          string
+}
+
 // IngestResult is returned after a report or campaign is ingested into the Store.
 type IngestResult struct {
-	Entry      RunEntry             `json:"entry"`
-	Comparison *campaign.Comparison `json:"comparison,omitempty"`
-	Bundle     *attest.Bundle       `json:"bundle,omitempty"`
-	Webhooks   []WebhookDelivery    `json:"webhooks,omitempty"`
+	Entry        RunEntry             `json:"entry"`
+	Comparison   *campaign.Comparison `json:"comparison,omitempty"`
+	Bundle       *attest.Bundle       `json:"bundle,omitempty"`
+	Webhooks     []WebhookDelivery    `json:"webhooks,omitempty"`
+	Deduplicated bool                 `json:"deduplicated,omitempty"`
 }
 
 // Store manages the persistent run registry directory.
@@ -70,6 +84,8 @@ type Store struct {
 	dir       string
 	entries   []RunEntry
 	byID      map[string]RunEntry
+	byJobID   map[string]string             // job_id -> run entry ID
+	byIdemp   map[string]string             // tenant\x00idempotency_key -> run entry ID
 	baselines map[string]*campaign.Manifest // system -> latest campaign manifest
 	seq       uint64
 }
@@ -86,6 +102,8 @@ func NewStore(dir string) (*Store, error) {
 	s := &Store{
 		dir:       dir,
 		byID:      make(map[string]RunEntry),
+		byJobID:   make(map[string]string),
+		byIdemp:   make(map[string]string),
 		baselines: make(map[string]*campaign.Manifest),
 	}
 	if err := s.loadExisting(); err != nil {
@@ -126,6 +144,12 @@ func (s *Store) loadExisting() error {
 				} else {
 					s.entries = append(s.entries, e)
 					s.byID[e.ID] = e
+					if e.JobID != "" {
+						s.byJobID[e.JobID] = e.ID
+					}
+					if e.IdempotencyKey != "" {
+						s.byIdemp[idempotencyMapKey(e.Tenant, e.IdempotencyKey)] = e.ID
+					}
 					s.seq++
 					if e.Kind == "campaign" {
 						cPath := filepath.Join(s.dir, "runs", e.ID, "campaign.json")
@@ -188,6 +212,85 @@ func normalizeTenant(t string) string {
 
 func baselineKey(tenant, system string) string {
 	return normalizeTenant(tenant) + "/" + system
+}
+
+func idempotencyMapKey(tenant, key string) string {
+	return normalizeTenant(tenant) + "\x00" + key
+}
+
+// FindByJobID returns the committed RunEntry produced by jobID, if any.
+func (s *Store) FindByJobID(jobID string) (RunEntry, bool) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return RunEntry{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.byJobID[jobID]
+	if !ok {
+		return RunEntry{}, false
+	}
+	e, exists := s.byID[id]
+	return e, exists
+}
+
+// FindByIdempotencyKey returns the committed RunEntry recorded under (tenant, key), if any.
+func (s *Store) FindByIdempotencyKey(tenant, key string) (RunEntry, bool) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return RunEntry{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.byIdemp[idempotencyMapKey(tenant, key)]
+	if !ok {
+		return RunEntry{}, false
+	}
+	e, exists := s.byID[id]
+	return e, exists
+}
+
+func (s *Store) resultForExistingLocked(entry RunEntry) *IngestResult {
+	res := &IngestResult{
+		Entry:        entry,
+		Deduplicated: true,
+	}
+	runDir := filepath.Join(s.dir, "runs", entry.ID)
+	if entry.Kind == "campaign" {
+		if m, err := campaign.LoadManifest(filepath.Join(runDir, "campaign.json")); err == nil && m.Comparison != nil {
+			res.Comparison = m.Comparison
+		}
+	}
+	if entry.Signed {
+		if bData, err := os.ReadFile(filepath.Join(runDir, "bundle.json")); err == nil {
+			var b attest.Bundle
+			if uerr := json.Unmarshal(bData, &b); uerr == nil {
+				res.Bundle = &b
+			}
+		}
+	}
+	return res
+}
+
+func (s *Store) checkDuplicateLocked(tenant, kind, fingerprint string, opts IngestOptions) (*IngestResult, bool, error) {
+	if jobID := strings.TrimSpace(opts.JobID); jobID != "" {
+		if existingID, ok := s.byJobID[jobID]; ok {
+			if existing, exists := s.byID[existingID]; exists {
+				return s.resultForExistingLocked(existing), true, nil
+			}
+		}
+	}
+	if key := strings.TrimSpace(opts.IdempotencyKey); key != "" {
+		if existingID, ok := s.byIdemp[idempotencyMapKey(tenant, key)]; ok {
+			if existing, exists := s.byID[existingID]; exists {
+				if existing.Kind != kind || existing.Fingerprint != fingerprint {
+					return nil, false, fmt.Errorf("%w: %q", ErrIdempotencyConflict, key)
+				}
+				return s.resultForExistingLocked(existing), true, nil
+			}
+		}
+	}
+	return nil, false, nil
 }
 
 // Dir returns the root directory of the store.
@@ -256,6 +359,16 @@ func (s *Store) Lookup(id string) (RunEntry, map[string]any, error) {
 
 // IngestReport validates, optionally signs, and persists a single-seed Report.
 func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed25519.PrivateKey, signer string, tenant ...string) (*IngestResult, error) {
+	tName := ""
+	if len(tenant) > 0 {
+		tName = tenant[0]
+	}
+	return s.IngestReportWithOptions(rep, commit, branch, priv, signer, tName, IngestOptions{})
+}
+
+// IngestReportWithOptions validates, optionally signs, and persists a single-seed
+// Report with optional job/idempotency deduplication.
+func (s *Store) IngestReportWithOptions(rep *report.Report, commit, branch string, priv ed25519.PrivateKey, signer, tenant string, opts IngestOptions) (*IngestResult, error) {
 	if rep == nil {
 		return nil, fmt.Errorf("serve: report is nil")
 	}
@@ -268,8 +381,16 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	}
 	rep.Fingerprint = recomputed
 
+	tName := normalizeTenant(tenant)
+	opts.JobID = strings.TrimSpace(opts.JobID)
+	opts.IdempotencyKey = strings.TrimSpace(opts.IdempotencyKey)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if dup, ok, err := s.checkDuplicateLocked(tName, "report", rep.Fingerprint, opts); ok || err != nil {
+		return dup, err
+	}
 
 	seq := s.seq
 	var id string
@@ -285,6 +406,12 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
 	}
+	removeRunDir := true
+	defer func() {
+		if removeRunDir {
+			_ = os.RemoveAll(runDir)
+		}
+	}()
 
 	modelName := rep.Check.Model
 	if modelName == "" {
@@ -296,28 +423,26 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	} else if rep.Verdict == checker.Violation {
 		violations = 1
 	}
-	tName := "default"
-	if len(tenant) > 0 {
-		tName = normalizeTenant(tenant[0])
-	}
 
 	entry := RunEntry{
-		ID:          id,
-		Tenant:      tName,
-		Kind:        "report",
-		RunKind:     rep.Kind,
-		Target:      rep.Target,
-		Model:       modelName,
-		Seed:        rep.Seed,
-		TotalSeeds:  1,
-		Passed:      passed,
-		Violations:  violations,
-		Operations:  rep.Check.Operations,
-		Verdict:     rep.Verdict,
-		Fingerprint: rep.Fingerprint,
-		Commit:      commit,
-		Branch:      branch,
-		Timestamp:   now.Format(time.RFC3339),
+		ID:             id,
+		Tenant:         tName,
+		JobID:          opts.JobID,
+		IdempotencyKey: opts.IdempotencyKey,
+		Kind:           "report",
+		RunKind:        rep.Kind,
+		Target:         rep.Target,
+		Model:          modelName,
+		Seed:           rep.Seed,
+		TotalSeeds:     1,
+		Passed:         passed,
+		Violations:     violations,
+		Operations:     rep.Check.Operations,
+		Verdict:        rep.Verdict,
+		Fingerprint:    rep.Fingerprint,
+		Commit:         commit,
+		Branch:         branch,
+		Timestamp:      now.Format(time.RFC3339),
 	}
 	if rep.Resilience != nil {
 		entry.OverallAvailability = rep.Resilience.OverallAvailability
@@ -365,6 +490,7 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 	if err := s.appendEntry(entry); err != nil {
 		return nil, err
 	}
+	removeRunDir = false
 	s.seq = seq
 	return &IngestResult{Entry: entry, Bundle: bundle}, nil
 }
@@ -372,6 +498,17 @@ func (s *Store) IngestReport(rep *report.Report, commit, branch string, priv ed2
 // IngestCampaign validates, compares against the latest baseline for the same
 // tenant and target system, and persists a multi-seed campaign Manifest.
 func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestResult, error) {
+	tName := ""
+	if len(tenant) > 0 {
+		tName = tenant[0]
+	}
+	return s.IngestCampaignWithOptions(m, tName, IngestOptions{})
+}
+
+// IngestCampaignWithOptions validates, compares against the latest baseline for
+// the same tenant and target system, and persists a multi-seed campaign Manifest
+// with optional job/idempotency deduplication.
+func (s *Store) IngestCampaignWithOptions(m *campaign.Manifest, tenant string, opts IngestOptions) (*IngestResult, error) {
 	if m == nil {
 		return nil, fmt.Errorf("serve: campaign manifest is nil")
 	}
@@ -384,15 +521,18 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 	}
 	m.Fingerprint = recomputed
 
+	tName := normalizeTenant(tenant)
+	opts.JobID = strings.TrimSpace(opts.JobID)
+	opts.IdempotencyKey = strings.TrimSpace(opts.IdempotencyKey)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	tName := "default"
-	if len(tenant) > 0 {
-		tName = normalizeTenant(tenant[0])
+	if dup, ok, err := s.checkDuplicateLocked(tName, "campaign", m.Fingerprint, opts); ok || err != nil {
+		return dup, err
 	}
-	bKey := baselineKey(tName, m.System)
 
+	bKey := baselineKey(tName, m.System)
 	var comp *campaign.Comparison
 	if prev, ok := s.baselines[bKey]; ok {
 		comp = campaign.Compare(prev, m)
@@ -415,6 +555,12 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
 	}
+	removeRunDir := true
+	defer func() {
+		if removeRunDir {
+			_ = os.RemoveAll(runDir)
+		}
+	}()
 
 	modelName := "kv"
 	if strings.Contains(m.System, "ledger") {
@@ -431,6 +577,8 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 	entry := RunEntry{
 		ID:                  id,
 		Tenant:              tName,
+		JobID:               opts.JobID,
+		IdempotencyKey:      opts.IdempotencyKey,
 		Kind:                "campaign",
 		RunKind:             "campaign",
 		Target:              m.System,
@@ -464,6 +612,7 @@ func (s *Store) IngestCampaign(m *campaign.Manifest, tenant ...string) (*IngestR
 	if err := s.appendEntry(entry); err != nil {
 		return nil, err
 	}
+	removeRunDir = false
 	s.seq = seq
 	s.baselines[bKey] = m
 	return &IngestResult{Entry: entry, Comparison: comp}, nil
@@ -495,6 +644,12 @@ func (s *Store) appendEntry(e RunEntry) error {
 	}
 	s.entries = append(s.entries, e)
 	s.byID[e.ID] = e
+	if e.JobID != "" {
+		s.byJobID[e.JobID] = e.ID
+	}
+	if e.IdempotencyKey != "" {
+		s.byIdemp[idempotencyMapKey(e.Tenant, e.IdempotencyKey)] = e.ID
+	}
 	return nil
 }
 

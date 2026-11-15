@@ -15,15 +15,16 @@ skema hanya boleh bertambah bidang opsional.
 - **Verdict jujur untuk checker transaksional *sound-incomplete* (`pkg/model`, `pkg/checker`, `pkg/compliance`):**
   - Mengganti keluaran biner `model.Decider` menjadi `DecisionStatus` tiga keadaan (`DecisionViolation`, `DecisionVerified`, `DecisionInconclusive`).
   - Model *sound-incomplete* (`append`, `ledger`, `settlement`) kini mengembalikan `DecisionInconclusive` saat tidak menemukan anomali (riwayat kosong tetap `DecisionVerified`), tidak langsung mengklaim pembuktian penuh `linearizable`.
-  - Menambahkan pencarian WGL tuntas berbatas (`<= 16` operasi, `<= 4` operasi `info`, `<= 500.000` langkah) melalui `model.CompleteSearcher` untuk riwayat `strict-serializable` yang memenuhi syarat, dan mengembalikan `Verdict: Unknown` dengan `Reason: "sound incomplete"` saat batas terlampaui.
+  - Menambahkan pencarian WGL tuntas berbatas (`<= 16` operasi, `<= 4` operasi `info`, `<= 500.000` langkah) melalui `model.CompleteSearcher` untuk riwayat `strict-serializable` yang memenuhi syarat, mengembalikan `Verdict: Unknown` dengan `Reason: "sound incomplete"` saat batas terlampaui sambil mempertahankan `ReasonSteps` / `ReasonTime` apabila pencarian berbatas kehabisan batas langkah atau waktu.
   - Menambahkan `--expect no-anomaly` pada `strife sim`, `strife campaign`, `strife check`, `strife run`, laporan, workflow CI, dan jembatan Wasm, serta mempertahankan `ReasonIncomplete` di `schemas/campaign.v1.json`.
   - Menilai kontrol kepatuhan yang didukung verdict *sound-incomplete* sebagai `PARTIAL` (disertai pengungkapan eksplisit di **Metodologi & Batasan Cakupan**) alih-alih `PASS` (`FAIL` tetap berlaku pada pelanggaran atau habisnya anggaran).
 - **Verifikasi kesetaraan optimasi WGL (`pkg/checker`):**
   - Menambahkan `TestDifferentialOptimizerEquivalence` yang membandingkan solver teroptimasi baku, `SearchOnly`, penonaktifan `eagerRead`, penonaktifan `kvPruner`, dan WGL tanpa optimasi terhadap oracle *brute-force* pada riwayat acak.
-- **Autentikasi multi-tenant dan pemulihan lease antrean pada `strife serve` (`pkg/serve`):**
+- **Autentikasi multi-tenant, penegakan lease, dan persistensi idempoten pada `strife serve` (`pkg/serve`):**
   - Menegakkan autentikasi Bearer *fail-closed* (`--token` admin dan `--tenant-tokens tenant=rahasia`) di dasbor tersemat (`/`) dan titik akhir `/api/v1/*`, sambil mempertahankan `GET /api/v1/keys` publik dan menyunting detail `GET /api/v1/health` bila tanpa autentikasi.
   - Membatasi `GET /api/v1/webhooks` hanya untuk token admin (`403` bagi token tenant) dan menegakkan isolasi tenant `403` secara ketat pada run, dossier, deret waktu, tren, dan antrean pekerjaan.
-  - Menambahkan `claim_token` pekerja, `--job-lease` terkonfigurasi (default `2m`), `POST /api/v1/jobs/<id>/heartbeat`, heartbeat otomatis pada `strife worker`, pengambilan ulang pekerjaan saat lease kedaluwarsa, penjaga konkurensi `completing` (`409 Conflict`), serta penyimpanan atomik untuk `jobs.json` dan `campaign.json`.
+  - Menambahkan `claim_token` pekerja, `--job-lease` terkonfigurasi (default `2m`), `POST /api/v1/jobs/<id>/heartbeat`, heartbeat otomatis pada `strife worker`, pengambilan ulang pekerjaan saat lease kedaluwarsa, penolakan `409 Conflict` bila `/complete` dikirim setelah lease kedaluwarsa meski belum diklaim ulang, penjaga konkurensi `completing` (direset bersih saat *rollback*), serta penyimpanan atomik untuk `jobs.json` dan `campaign.json`.
+  - Menambahkan deduplikasi per pekerjaan (`job_id`) dan `Idempotency-Key` per tenant di `Store` (`POST /api/v1/ingest` mengembalikan `200 OK` dengan `"deduplicated": true` saat *replay* yang identik atau `409 Conflict` bila payload berbeda, tanpa menggandakan run maupun webhook), menunda pengiriman webhook `/complete` hingga `jobs.json` tersimpan, serta merekonsiliasi run `job_id` yang telah terkomit ke `jobs.json` saat startup.
 
 ## [1.0.0] - 2026-11-14
 

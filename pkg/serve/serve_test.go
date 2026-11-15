@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1452,4 +1454,554 @@ func TestServeStoreTornRegistryRecovery(t *testing.T) {
 	if runs := reopenedAgain.List("", ""); len(runs) != 2 {
 		t.Fatalf("expected 2 valid runs persisted cleanly after torn tail recovery, got %d", len(runs))
 	}
+}
+
+func makeTestKVReport(target string, seed uint64, val int64) (*report.Report, error) {
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &val, Time: 10},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &val, Time: 20},
+	}
+	return report.New(
+		report.KindSimulation,
+		target,
+		seed,
+		map[string]any{"nodes": 3},
+		nemesis.Schedule{Nodes: 3, Duration: time.Second},
+		ops,
+		checker.Report{Model: "kv", Verdict: checker.Violation, Operations: 1, Checked: 1},
+		fmt.Sprintf("trace-%s-%d", target, seed),
+	)
+}
+
+func TestServeExpiredLeaseRejectsCompleteEvenBeforeReclaim(t *testing.T) {
+	var hookCount int
+	var hookMu sync.Mutex
+	hookLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hookMu.Lock()
+		hookCount++
+		hookMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = hookSrv.Serve(hookLn) }()
+	defer func() {
+		_ = hookSrv.Shutdown(context.Background())
+		_ = hookLn.Close()
+	}()
+
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   t.TempDir(),
+		Token:      "exp-sec",
+		Webhooks:   []string{"http://" + hookLn.Addr().String() + "/hook"},
+		JobLease:   60 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	postJSON := func(path, payload string) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, baseURL+path, strings.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer exp-sec")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	c, jBody := postJSON("/api/v1/jobs", `{"kind":"sim","system":"raft","seed":1,"duration":"500ms"}`)
+	if c != http.StatusCreated {
+		t.Fatalf("enqueue status=%d body=%s", c, string(jBody))
+	}
+	var job Job
+	_ = json.Unmarshal(jBody, &job)
+
+	c, claimBody1 := postJSON("/api/v1/jobs/claim", `{"worker_id":"w1"}`)
+	if c != http.StatusOK {
+		t.Fatalf("claim w1 status=%d body=%s", c, string(claimBody1))
+	}
+	var claim1 Job
+	_ = json.Unmarshal(claimBody1, &claim1)
+
+	// Wait past JobLease without any second worker reclaiming first.
+	time.Sleep(110 * time.Millisecond)
+
+	rep, err := makeTestKVReport("raft", 1, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete1, _ := json.Marshal(JobCompleteRequest{WorkerID: "w1", ClaimToken: claim1.ClaimToken, Report: rep})
+	code, compBody1 := postJSON("/api/v1/jobs/"+job.ID+"/complete", string(complete1))
+	if code != http.StatusConflict || !strings.Contains(string(compBody1), "expired") {
+		t.Fatalf("expected 409 Conflict with expired lease message even before reclaim, got %d body=%s", code, string(compBody1))
+	}
+	if runs := srv.Store().List("", ""); len(runs) != 0 {
+		t.Fatalf("expected 0 ingested runs after expired-lease rejection, got %d", len(runs))
+	}
+	hookMu.Lock()
+	if hookCount != 0 {
+		hookMu.Unlock()
+		t.Fatalf("expected 0 webhook deliveries after expired-lease rejection, got %d", hookCount)
+	}
+	hookMu.Unlock()
+
+	// Another worker reclaims and completes cleanly.
+	c, claimBody2 := postJSON("/api/v1/jobs/claim", `{"worker_id":"w2"}`)
+	if c != http.StatusOK {
+		t.Fatalf("claim w2 after expiry status=%d body=%s", c, string(claimBody2))
+	}
+	var claim2 Job
+	_ = json.Unmarshal(claimBody2, &claim2)
+	complete2, _ := json.Marshal(JobCompleteRequest{WorkerID: "w2", ClaimToken: claim2.ClaimToken, Report: rep})
+	if code, body2 := postJSON("/api/v1/jobs/"+job.ID+"/complete", string(complete2)); code != http.StatusOK {
+		t.Fatalf("expected w2 completion 200 OK, got %d body=%s", code, string(body2))
+	}
+	if runs := srv.Store().List("", ""); len(runs) != 1 {
+		t.Fatalf("expected 1 run after valid completion, got %d", len(runs))
+	}
+	hookMu.Lock()
+	if hookCount != 1 {
+		hookMu.Unlock()
+		t.Fatalf("expected 1 webhook delivery after valid completion, got %d", hookCount)
+	}
+	hookMu.Unlock()
+}
+
+func TestServeJobCompletePersistenceFailureIdempotentRetry(t *testing.T) {
+	var hookCount int
+	var hookMu sync.Mutex
+	hookLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hookMu.Lock()
+		hookCount++
+		hookMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = hookSrv.Serve(hookLn) }()
+	defer func() {
+		_ = hookSrv.Shutdown(context.Background())
+		_ = hookLn.Close()
+	}()
+
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   t.TempDir(),
+		Token:      "retry-sec",
+		Webhooks:   []string{"http://" + hookLn.Addr().String() + "/hook"},
+		JobLease:   5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	postJSON := func(path, payload string) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, baseURL+path, strings.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer retry-sec")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	c, jBody := postJSON("/api/v1/jobs", `{"kind":"sim","system":"raft","seed":7,"duration":"500ms"}`)
+	if c != http.StatusCreated {
+		t.Fatalf("enqueue status=%d body=%s", c, string(jBody))
+	}
+	var job Job
+	_ = json.Unmarshal(jBody, &job)
+
+	c, claimBody := postJSON("/api/v1/jobs/claim", `{"worker_id":"w1"}`)
+	if c != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", c, string(claimBody))
+	}
+	var claimed Job
+	_ = json.Unmarshal(claimBody, &claimed)
+
+	rep, err := makeTestKVReport("raft", 7, 99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compReqBody, _ := json.Marshal(JobCompleteRequest{WorkerID: "w1", ClaimToken: claimed.ClaimToken, Report: rep})
+
+	// Inject failure in saveJobsLocked after Store ingest has already committed.
+	failSave := true
+	var failMu sync.Mutex
+	srv.beforeSaveJobs = func() error {
+		failMu.Lock()
+		defer failMu.Unlock()
+		if failSave {
+			return errors.New("simulated jobs.json write failure")
+		}
+		return nil
+	}
+
+	code1, body1 := postJSON("/api/v1/jobs/"+job.ID+"/complete", string(compReqBody))
+	if code1 != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on saveJobsLocked failure, got %d body=%s", code1, string(body1))
+	}
+	runsAfterFail := srv.Store().List("", "")
+	if len(runsAfterFail) != 1 {
+		t.Fatalf("expected 1 run in Store after Store ingest succeeded, got %d", len(runsAfterFail))
+	}
+	hookMu.Lock()
+	if hookCount != 0 {
+		hookMu.Unlock()
+		t.Fatalf("expected 0 webhooks before jobs.json persisted, got %d", hookCount)
+	}
+	hookMu.Unlock()
+
+	srv.jobMu.Lock()
+	completingLeft := srv.jobs[0].completing
+	statusLeft := srv.jobs[0].Status
+	srv.jobMu.Unlock()
+	if completingLeft || statusLeft != JobClaimed {
+		t.Fatalf("expected rollback to clear completing flag and keep JobClaimed, got completing=%v status=%s", completingLeft, statusLeft)
+	}
+
+	// Clear the injected failure and retry the same completion request.
+	failMu.Lock()
+	failSave = false
+	failMu.Unlock()
+
+	code2, body2 := postJSON("/api/v1/jobs/"+job.ID+"/complete", string(compReqBody))
+	if code2 != http.StatusOK {
+		t.Fatalf("expected retry completion to succeed 200 OK, got %d body=%s", code2, string(body2))
+	}
+	var compResp struct {
+		Job    Job          `json:"job"`
+		Ingest IngestResult `json:"ingest"`
+	}
+	if err := json.Unmarshal(body2, &compResp); err != nil {
+		t.Fatal(err)
+	}
+	if !compResp.Ingest.Deduplicated || compResp.Ingest.Entry.ID != runsAfterFail[0].ID || compResp.Job.RunID != runsAfterFail[0].ID || compResp.Job.Status != JobCompleted {
+		t.Fatalf("expected idempotent retry referencing existing run %s, got %+v", runsAfterFail[0].ID, compResp)
+	}
+	if runsAfterRetry := srv.Store().List("", ""); len(runsAfterRetry) != 1 {
+		t.Fatalf("expected Store to still have 1 run (no duplicate), got %d", len(runsAfterRetry))
+	}
+	if trends := srv.Store().Trends("raft"); len(trends) != 1 {
+		t.Fatalf("expected 1 trend point (no duplicate), got %d", len(trends))
+	}
+	hookMu.Lock()
+	if hookCount != 1 {
+		hookMu.Unlock()
+		t.Fatalf("expected webhook to fire once after retry succeeded, got %d", hookCount)
+	}
+	hookMu.Unlock()
+
+	// Another completion after success must be rejected with 409 Conflict.
+	if code3, _ := postJSON("/api/v1/jobs/"+job.ID+"/complete", string(compReqBody)); code3 != http.StatusConflict {
+		t.Fatalf("expected 409 on completed job replay, got %d", code3)
+	}
+}
+
+func TestServeCrashRecoveryReconcilesCommittedJobRun(t *testing.T) {
+	storeDir := t.TempDir()
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   storeDir,
+		Token:      "crash-sec",
+		JobLease:   10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseURL := "http://" + ln.Addr().String()
+	done := make(chan struct{})
+	go func() {
+		_ = srv.Serve(ln)
+		close(done)
+	}()
+
+	postJSON := func(path, payload string) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, baseURL+path, strings.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer crash-sec")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	c, jBody := postJSON("/api/v1/jobs", `{"kind":"sim","system":"raft","seed":5,"duration":"500ms"}`)
+	if c != http.StatusCreated {
+		t.Fatalf("enqueue status=%d", c)
+	}
+	var job Job
+	_ = json.Unmarshal(jBody, &job)
+
+	c, _ = postJSON("/api/v1/jobs/claim", `{"worker_id":"w-crash"}`)
+	if c != http.StatusOK {
+		t.Fatalf("claim status=%d", c)
+	}
+
+	// Simulate partial crash: Store persists run with JobID, while jobs.json still has status=claimed.
+	rep, err := makeTestKVReport("raft", 5, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := srv.Store().IngestReportWithOptions(rep, "", "", nil, "", job.Tenant, IngestOptions{JobID: job.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = srv.Shutdown(context.Background())
+	_ = ln.Close()
+	<-done
+
+	// Reboot server on same storeDir; lease has already expired too.
+	time.Sleep(25 * time.Millisecond)
+	reloaded, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   storeDir,
+		Token:      "crash-sec",
+		JobLease:   10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("reload NewServer: %v", err)
+	}
+	if len(reloaded.jobs) != 1 {
+		t.Fatalf("expected 1 job after reload, got %d", len(reloaded.jobs))
+	}
+	got := reloaded.jobs[0]
+	if got.Status != JobCompleted || got.RunID != res.Entry.ID || got.Verdict != res.Entry.Verdict || got.ClaimToken != "" || got.LeaseExpiresAt != "" {
+		t.Fatalf("expected crash-reconciled completed job pointing to %s, got %+v", res.Entry.ID, got)
+	}
+
+	// Confirm reconciled state was flushed to jobs.json and blocks reclaim.
+	reloaded2, err := NewServer(Config{StoreDir: storeDir})
+	if err != nil {
+		t.Fatalf("second reload NewServer: %v", err)
+	}
+	if reloaded2.jobs[0].Status != JobCompleted || reloaded2.jobs[0].RunID != res.Entry.ID {
+		t.Fatalf("expected persisted reconciled job state on disk, got %+v", reloaded2.jobs[0])
+	}
+}
+
+func TestServeIngestIdempotencyKeyHeaderReplayConflictAndTenantScope(t *testing.T) {
+	var hookCount int
+	var hookMu sync.Mutex
+	hookLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hookMu.Lock()
+		hookCount++
+		hookMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = hookSrv.Serve(hookLn) }()
+	defer func() {
+		_ = hookSrv.Shutdown(context.Background())
+		_ = hookLn.Close()
+	}()
+
+	storeDir := t.TempDir()
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   storeDir,
+		Token:      "admin-sec",
+		TenantTokens: map[string]string{
+			"alpha": "alpha-sec",
+			"beta":  "beta-sec",
+		},
+		Webhooks: []string{"http://" + hookLn.Addr().String() + "/hook"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseURL := "http://" + ln.Addr().String()
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+
+	doPost := func(path, tok, idempHdr string, payload []byte) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		if idempHdr != "" {
+			req.Header.Set("Idempotency-Key", idempHdr)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	rep1, err := makeTestKVReport("svc-a", 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep1Bytes, _ := json.Marshal(rep1)
+
+	rep2, err := makeTestKVReport("svc-a", 2, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep2Bytes, _ := json.Marshal(rep2)
+
+	// 1. Conflicting header vs query key is rejected with 400 Bad Request.
+	if c, _ := doPost("/api/v1/ingest?idempotency_key=q1", "alpha-sec", "h1", rep1Bytes); c != http.StatusBadRequest {
+		t.Fatalf("expected 400 on conflicting idempotency keys, got %d", c)
+	}
+
+	// 2. First ingest returns 201 Created and fires webhook once.
+	c1, b1 := doPost("/api/v1/ingest", "alpha-sec", "ci-build-42", rep1Bytes)
+	if c1 != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d body=%s", c1, string(b1))
+	}
+	var res1 IngestResult
+	_ = json.Unmarshal(b1, &res1)
+	if res1.Deduplicated || res1.Entry.IdempotencyKey != "ci-build-42" {
+		t.Fatalf("unexpected initial ingest result: %+v", res1)
+	}
+
+	// 3. Exact replay returns 200 OK with Deduplicated=true, same ID, and NO duplicate webhook.
+	c2, b2 := doPost("/api/v1/ingest", "alpha-sec", "ci-build-42", rep1Bytes)
+	if c2 != http.StatusOK {
+		t.Fatalf("expected 200 OK on replay, got %d body=%s", c2, string(b2))
+	}
+	var res2 IngestResult
+	_ = json.Unmarshal(b2, &res2)
+	if !res2.Deduplicated || res2.Entry.ID != res1.Entry.ID || len(res2.Webhooks) != 0 {
+		t.Fatalf("unexpected deduplicated replay result: %+v", res2)
+	}
+
+	// 4. Reusing same key with different payload under same tenant returns 409 Conflict.
+	if c3, _ := doPost("/api/v1/ingest", "alpha-sec", "ci-build-42", rep2Bytes); c3 != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict on payload mismatch with same Idempotency-Key, got %d", c3)
+	}
+
+	// 5. Same key string under another tenant is isolated and accepted cleanly (201 Created).
+	c4, b4 := doPost("/api/v1/ingest", "beta-sec", "ci-build-42", rep2Bytes)
+	if c4 != http.StatusCreated {
+		t.Fatalf("expected 201 Created for beta with independent key scope, got %d body=%s", c4, string(b4))
+	}
+	var res4 IngestResult
+	_ = json.Unmarshal(b4, &res4)
+	if res4.Entry.Tenant != "beta" || res4.Entry.ID == res1.Entry.ID {
+		t.Fatalf("expected separate beta run entry, got %+v", res4.Entry)
+	}
+
+	if got := len(srv.Store().List("", "", "alpha")); got != 1 {
+		t.Fatalf("expected 1 alpha run, got %d", got)
+	}
+	if got := len(srv.Store().List("", "", "beta")); got != 1 {
+		t.Fatalf("expected 1 beta run, got %d", got)
+	}
+	hookMu.Lock()
+	if hookCount != 2 {
+		hookMu.Unlock()
+		t.Fatalf("expected 2 total webhook deliveries (alpha + beta), got %d", hookCount)
+	}
+	hookMu.Unlock()
+
+	// 6. Store reload preserves idempotency index across restarts.
+	reopened, err := NewStore(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dupAfterRestart, err := reopened.IngestReportWithOptions(rep1, "", "", nil, "", "alpha", IngestOptions{IdempotencyKey: "ci-build-42"})
+	if err != nil || !dupAfterRestart.Deduplicated || dupAfterRestart.Entry.ID != res1.Entry.ID {
+		t.Fatalf("expected post-restart deduplication to return %s, got res=%+v err=%v", res1.Entry.ID, dupAfterRestart, err)
+	}
+
+	// 7. Campaign ingest with Idempotency-Key preserves baseline comparison and avoids duplicate campaigns/webhooks.
+	campBase := &campaign.Manifest{
+		Tool: "strife", Version: report.Version, CampaignID: "c-base", System: "raft",
+		TotalSeeds: 1, Passed: 1, TotalOps: 100,
+		Seeds: []campaign.SeedRecord{{Seed: 1, Verdict: checker.Linearizable, Ops: 100, TraceHash: "t1", HistoryHash: "h1", ScheduleHash: "s1"}},
+	}
+	campBase.Fingerprint = campBase.ComputeFingerprint()
+	campBaseBytes, _ := json.Marshal(campBase)
+	if c, _ := doPost("/api/v1/ingest", "alpha-sec", "camp-base-key", campBaseBytes); c != http.StatusCreated {
+		t.Fatalf("expected 201 for baseline campaign, got %d", c)
+	}
+	campReg := &campaign.Manifest{
+		Tool: "strife", Version: report.Version, CampaignID: "c-reg", System: "raft",
+		TotalSeeds: 1, Violations: 1, TotalOps: 100,
+		Seeds: []campaign.SeedRecord{{Seed: 1, Verdict: checker.Violation, Ops: 100, TraceHash: "t1-bad", HistoryHash: "h1-bad", ScheduleHash: "s1"}},
+	}
+	campReg.Fingerprint = campReg.ComputeFingerprint()
+	campRegBytes, _ := json.Marshal(campReg)
+	c5, b5 := doPost("/api/v1/ingest", "alpha-sec", "camp-reg-key", campRegBytes)
+	if c5 != http.StatusCreated {
+		t.Fatalf("expected 201 for regressed campaign, got %d body=%s", c5, string(b5))
+	}
+	var res5 IngestResult
+	_ = json.Unmarshal(b5, &res5)
+	if res5.Entry.Regressions != 1 || res5.Comparison == nil || len(res5.Comparison.Regressed) != 1 {
+		t.Fatalf("expected 1 regression in initial campaign ingest, got %+v", res5)
+	}
+	// Replay same campaign with same Idempotency-Key -> 200 OK with preserved Comparison and NO duplicate webhook!
+	c6, b6 := doPost("/api/v1/ingest", "alpha-sec", "camp-reg-key", campRegBytes)
+	if c6 != http.StatusOK {
+		t.Fatalf("expected 200 OK on campaign replay, got %d body=%s", c6, string(b6))
+	}
+	var res6 IngestResult
+	_ = json.Unmarshal(b6, &res6)
+	if !res6.Deduplicated || res6.Entry.ID != res5.Entry.ID || res6.Comparison == nil || len(res6.Comparison.Regressed) != 1 {
+		t.Fatalf("expected deduplicated campaign replay preserving original comparison, got %+v", res6)
+	}
+	// Cross-kind reuse (report reusing a campaign Idempotency-Key) must fail with 409 Conflict.
+	if c7, _ := doPost("/api/v1/ingest", "alpha-sec", "camp-reg-key", rep1Bytes); c7 != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict when reusing campaign key for report, got %d", c7)
+	}
+	hookMu.Lock()
+	if hookCount != 3 {
+		hookMu.Unlock()
+		t.Fatalf("expected 3 total webhook deliveries (alpha rep + beta rep + regressed campaign), got %d", hookCount)
+	}
+	hookMu.Unlock()
 }

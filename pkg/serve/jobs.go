@@ -148,12 +148,54 @@ func (s *Server) loadJobs() error {
 }
 
 func (s *Server) saveJobsLocked() error {
+	if s.beforeSaveJobs != nil {
+		if err := s.beforeSaveJobs(); err != nil {
+			return err
+		}
+	}
 	p := filepath.Join(s.store.Dir(), "jobs.json")
 	data, err := json.MarshalIndent(s.jobs, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicWriteFileSync(p, append(data, '\n'), 0o600)
+}
+
+// reconcileJobsWithStore repairs any non-completed job whose verification run
+// was already committed in Store (for instance, after a crash between registry
+// append and jobs.json persistence).
+func (s *Server) reconcileJobsWithStore() error {
+	s.jobMu.Lock()
+	defer s.jobMu.Unlock()
+
+	changed := false
+	for _, j := range s.jobs {
+		if j == nil || j.Status == JobCompleted {
+			continue
+		}
+		entry, ok := s.store.FindByJobID(j.ID)
+		if !ok {
+			continue
+		}
+		j.Status = JobCompleted
+		j.RunID = entry.ID
+		j.Verdict = entry.Verdict
+		j.ClaimToken = ""
+		j.LeaseExpiresAt = ""
+		j.completing = false
+		if j.CompletedAt == "" {
+			if entry.Timestamp != "" {
+				j.CompletedAt = entry.Timestamp
+			} else {
+				j.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+			}
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return s.saveJobsLocked()
 }
 
 func (s *Server) handleTrends(w http.ResponseWriter, r *http.Request) {
@@ -608,13 +650,21 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q claim token mismatch", id)})
 		return
 	}
+	if s.isJobLeaseExpired(targetJob, time.Now().UTC()) {
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q claim lease has expired", id)})
+		return
+	}
 	targetJob.completing = true
+	jobID := targetJob.ID
 	tenant := targetJob.Tenant
 	commit := targetJob.Commit
 	branch := targetJob.Branch
 	s.jobMu.Unlock()
 
 	var ingestRes *IngestResult
+	var hookReport *report.Report
+	ingestOpts := IngestOptions{JobID: jobID}
 	if req.Campaign != nil {
 		if commit != "" && req.Campaign.Commit == "" {
 			req.Campaign.Commit = commit
@@ -622,7 +672,7 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		if branch != "" && req.Campaign.Branch == "" {
 			req.Campaign.Branch = branch
 		}
-		res, err := s.store.IngestCampaign(req.Campaign, tenant)
+		res, err := s.store.IngestCampaignWithOptions(req.Campaign, tenant, ingestOpts)
 		if err != nil {
 			s.jobMu.Lock()
 			targetJob.completing = false
@@ -630,11 +680,10 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		res.Webhooks = s.notifyWebhooks(res, nil)
 		ingestRes = res
 	} else if req.Report != nil {
 		priv, signer := s.signingKeyForTenant(tenant)
-		res, err := s.store.IngestReport(req.Report, commit, branch, priv, signer, tenant)
+		res, err := s.store.IngestReportWithOptions(req.Report, commit, branch, priv, signer, tenant, ingestOpts)
 		if err != nil {
 			s.jobMu.Lock()
 			targetJob.completing = false
@@ -642,12 +691,13 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		res.Webhooks = s.notifyWebhooks(res, req.Report)
 		ingestRes = res
+		hookReport = req.Report
 	}
 
 	s.jobMu.Lock()
 	prevJob := *targetJob
+	prevJob.completing = false
 	targetJob.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	targetJob.WorkerID = req.WorkerID
 	targetJob.ClaimToken = ""
@@ -671,6 +721,10 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 	}
 	jobCopy := *targetJob
 	s.jobMu.Unlock()
+
+	if ingestRes != nil {
+		ingestRes.Webhooks = s.notifyWebhooks(ingestRes, hookReport)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"job":    jobCopy,

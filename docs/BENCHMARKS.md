@@ -166,8 +166,11 @@ are sound but incomplete, `model.Decider` distinguishes `DecisionVerified`,
   is eligible for strict-serializable step execution (`model.CompleteSearcher`),
   `pkg/checker` runs bounded exhaustive WGL search (`<= 16` ops, `<= 4`
   `info` ops, capped at `500,000` steps). Only a successful search returns
-  `linearizable`; larger or non-strict histories return `unknown` with reason
-  `sound incomplete` (satisfied by `--expect no-anomaly`).
+  `linearizable`; if that bounded search exhausts `--max-steps` or `--timeout`,
+  `step budget` (`ReasonSteps`) or `time budget` (`ReasonTime`) is preserved
+  instead of reporting `sound incomplete`, whereas larger or non-strict
+  histories return `unknown` with reason `sound incomplete` (satisfied by
+  `--expect no-anomaly`).
 - `TestDifferentialOptimizerEquivalence` (`pkg/checker`) cross-checks all WGL
   execution paths—default fast paths, `SearchOnly`, disabled `eagerRead`,
   disabled `kvPruner`, and unoptimized WGL—against the brute-force oracle across

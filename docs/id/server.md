@@ -165,7 +165,7 @@ Untuk VPC privat dan jaringan staging terisolasi yang tidak dapat membuka port m
 - **`GET /api/v1/jobs`** & **`GET /api/v1/jobs/<id>`** — Daftar atau periksa tugas yang sedang mengantre, diambil, selesai, atau gagal (dapat disaring dengan `?tenant=` dan `?status=`). Mewajibkan autentikasi Bearer saat `--token` atau `--tenant-tokens` aktif, menyaring ke tenant pemanggil (`403 Forbidden` antar tenant), serta menghapus nilai rahasia `claim_token` dari respons.
 - **`POST /api/v1/jobs/claim`** — Mengambil secara atomik tugas `pending` tertua—atau tugas `claimed` yang batas `lease_expires_at`-nya telah lewat—(opsional disaring oleh `tenant`) untuk `worker_id` jarak jauh. Mengembalikan `claim_token` per klaim beserta `lease_expires_at` (`--job-lease`, default `2m`) dan menaikkan `attempts`.
 - **`POST /api/v1/jobs/<id>/heartbeat`** — Memperpanjang lease tugas yang sedang diklaim dengan mengirim `{"worker_id":"...","claim_token":"..."}` (`409 Conflict` bila lease sudah kedaluwarsa, tugas tidak lagi berstatus `claimed`, penyelesaian sedang berjalan, atau `worker_id`/`claim_token` tidak cocok). `strife worker` otomatis mengirimkan heartbeat latar belakang setiap ~1/3 durasi lease (dibatasi `[25ms, 30s]`) selama mengeksekusi tugas.
-- **`POST /api/v1/jobs/<id>/complete`** — Mengirimkan `report` atau `campaign` yang selesai bersama `worker_id` dan `claim_token` (atau mencatat galat eksekusi). Server menjaga agar penyelesaian ganda/konkuren ditolak (`409 Conflict`), memvalidasi `worker_id`/`claim_token`, memverifikasi sidik jari, menyimpan ke `registry.jsonl`, menandatangani dengan kunci Ed25519 tenant, memeriksa webhook SLA/regresi, dan memersistenkan `jobs.json` secara atomik.
+- **`POST /api/v1/jobs/<id>/complete`** — Mengirimkan `report` atau `campaign` yang selesai bersama `worker_id` dan `claim_token` (atau mencatat galat eksekusi). Server menjaga agar penyelesaian ganda/konkuren ditolak (`409 Conflict`), memvalidasi `worker_id`/`claim_token`, menolak penyelesaian bila lease sudah kedaluwarsa (`409 Conflict`, meski belum diklaim worker lain), memverifikasi sidik jari, menduplikasi-tolak percobaan ulang berdasarkan `job_id` di `registry.jsonl` sehingga kegagalan penyimpanan `jobs.json` tidak menggandakan run atau webhook, menandatangani dengan kunci Ed25519 tenant, memersistenkan `jobs.json` secara atomik sebelum mengirim webhook SLA/regresi, serta merekonsiliasi entri `job_id` yang sudah terkomit di `registry.jsonl` ke `jobs.json` saat startup.
 
 ```sh
 # 1. Antrekan simulasi atau uji kekacauan database langsung
@@ -184,7 +184,7 @@ Memasukkan laporan atau kampanye ke dalam registri. Bila `--token` dipasang pada
 
 Tubuh permintaan (dibatasi maksimal 32 MiB) dapat berupa:
 
-1. **Berkas `report.json` mentah** keluaran `strife sim`, `strife run`, `strife check`, atau `strife shrink`. Metadata opsional `tenant`, `commit`, dan `branch` dapat dilewatkan melalui query string (`/api/v1/ingest?tenant=payments&commit=abc1234&branch=main`).
+1. **Berkas `report.json` mentah** keluaran `strife sim`, `strife run`, `strife check`, atau `strife shrink`. Metadata opsional `tenant`, `commit`, `branch`, dan `idempotency_key` dapat dilewatkan melalui query string (`/api/v1/ingest?tenant=payments&commit=abc1234&branch=main`), atau lewat header HTTP `Idempotency-Key`.
 2. **Berkas `campaign.json` mentah** keluaran `strife campaign`.
 3. **Objek amplop (*envelope*)** yang menggabungkan metadata tenant dan git bersama salah satu payload (nilai di dalam amplop mengungguli parameter query):
 
@@ -193,6 +193,7 @@ Tubuh permintaan (dibatasi maksimal 32 MiB) dapat berupa:
      "tenant": "payments",
      "commit": "714fbd6",
      "branch": "main",
+     "idempotency_key": "ci-run-42",
      "report": { ... }
    }
    ```
@@ -200,6 +201,7 @@ Tubuh permintaan (dibatasi maksimal 32 MiB) dapat berupa:
 #### Yang Terjadi Saat Ingest
 
 - **Pemeriksaan integritas sidik jari:** `strife serve` menghitung ulang `report.Fingerprint` atau `campaign.ComputeFingerprint()`. Bila payload membawa sidik jari yang tidak cocok dengan isinya, pemasukan ditolak dengan `400 Bad Request`.
+- **Perlindungan replay idempoten (`Idempotency-Key`):** Bila `Idempotency-Key` (header, `?idempotency_key=`, atau field amplop `idempotency_key`) dikirimkan, deduplikasi berlaku per tenant terisolasi melintasi restart server. Mengirim ulang artefak yang sama mengembalikan `200 OK` dengan `"deduplicated": true` serta entri registri semula tanpa menggandakan run atau mengirim ulang webhook; memakai kunci yang sama untuk artefak berbeda ditolak dengan `409 Conflict`.
 - **Penandatanganan Ed25519 otomatis (laporan):** Bila `--tenant-keys` cocok dengan tenant yang dinormalisasi (atau `--key` terkonfigurasi), `strife serve` menandatangani laporan yang telah diverifikasi menjadi bundel atestasi `in-toto` v0.1 (`bundle.json`), mencatat `signed: true`, `signer`, dan `key_id` di entri registri, dan mengembalikan `bundle` dalam respons `201 Created`.
 - **Pembandingan regresi baseline otomatis (kampanye):** Ketika sebuah kampanye masuk untuk `(tenant, target)`, `strife serve` membandingkannya dengan kampanye tersimpan terbaru milik tenant dan target yang sama memakai `campaign.Compare`, mencatat `regressions`, `fixes`, dan `trace_drifts` pada entri registri dan mengembalikan objek `comparison` penuh pada respons.
 - **Peringatan webhook otomatis (`--webhook`):** `strife serve` mengirim notifikasi HTTP POST ke seluruh URL webhook terkonfigurasi apabila:

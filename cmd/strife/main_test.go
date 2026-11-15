@@ -993,4 +993,32 @@ func TestSystemsAndNoAnomalyExpectation(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("large append check --expect no-anomaly should exit %d, got %d:\n%s", exitOK, code, out)
 	}
+
+	// Small strict-serializable append history hitting --max-steps must report resource exhaustion, not sound-incomplete.
+	smallOps := []history.Op{
+		{Index: 0, Process: 1, Type: history.Invoke, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(1)}}, Time: 1000},
+		{Index: 1, Process: 1, Type: history.OK, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(1)}}, Time: 2000},
+		{Index: 2, Process: 2, Type: history.Invoke, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(2)}}, Time: 3000},
+		{Index: 3, Process: 2, Type: history.OK, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(2)}}, Time: 4000},
+	}
+	smallAppendPath := filepath.Join(dir, "append-small.jsonl")
+	sf, err := os.Create(smallAppendPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := history.WriteJSONL(sf, smallOps); err != nil {
+		t.Fatal(err)
+	}
+	if err := sf.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out = runCLI(t, "check", "--model", "append", "--isolation", "strict-serializable", "--max-steps", "1", "--history", smallAppendPath)
+	if code != exitUnknown || !strings.Contains(out, "step budget") || strings.Contains(out, "sound incomplete") {
+		t.Fatalf("small strict append --max-steps 1 should exit %d with step budget reason (not sound incomplete), got %d:\n%s", exitUnknown, code, out)
+	}
+	code, out = runCLI(t, "check", "--model", "append", "--isolation", "strict-serializable", "--max-steps", "1", "--expect", "no-anomaly", "--history", smallAppendPath)
+	if code != exitViolation {
+		t.Fatalf("small strict append --max-steps 1 --expect no-anomaly should exit %d, got %d:\n%s", exitViolation, code, out)
+	}
 }

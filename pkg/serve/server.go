@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -66,29 +67,31 @@ type PublicKeyInfo struct {
 
 // Server is the strife serve HTTP daemon and run registry.
 type Server struct {
-	cfg          Config
-	store        *Store
-	privKey      ed25519.PrivateKey
-	keyID        string
-	tenantKeys   map[string]ed25519.PrivateKey
-	tenantTokens map[string]string
-	startTime    time.Time
-	httpSrv      *http.Server
-	webhookMu    sync.Mutex
-	deliveries   []WebhookDelivery
-	jobMu        sync.Mutex
-	jobs         []*Job
-	jobSeq       uint64
+	cfg            Config
+	store          *Store
+	privKey        ed25519.PrivateKey
+	keyID          string
+	tenantKeys     map[string]ed25519.PrivateKey
+	tenantTokens   map[string]string
+	startTime      time.Time
+	httpSrv        *http.Server
+	webhookMu      sync.Mutex
+	deliveries     []WebhookDelivery
+	jobMu          sync.Mutex
+	jobs           []*Job
+	jobSeq         uint64
+	beforeSaveJobs func() error
 }
 
 // IngestPayload accepts either a wrapped ingest envelope, a raw report.Report,
 // or a raw campaign.Manifest.
 type IngestPayload struct {
-	Tenant   string             `json:"tenant,omitempty"`
-	Commit   string             `json:"commit,omitempty"`
-	Branch   string             `json:"branch,omitempty"`
-	Report   *report.Report     `json:"report,omitempty"`
-	Campaign *campaign.Manifest `json:"campaign,omitempty"`
+	Tenant         string             `json:"tenant,omitempty"`
+	Commit         string             `json:"commit,omitempty"`
+	Branch         string             `json:"branch,omitempty"`
+	IdempotencyKey string             `json:"idempotency_key,omitempty"`
+	Report         *report.Report     `json:"report,omitempty"`
+	Campaign       *campaign.Manifest `json:"campaign,omitempty"`
 }
 
 // NewServer initializes a Server backed by StoreDir.
@@ -175,6 +178,9 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if err := s.loadJobs(); err != nil {
 		return nil, fmt.Errorf("serve: load jobs: %w", err)
+	}
+	if err := s.reconcileJobsWithStore(); err != nil {
+		return nil, fmt.Errorf("serve: reconcile jobs: %w", err)
 	}
 
 	mux := http.NewServeMux()
@@ -581,6 +587,29 @@ func (s *Server) handleRunDossier(w http.ResponseWriter, r *http.Request, idAuth
 	writeJSON(w, http.StatusOK, dossier)
 }
 
+func resolveIdempotencyKey(candidates ...string) (string, error) {
+	var resolved string
+	for _, c := range candidates {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if resolved != "" && resolved != c {
+			return "", fmt.Errorf("conflicting idempotency keys provided")
+		}
+		resolved = c
+	}
+	if len(resolved) > 256 {
+		return "", fmt.Errorf("idempotency key exceeds 256 characters")
+	}
+	for _, r := range resolved {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("idempotency key contains control characters")
+		}
+	}
+	return resolved, nil
+}
+
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -638,6 +667,16 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	idempKey, idempErr := resolveIdempotencyKey(
+		r.Header.Get("Idempotency-Key"),
+		r.URL.Query().Get("idempotency_key"),
+		env.IdempotencyKey,
+	)
+	if idempErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": idempErr.Error()})
+		return
+	}
+
 	if !idAuth.isAdmin {
 		if tenant != "" && normalizeTenant(tenant) != idAuth.tenant {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: tenant mismatch"})
@@ -646,6 +685,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		tenant = idAuth.tenant
 	}
 
+	opts := IngestOptions{IdempotencyKey: idempKey}
 	var (
 		res  *IngestResult
 		err2 error
@@ -657,13 +697,21 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		if branch != "" && env.Campaign.Branch == "" {
 			env.Campaign.Branch = branch
 		}
-		res, err2 = s.store.IngestCampaign(env.Campaign, tenant)
+		res, err2 = s.store.IngestCampaignWithOptions(env.Campaign, tenant, opts)
 	} else {
 		priv, signer := s.signingKeyForTenant(tenant)
-		res, err2 = s.store.IngestReport(env.Report, commit, branch, priv, signer, tenant)
+		res, err2 = s.store.IngestReportWithOptions(env.Report, commit, branch, priv, signer, tenant, opts)
 	}
 	if err2 != nil {
+		if errors.Is(err2, ErrIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err2.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err2.Error()})
+		return
+	}
+	if res.Deduplicated {
+		writeJSON(w, http.StatusOK, res)
 		return
 	}
 	res.Webhooks = s.notifyWebhooks(res, env.Report)
