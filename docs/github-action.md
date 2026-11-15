@@ -12,7 +12,7 @@ Strife plugs into CI in two layers:
    (or builds from source), runs Strife, and does the following:
    - publishes the digest on the job summary page,
    - uploads the HTML/JSON reports, JUnit XML, and SARIF 2.1.0 files as an artifact,
-   - optionally pushes reports to a `strife serve` registry when running subcommands with `--push` support,
+   - optionally pushes reports or campaigns to a `strife serve` registry when running `sim` (single seed), `campaign`, `run`, or `check`,
    - annotates the run,
    - fails the job when Strife finds a problem.
 
@@ -41,7 +41,7 @@ jobs:
 | `junit` | `strife-junit.xml` | JUnit XML path (`""` to disable). |
 | `sarif` | `""` | SARIF 2.1.0 report path (`""` to disable). |
 | `summary` | `true` | Append a Markdown digest to the job summary. |
-| `push` | `""` | Registry URL passed via `--push` (currently used by `scripts/github-action.sh` on subcommands that accept `--push`; for `sim`/`campaign`/`run`, see [`docs/server.md`](server.md#publishing-from-ci)). |
+| `push` | `""` | Registry URL passed via `--push` for `sim` (single seed), `campaign`, `run`, and `check`. Multi-seed sweeps (`sim --seeds`) do not support `--push`; use `campaign` or see [`docs/server.md`](server.md#publishing-from-ci). |
 | `push-token` | `""` | Optional Bearer token for `--push-token`. |
 | `tenant` | `default` | Tenant identifier for `--tenant`. |
 | `upload` | `true` | Upload `out`, `junit` and `sarif` as an artifact. The upload also runs when Strife fails. |
@@ -158,7 +158,7 @@ reporter action, for example:
 ```
 
 > [!NOTE]
-> For publishing `sim`, `campaign`, or `run` JSON artifacts directly to `strife serve`, post `report.json` or `campaign.json` to `/api/v1/ingest` as shown in [`docs/server.md`](server.md#publishing-from-ci). On CLI directly, `strife check --push ... --push-token ... --tenant ...` pushes checked histories in one command.
+> `strife sim` (single `--seed`), `strife campaign`, `strife run`, and `strife check` all support `--push ... --push-token ... --tenant ...` directly on the CLI. For multi-seed `sim --seeds` sweeps or pre-generated `report.json` / `campaign.json` artifacts, post directly to `/api/v1/ingest` as shown in [`docs/server.md`](server.md#publishing-from-ci).
 
 ## What the JUnit report contains
 

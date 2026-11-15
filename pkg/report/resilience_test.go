@@ -81,3 +81,61 @@ func TestComputeResilienceMTTRAndAvailability(t *testing.T) {
 		t.Fatalf("unexpected PR digest output:\n%s", buf.String())
 	}
 }
+
+func TestWritePRDigestCampaignAndDossierModes(t *testing.T) {
+	// Standalone campaign with violations must fail.
+	var standalone bytes.Buffer
+	ok, err := WritePRDigest(&standalone, PRDigestOptions{
+		Campaign: &PRCampaignSummary{
+			System:     "raft",
+			TotalSeeds: 3,
+			Passed:     2,
+			Violations: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("WritePRDigest standalone: %v", err)
+	}
+	if ok || !strings.Contains(standalone.String(), "FAIL") {
+		t.Fatalf("expected standalone violating campaign to fail, got ok=%v\n%s", ok, standalone.String())
+	}
+
+	// Baseline campaign with persistent violation but zero regressions/new failures passes no-regression gate.
+	var baselineOK bytes.Buffer
+	ok, err = WritePRDigest(&baselineOK, PRDigestOptions{
+		Campaign: &PRCampaignSummary{
+			System:      "raft",
+			TotalSeeds:  3,
+			Passed:      2,
+			Violations:  1,
+			HasBaseline: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("WritePRDigest baseline: %v", err)
+	}
+	if !ok || !strings.Contains(baselineOK.String(), "PASS") {
+		t.Fatalf("expected baseline campaign without regressions to pass, got ok=%v\n%s", ok, baselineOK.String())
+	}
+
+	// Reportless digest with SLO + compliance renders check table.
+	compPass := false
+	var reportless bytes.Buffer
+	ok, err = WritePRDigest(&reportless, PRDigestOptions{
+		Target:         "ledger",
+		SLO:            &SLOResult{Passed: true, MinAvailability: 0.99},
+		CompliancePass: &compPass,
+		ComplianceNote: "1 control failed",
+	})
+	if err != nil {
+		t.Fatalf("WritePRDigest reportless: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected reportless digest with failing compliance to return false")
+	}
+	for _, want := range []string{"`ledger`", "| Resilience SLO Gate | ✅ PASS |", "| Regulatory Compliance | ❌ FAIL |"} {
+		if !strings.Contains(reportless.String(), want) {
+			t.Fatalf("reportless PR digest missing %q:\n%s", want, reportless.String())
+		}
+	}
+}

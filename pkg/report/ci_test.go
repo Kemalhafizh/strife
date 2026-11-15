@@ -211,12 +211,32 @@ func TestWriteSARIF(t *testing.T) {
 	dir := t.TempDir()
 	sarifPath := filepath.Join(dir, "strife.sarif")
 	s := SuiteFromReport(violatingReport(), time.Second)
-	s.Cases = append(s.Cases, Case{
-		Name:    "settlement",
-		Class:   "outbox-dual-write",
-		Status:  Failed,
-		Message: "SETTLEMENT-ATOMICITY: settlement ID 101 missing from broker",
-	})
+	s.Cases = append(s.Cases,
+		Case{
+			Name:    "settlement",
+			Class:   "outbox-dual-write",
+			Status:  Failed,
+			Message: "SETTLEMENT-ATOMICITY: settlement ID 101 missing from broker",
+		},
+		Case{
+			Name:    "resilience SLO gate",
+			Class:   "raft-x.seed7",
+			Status:  Failed,
+			Message: "overall availability 80.00% is below minimum SLO 95.00%",
+		},
+		Case{
+			Name:    "[PCI-DSS] pcidss.data-integrity — Payment Transaction & Account State Integrity",
+			Class:   "pci-dss",
+			Status:  Failed,
+			Message: "consistency violation",
+		},
+		Case{
+			Name:    "[BI-SP] bi-sp.finalitas-settlement — Settlement Finality",
+			Class:   "bi-sp",
+			Status:  Failed,
+			Message: "settlement violation",
+		},
+	)
 	o := Outputs{SARIF: sarifPath}
 	if !o.Enabled() {
 		t.Fatal("expected SARIF output to be enabled")
@@ -233,6 +253,9 @@ func TestWriteSARIF(t *testing.T) {
 		`"version": "2.1.0"`,
 		`"STRIFE-LINEARIZABILITY"`,
 		`"STRIFE-SETTLEMENT-ATOMICITY"`,
+		`"STRIFE-RESILIENCE-SLO"`,
+		`"STRIFE-COMPLIANCE-PCIDSS-DATA-INTEGRITY"`,
+		`"STRIFE-COMPLIANCE-BI-SP-FINALITAS-SETTLEMENT"`,
 		`"STRIFE-INCONCLUSIVE"`,
 	} {
 		if !strings.Contains(text, want) {

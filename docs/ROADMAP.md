@@ -455,9 +455,9 @@ below is reproduced by a command in [`BENCHMARKS.md`](BENCHMARKS.md).
   resolves `pod:<ns>/<name>`, `k8s:<name>`, and `container:<id>` directly from `/proc` and `/sys/fs/cgroup`.
 - **Self-hosted continuous verification & run registry daemon** (`strife serve`, `pkg/serve`):
   append-only run & campaign store, multi-tenant baseline isolation (`?tenant=`), per-tenant Ed25519 signing keys (`--tenant-keys`) and public key discovery (`GET /api/v1/keys`), REST API (`/api/v1/ingest`, `/api/v1/runs`, `/api/v1/runs/<id>/dossier`, `/api/v1/series`, `/api/v1/trends`, `/api/v1/jobs`, `/api/v1/webhooks`), automatic seed-level baseline regression diffing, automatic Slack/Discord/JSON webhook alerting (`--webhook`, including `report.sla_breach` via `--max-mttr` and `--min-availability`), and embedded multi-tenant web dashboard.
-- **Pull-based remote worker (`strife worker`, `pkg/worker`, v0.8.0):**
+- **Pull-based remote worker (`strife worker`, `pkg/serve/worker.go`, v0.8.0):**
   enables isolated staging networks and private VPCs to claim and execute queued `sim`, `campaign`, and `run` jobs from `strife serve` over outbound HTTP without opening inbound firewall ports.
-- **Zero-dependency OpenTelemetry Span JSON trace importer & CI PR reporter (`pkg/history/otel.go`, `pkg/report/cireport.go`, v0.8.0):**
+- **Zero-dependency OpenTelemetry Span JSON trace importer & CI PR reporter (`pkg/history/otel.go`, `pkg/report/slo.go`, v0.8.0):**
   imports standard `ExportTraceServiceRequest` OTLP/HTTP JSON and Jaeger span exports directly into `strife check`, and generates comparative Markdown/JSON Pull Request gates via `strife ci-report`.
 - **User-space L4 TCP fault proxy & `strife doctor`** (`pkg/transport/proxy.go`, `pkg/transport/doctor.go`, v0.4.0 – v0.7.0):
   zero-privilege L4 fault injection (`partition`, `latency`, `loss`, `kill`, `pause`, `freeze`, `io-stall`, plus half-duplex response drops) across Linux, macOS, and Windows without root or kernel modules.

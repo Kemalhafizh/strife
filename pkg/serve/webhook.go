@@ -110,8 +110,9 @@ func buildAlert(res *IngestResult, rep *report.Report, cfg Config) (*WebhookAler
 		if e.Verdict == checker.Violation || e.Violations > 0 {
 			event = "report.violation"
 		} else if rep != nil && rep.Resilience != nil {
+			minAvail := normalizeAvailability(cfg.MinAvailability)
 			mttrBreach := cfg.MaxMTTR > 0 && rep.Resilience.MTTR.P95 > cfg.MaxMTTR
-			availBreach := cfg.MinAvailability > 0 && rep.Resilience.OverallAvailability < cfg.MinAvailability
+			availBreach := minAvail > 0 && rep.Resilience.OverallAvailability < minAvail
 			if mttrBreach || availBreach {
 				event = "report.sla_breach"
 			}
@@ -162,10 +163,11 @@ func formatAlertSummary(event string, e RunEntry, res *IngestResult, rep *report
 	if e.Kind == "report" {
 		fmt.Fprintf(&b, ", seed=%d", e.Seed)
 		if event == "report.sla_breach" && rep != nil && rep.Resilience != nil {
+			minAvail := normalizeAvailability(cfg.MinAvailability)
 			fmt.Fprintf(&b, " — SLA breach (availability=%.1f%%, MTTR p95=%dms; thresholds min_avail=%.1f%%, max_mttr=%dms)",
 				rep.Resilience.OverallAvailability*100,
 				rep.Resilience.MTTR.P95.Milliseconds(),
-				cfg.MinAvailability*100,
+				minAvail*100,
 				cfg.MaxMTTR.Milliseconds())
 		} else if rep != nil {
 			for _, f := range rep.Check.Failures() {

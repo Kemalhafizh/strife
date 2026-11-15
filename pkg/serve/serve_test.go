@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -830,5 +831,172 @@ func TestWorkerPullJobQueueAndTrends(t *testing.T) {
 	authGetResp.Body.Close()
 	if !strings.Contains(string(authGetBody), "10.0.0.1:5432") {
 		t.Fatalf("expected authenticated GET /api/v1/jobs/<id> to include live_config, got %s", string(authGetBody))
+	}
+}
+
+func TestServeHardeningValidationJobPermissionsAndUI(t *testing.T) {
+	tmp := t.TempDir()
+	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "neg-mttr"), MaxMTTR: -time.Second}); err == nil {
+		t.Fatal("expected NewServer to reject negative MaxMTTR")
+	}
+	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "bad-avail-low"), MinAvailability: -0.1}); err == nil {
+		t.Fatal("expected NewServer to reject negative MinAvailability")
+	}
+	if _, err := NewServer(Config{StoreDir: filepath.Join(tmp, "bad-avail-high"), MinAvailability: 101}); err == nil {
+		t.Fatal("expected NewServer to reject MinAvailability > 100")
+	}
+
+	corruptDir := filepath.Join(tmp, "corrupt-jobs")
+	if err := os.MkdirAll(filepath.Join(corruptDir, "runs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(corruptDir, "jobs.json"), []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewServer(Config{StoreDir: corruptDir}); err == nil {
+		t.Fatal("expected NewServer to fail on corrupt jobs.json")
+	}
+
+	storeDir := filepath.Join(tmp, "srv")
+	srv, err := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		StoreDir:        storeDir,
+		Token:           "sec",
+		MinAvailability: 95,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if srv.cfg.MinAvailability != 0.95 {
+		t.Fatalf("expected MinAvailability 95 to normalize to 0.95, got %v", srv.cfg.MinAvailability)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+	baseURL := "http://" + ln.Addr().String()
+
+	// Enqueue jobs for two tenants and verify WorkerConfig.Tenant scoping + jobs.json mode 0600.
+	for _, payload := range []string{
+		`{"kind":"sim","tenant":"billing","system":"raft","seed":1,"duration":"500ms"}`,
+		`{"kind":"sim","tenant":"payments","system":"raft-ledger","seed":2,"duration":"500ms"}`,
+	} {
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs", strings.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer sec")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("enqueue status = %d", resp.StatusCode)
+		}
+	}
+
+	info, err := os.Stat(filepath.Join(storeDir, "jobs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("expected jobs.json mode 0600, got %04o", perm)
+	}
+
+	// Claim validation: malformed JSON and oversized body.
+	badClaimReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs/claim", strings.NewReader("{bad"))
+	badClaimReq.Header.Set("Authorization", "Bearer sec")
+	badClaimResp, err := http.DefaultClient.Do(badClaimReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badClaimResp.Body.Close()
+	if badClaimResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for malformed claim body, got %d", badClaimResp.StatusCode)
+	}
+
+	bigClaim := strings.Repeat("a", 65*1024)
+	bigReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs/claim", strings.NewReader(bigClaim))
+	bigReq.Header.Set("Authorization", "Bearer sec")
+	bigResp, err := http.DefaultClient.Do(bigReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bigResp.Body.Close()
+	if bigResp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized claim body, got %d", bigResp.StatusCode)
+	}
+
+	// Tenant-scoped worker only processes the "payments" job.
+	n, err := RunWorker(context.Background(), WorkerConfig{
+		ServerURL: baseURL,
+		Token:     "sec",
+		WorkerID:  "w-pay",
+		Tenant:    "payments",
+		Once:      true,
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("RunWorker tenant=payments got n=%d err=%v", n, err)
+	}
+	listResp, err := http.Get(baseURL + "/api/v1/jobs?tenant=billing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listBody, _ := io.ReadAll(listResp.Body)
+	listResp.Body.Close()
+	if !strings.Contains(string(listBody), `"status": "pending"`) {
+		t.Fatalf("expected billing job to remain pending, got %s", string(listBody))
+	}
+
+	// Reload server from storeDir and verify job persistence.
+	reloadedSrv, err := NewServer(Config{StoreDir: storeDir})
+	if err != nil {
+		t.Fatalf("reload NewServer: %v", err)
+	}
+	if len(reloadedSrv.jobs) != 2 || reloadedSrv.jobSeq != 2 {
+		t.Fatalf("expected 2 reloaded jobs and seq=2, got len=%d seq=%d", len(reloadedSrv.jobs), reloadedSrv.jobSeq)
+	}
+
+	// Check combined filter links on GET /?target=raft-ledger&tenant=payments
+	uiResp, err := http.Get(baseURL + "/?target=raft-ledger&tenant=payments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiBody, _ := io.ReadAll(uiResp.Body)
+	uiResp.Body.Close()
+	if !strings.Contains(string(uiBody), "target=raft-ledger&amp;tenant=payments") {
+		t.Fatalf("expected UI filter pills to preserve combined target and tenant, got:\n%s", string(uiBody))
+	}
+
+	// Query param validation + corrupt bundle check on /api/v1/runs/<id>/dossier.
+	runs := srv.store.List("", "", "payments")
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 ingested run for payments, got %d", len(runs))
+	}
+	runID := runs[0].ID
+	for _, q := range []string{"max_mttr=-1s", "max_mttr=nope", "min_availability=101", "min_availability=nope"} {
+		dResp, err := http.Get(baseURL + "/api/v1/runs/" + runID + "/dossier?" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dResp.Body.Close()
+		if dResp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("query %s: expected 400, got %d", q, dResp.StatusCode)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(storeDir, "runs", runID, "bundle.json"), []byte("{corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	errResp, err := http.Get(baseURL + "/api/v1/runs/" + runID + "/dossier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	errResp.Body.Close()
+	if errResp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on corrupt bundle.json, got %d", errResp.StatusCode)
 	}
 }

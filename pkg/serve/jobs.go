@@ -1,12 +1,14 @@
 package serve
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,10 +78,21 @@ func (s *Server) loadJobs() error {
 	if err := json.Unmarshal(data, &list); err != nil {
 		return err
 	}
+	maxSeq := uint64(len(list))
+	for _, j := range list {
+		if j == nil {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(j.ID, "job-"); ok {
+			if n, perr := strconv.ParseUint(rest, 10, 64); perr == nil && n > maxSeq {
+				maxSeq = n
+			}
+		}
+	}
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
 	s.jobs = list
-	s.jobSeq = uint64(len(list))
+	s.jobSeq = maxSeq
 	return nil
 }
 
@@ -89,7 +102,33 @@ func (s *Server) saveJobsLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(data, '\n'), 0o644)
+	tmp, err := os.CreateTemp(s.store.Dir(), ".jobs-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, p); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func (s *Server) handleTrends(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +249,13 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			job.Seeds = "1..20"
 		}
 		s.jobs = append(s.jobs, job)
-		_ = s.saveJobsLocked()
+		if err := s.saveJobsLocked(); err != nil {
+			s.jobs = s.jobs[:len(s.jobs)-1]
+			s.jobSeq--
+			s.jobMu.Unlock()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("persist job: %v", err)})
+			return
+		}
 		copied := *job
 		s.jobMu.Unlock()
 		writeJSON(w, http.StatusCreated, copied)
@@ -269,8 +314,23 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 	if !s.checkAuth(w, r) {
 		return
 	}
+	const maxClaimBodyBytes = 64 * 1024
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxClaimBodyBytes+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(body) > maxClaimBodyBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "job claim body exceeds 64 KiB limit"})
+		return
+	}
 	var req JobClaimRequest
-	_ = json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req)
+	if len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid json: %v", err)})
+			return
+		}
+	}
 	if req.WorkerID == "" {
 		req.WorkerID = strings.TrimSpace(r.URL.Query().Get("worker_id"))
 	}
@@ -287,6 +347,7 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 
 	s.jobMu.Lock()
 	var claimed *Job
+	var saveErr error
 	for _, j := range s.jobs {
 		if j.Status != JobPending {
 			continue
@@ -294,16 +355,25 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 		if wantTenant != "" && normalizeTenant(j.Tenant) != wantTenant {
 			continue
 		}
+		prevStatus, prevWorker, prevClaimed := j.Status, j.WorkerID, j.ClaimedAt
 		j.Status = JobClaimed
 		j.WorkerID = req.WorkerID
 		j.ClaimedAt = time.Now().UTC().Format(time.RFC3339)
-		_ = s.saveJobsLocked()
+		if err := s.saveJobsLocked(); err != nil {
+			j.Status, j.WorkerID, j.ClaimedAt = prevStatus, prevWorker, prevClaimed
+			saveErr = err
+			break
+		}
 		c := *j
 		claimed = &c
 		break
 	}
 	s.jobMu.Unlock()
 
+	if saveErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("persist job claim: %v", saveErr)})
+		return
+	}
 	if claimed == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -395,6 +465,7 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q is already %s", id, targetJob.Status)})
 		return
 	}
+	prevJob := *targetJob
 	targetJob.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	if req.WorkerID != "" {
 		targetJob.WorkerID = req.WorkerID
@@ -409,7 +480,12 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 	} else {
 		targetJob.Status = JobCompleted
 	}
-	_ = s.saveJobsLocked()
+	if err := s.saveJobsLocked(); err != nil {
+		*targetJob = prevJob
+		s.jobMu.Unlock()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("persist job completion: %v", err)})
+		return
+	}
 	jobCopy := *targetJob
 	s.jobMu.Unlock()
 

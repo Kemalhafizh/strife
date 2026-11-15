@@ -25,6 +25,7 @@ type WorkerConfig struct {
 	ServerURL    string
 	Token        string
 	WorkerID     string
+	Tenant       string
 	PollInterval time.Duration
 	Once         bool
 	HTTPClient   *http.Client
@@ -64,7 +65,7 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return processed, nil
 		}
-		job, err := claimNextJob(ctx, client, baseURL, cfg.Token, cfg.WorkerID)
+		job, err := claimNextJob(ctx, client, baseURL, cfg.Token, cfg.WorkerID, cfg.Tenant)
 		if err != nil {
 			if cfg.Once {
 				return processed, err
@@ -74,14 +75,18 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) (int, error) {
 			logf("claimed job %s (kind=%s, system=%s)", job.ID, job.Kind, job.System)
 			compReq := executeJob(ctx, job, cfg.WorkerID)
 			if err := completeJob(ctx, client, baseURL, cfg.Token, job.ID, compReq); err != nil {
-				return processed, fmt.Errorf("worker complete %s: %w", job.ID, err)
+				if cfg.Once {
+					return processed, fmt.Errorf("worker complete %s: %w", job.ID, err)
+				}
+				logf("worker complete error for %s: %v", job.ID, err)
+			} else {
+				processed++
+				logf("completed job %s", job.ID)
+				if cfg.Once {
+					return processed, nil
+				}
+				continue
 			}
-			processed++
-			logf("completed job %s", job.ID)
-			if cfg.Once {
-				return processed, nil
-			}
-			continue
 		} else if cfg.Once {
 			return processed, nil
 		}
@@ -94,8 +99,8 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) (int, error) {
 	}
 }
 
-func claimNextJob(ctx context.Context, client *http.Client, baseURL, token, workerID string) (*Job, error) {
-	body, _ := json.Marshal(JobClaimRequest{WorkerID: workerID})
+func claimNextJob(ctx context.Context, client *http.Client, baseURL, token, workerID, tenant string) (*Job, error) {
+	body, _ := json.Marshal(JobClaimRequest{WorkerID: workerID, Tenant: tenant})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/jobs/claim", bytes.NewReader(body))
 	if err != nil {
 		return nil, err

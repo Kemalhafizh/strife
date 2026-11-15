@@ -397,10 +397,12 @@ strife serve --listen 127.0.0.1:8080 --store ./strife-registry \
   --webhook "https://hooks.slack.com/services/T00/B00/X00"
 
 # Start a pull-based remote worker inside a private staging VPC
-strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --worker-id staging-worker-1
+strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --id staging-worker-1 --tenant payments
 
-# Push a checked history directly from CLI, or POST sim/campaign/run JSON to /api/v1/ingest
+# Push reports or campaigns directly from CLI (`sim --seed`, `campaign`, `run`, `check`), or POST JSON to /api/v1/ingest
 strife check --model settlement --history history.jsonl \
+  --push http://127.0.0.1:8080 --push-token "$STRIFE_REGISTRY_TOKEN" --tenant payments
+strife campaign --system raft --seeds 1..100 --commit "$(git rev-parse --short HEAD)" --branch main \
   --push http://127.0.0.1:8080 --push-token "$STRIFE_REGISTRY_TOKEN" --tenant payments
 curl -fsSL -X POST \
   -H "Authorization: Bearer $STRIFE_REGISTRY_TOKEN" \
@@ -507,12 +509,12 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 
 | Command | Description |
 | :--- | :--- |
-| `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`, `--max-mttr`, `--min-availability`, `--junit`, `--sarif`) |
-| `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect no-regression`, `--junit`, `--sarif`) |
+| `strife sim [flags]` | Run a single seed or sweep `--seeds 1..N` in the deterministic simulator (`--determinism`, `--shrink`, `--workload`, `--max-mttr`, `--min-availability`, `--junit`, `--sarif`, `--push` for single seed) |
+| `strife campaign [flags]` | Run a multi-seed campaign, emit `campaign.html`, and diff against `--baseline` (`--expect no-regression`, `--junit`, `--sarif`, `--push`) |
 | `strife shrink [flags]` | Minimize a failing simulation (`--seed` / `--report`) or recorded trace (`--history FILE`) to 1-minimality, or a live schedule (`--live --config`) to a candidate reproducer |
 | `strife check [flags]` | Verify a recorded `history.jsonl` / `.edn` / OTel `.json` against `--model` (`kv`, `set`, `queue`, `counter`, `idgen`, `txn`, `append`, `ledger`, `settlement`), export EDN (`--export-edn`), enforce SLOs (`--max-mttr`, `--min-availability`), emit `--sarif`, or push to `strife serve` (`--push`) |
 | `strife plan [flags]` | Print the seeded fault schedule and exact host/container commands without executing them |
-| `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`, `--max-mttr`, `--min-availability`, `--sarif`) |
+| `strife run [flags]` | Execute a live chaos test defined by `strife.json` (`--dry-run`, `--faults`, `--expect`, `--schedule`, `--max-mttr`, `--min-availability`, `--sarif`, `--push`) |
 | `strife doctor [flags]` | Inspect host OS/cgroup capabilities, transports, and cluster endpoint reachability (`--config`, `--json`) |
 | `strife bench inject [flags]` | Measure fault-injection latency per transport and fault kind (`--transports docker,agent`, `--json`, `--markdown`) |
 | `strife workload [flags]` | List presets (`--list`), compile specs to `.wasm` (`--compile --out`), or inspect `.wasm` plugins (`--inspect`) |
@@ -522,7 +524,7 @@ site/             Interactive product showcase & standalone HTML5 demos (timelin
 | `strife compliance [flags]` | Evaluate a report/campaign and attestation bundle against `dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp` (`--max-mttr`, `--min-availability`, `--sarif`, `--strict`) |
 | `strife ci-report [flags]` | Compare candidate and baseline reports, campaigns, or compliance dossiers for PR gating and Markdown digests (`--report`, `--baseline-report`, `--campaign`, `--baseline-campaign`, `--dossier`, `--max-mttr`, `--min-availability`, `--out`, `--json`) |
 | `strife serve [flags]` | Run the self-hosted continuous verification & run registry HTTP daemon (`--listen`, `--store`, `--key`, `--tenant-keys`, `--token`, `--webhook`, `--max-mttr`, `--min-availability`) |
-| `strife worker [flags]` | Run a pull-based remote worker that claims and executes jobs from `strife serve` (`--server`, `--token`, `--worker-id`, `--once`, `--poll`) |
+| `strife worker [flags]` | Run a pull-based remote worker that claims and executes jobs from `strife serve` (`--server`, `--token`, `--id`/`--worker-id`, `--tenant`, `--once`, `--poll-interval`/`--poll`) |
 | `strife version` | Print the version stamped at build time |
 | `strife systems` | List built-in simulated systems and the fault combinations that expose their bugs |
 

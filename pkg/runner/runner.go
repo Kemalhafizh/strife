@@ -403,7 +403,7 @@ func worker(ctx context.Context, cfg *Config, slot int, r *rng.Rand, plug *workl
 		out := c.Invoke(octx, inv)
 		cancel()
 		out.Process = process
-		if out.Node == "" { // clients that route requests report the server
+		if out.Node == "" && node < len(cfg.Nodes) { // clients that route requests report the server
 			out.Node = cfg.Nodes[node].Name
 		}
 		rec.Record(out)
@@ -591,8 +591,12 @@ func finalSettlementAudit(ctx context.Context, cfg *Config, factory client.Facto
 		{F: history.MicroRead, Key: "broker"},
 	}
 	process := 1 << 30
-	for attempt := 0; attempt < 3*len(cfg.Nodes) && ctx.Err() == nil; attempt++ {
-		node := attempt % len(cfg.Nodes)
+	numNodes := len(cfg.Nodes)
+	if numNodes == 0 {
+		numNodes = 1
+	}
+	for attempt := 0; attempt < 3*numNodes && ctx.Err() == nil; attempt++ {
+		node := attempt % numNodes
 		c, err := factory(node)
 		if err != nil {
 			continue
@@ -609,7 +613,7 @@ func finalSettlementAudit(ctx context.Context, cfg *Config, factory client.Facto
 		cancel()
 		_ = c.Close()
 		out.Process = process
-		if out.Node == "" {
+		if out.Node == "" && node < len(cfg.Nodes) {
 			out.Node = cfg.Nodes[node].Name
 		}
 		rec.Record(out)

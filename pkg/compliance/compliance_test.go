@@ -396,3 +396,64 @@ func TestEvaluatePCIDSSAndBISPSettlement(t *testing.T) {
 		t.Fatalf("expected passing bi-sp.finalitas-settlement control, got %+v", dossier.Controls)
 	}
 }
+
+func TestEvaluateZeroAvailabilitySLABreach(t *testing.T) {
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FRead, Key: "k0", Time: int64(100 * time.Millisecond)},
+		{Index: 1, Process: 0, Type: history.Fail, F: history.FRead, Key: "k0", Time: int64(200 * time.Millisecond), Error: "unavailable"},
+	}
+	sched := nemesis.Schedule{
+		Nodes:    3,
+		Duration: 2 * time.Second,
+		Faults: []nemesis.Fault{
+			{ID: 1, Kind: nemesis.Partition, Nodes: []int{0}, Start: 50 * time.Millisecond, End: 500 * time.Millisecond},
+		},
+	}
+	rep, err := report.New(
+		report.KindSimulation,
+		"raft",
+		99,
+		map[string]any{"nodes": 3},
+		sched,
+		ops,
+		checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 1, Checked: 1},
+		"trace-zero-avail",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Resilience == nil || rep.Resilience.OverallAvailability != 0 {
+		t.Fatalf("expected 0.0 availability for failed-only workload, got %+v", rep.Resilience)
+	}
+
+	dossier, err := Evaluate(Options{
+		Report:          rep,
+		Frameworks:      []FrameworkID{FrameworkDORA},
+		MinAvailability: 95,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if !dossier.Summary.SLABreached {
+		t.Fatalf("expected SLABreached=true at 0%% availability with MinAvailability=95, got summary=%+v", dossier.Summary)
+	}
+	if dossier.Summary.MinAvailability != 0.95 {
+		t.Fatalf("expected normalized MinAvailability 0.95, got %v", dossier.Summary.MinAvailability)
+	}
+	if dossier.Overall != StatusFail {
+		t.Fatalf("expected overall FAIL, got %s", dossier.Overall)
+	}
+	var md, htm strings.Builder
+	if err := Markdown(&md, dossier); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(md.String(), "0.0%") {
+		t.Fatalf("expected 0.0%% availability rendered in markdown:\n%s", md.String())
+	}
+	if err := HTML(&htm, dossier); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(htm.String(), "0.0%") {
+		t.Fatalf("expected 0.0%% availability rendered in HTML")
+	}
+}

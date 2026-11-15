@@ -34,13 +34,13 @@ strife serve \
 | :--- | :--- | :--- |
 | `--listen` | `127.0.0.1:8080` | TCP address for the HTTP server and web UI |
 | `--store` | `strife-registry` | Directory for the append-only registry index and run artifacts |
-| `--token` | *(empty)* | Optional Bearer token required for `POST /api/v1/ingest` (compared in constant time) |
+| `--token` | *(empty)* | Optional Bearer token required for `POST` endpoints (`/api/v1/ingest`, `/api/v1/jobs`, `/api/v1/jobs/claim`, `/api/v1/jobs/<id>/complete`) and for returning `live_config` on `GET /api/v1/jobs` (compared in constant time; supports `env:VAR` or `file:PATH`) |
 | `--key` | *(empty)* | Optional default PKCS#8 Ed25519 private key (`.key`) used to sign ingested reports |
 | `--tenant-keys` | *(empty)* | Optional comma-separated `tenant=path.key` pairs for per-tenant Ed25519 signing (`signer:<tenant>`) |
 | `--signer` | `strife-serve` | Signer identity recorded inside automatic `in-toto` attestations |
 | `--webhook` | *(empty)* | Comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations, regressions, and SLA breaches |
 | `--max-mttr` | `0s` | Optional post-heal MTTR P95 threshold (e.g. `500ms`) that triggers `report.sla_breach` webhook alerts |
-| `--min-availability` | `0` | Optional minimum availability ratio in `[0,1]` (e.g. `0.99`) that triggers `report.sla_breach` webhook alerts |
+| `--min-availability` | `0` | Optional minimum availability ratio in `[0,1]` or percentage in `(1,100]` (e.g. `0.99` or `99`) that triggers `report.sla_breach` webhook alerts |
 
 ## On-Disk Store Layout
 
@@ -129,7 +129,7 @@ Evaluates and returns a regulatory compliance dossier (`dora`, `soc2`, `iso27001
 - `?frameworks=dora,bi-ojk,pci-dss,bi-sp` — filter evaluated frameworks (default `all`)
 - `?format=html` — render the self-contained print-ready HTML5 compliance dossier instead of JSON (also selected automatically when `Accept: text/html` is sent)
 - `?max_mttr=<duration>` — override the server's `--max-mttr` SLA gate for this evaluation (for example, `500ms`)
-- `?min_availability=<ratio>` — override the server's `--min-availability` SLA gate in `[0,1]` (for example, `0.99`)
+- `?min_availability=<value>` — override the server's `--min-availability` SLA gate using a ratio in `[0,1]` or percentage in `(1,100]` (for example, `0.99` or `99`)
 
 ```sh
 curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?frameworks=dora,bi-ojk,pci-dss,bi-sp&max_mttr=500ms"
@@ -140,7 +140,7 @@ curl -fsSL "http://127.0.0.1:8080/api/v1/runs/run-0001-a1b2c3d4/dossier?format=h
 
 `GET /api/v1/series` returns aggregated time-series reliability and post-heal MTTR rollups per `(tenant, target)` across all stored runs and campaigns (`pass_rate`, `avg_availability`, `latest_mttr_p95_ms`, `max_mttr_p95_ms`, and chronological `points`).
 
-`GET /api/v1/trends` returns chronological resilience trend points (`run_id`, `target`, `tenant`, `commit`, `verdict`, `overall_availability`, `mttr_p50_ms`, `mttr_p95_ms`, `mttr_max_ms`, `sla_breached`) together with aggregate averages (`avg_availability`, `avg_mttr_p95_ms`, `max_mttr_p95_ms`, `sla_breaches`). Supports `?tenant=<name>` and `?target=<name>` filters.
+`GET /api/v1/trends` returns `{target, tenant?, total, points}` with chronological (oldest-first) resilience trend points (`id`, `tenant`, `kind`, `target`, `model`, `commit`, `branch`, `timestamp`, `verdict`, `passed`, `violations`, `regressions`, `overall_availability`, `fault_availability`, `mttr_p95_ms`, `mttr_max_ms`). Supports `?tenant=<name>` and `?target=<name>` filters.
 
 ```sh
 curl -fsSL "http://127.0.0.1:8080/api/v1/series?tenant=default"
@@ -163,8 +163,8 @@ curl -fsSL -X POST http://127.0.0.1:8080/api/v1/jobs \
   -H "Content-Type: application/json" \
   -d '{"tenant":"payments","commit":"a35dc51","kind":"sim","system":"outbox-settlement","seed":7}'
 
-# 2. Run a remote worker inside the private staging VPC (continuous polling or single-shot --once)
-strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --worker-id staging-vpc-worker-1
+# 2. Run a remote worker inside the private staging VPC (supports --id/--worker-id, --tenant, --poll-interval/--poll, --once)
+strife worker --server http://127.0.0.1:8080 --token "$STRIFE_REGISTRY_TOKEN" --id staging-vpc-worker-1 --tenant payments
 ```
 
 ### `POST /api/v1/ingest`
@@ -199,16 +199,22 @@ The request body (capped at 32 MiB) can be:
 
 ## Publishing from CI
 
-`strife check` supports pushing reports directly with `--push`, `--push-token`, and `--tenant`:
+`strife sim` (single `--seed`), `strife campaign`, `strife run`, and `strife check` all support pushing results directly with `--push`, `--push-token` (supporting `env:VAR` or `file:PATH`), and `--tenant`:
 
 ```sh
 strife check --model settlement --history history.jsonl \
   --push http://strife-registry.internal:8080 \
   --push-token "$STRIFE_REGISTRY_TOKEN" \
   --tenant payments
+
+strife campaign --system raft --seeds 1..100 \
+  --commit "$(git rev-parse --short HEAD)" --branch "$GITHUB_REF_NAME" \
+  --push http://strife-registry.internal:8080 \
+  --push-token "$STRIFE_REGISTRY_TOKEN" \
+  --tenant payments
 ```
 
-For `sim`, `campaign`, and `run` outputs, post `report.json` or `campaign.json` to `/api/v1/ingest`:
+For multi-seed `sim --seeds` sweeps or previously saved `report.json` / `campaign.json` artifacts, post the JSON directly to `/api/v1/ingest`:
 
 ```sh
 # Ingest a single-seed report with tenant and git metadata

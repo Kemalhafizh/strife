@@ -181,18 +181,18 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
   </div>`)
 
 	if len(targets) > 0 {
-		b.WriteString(`<div class="filters"><span style="color:var(--muted);font-size:0.82rem">Filter target:</span><a class="pill" href="/">all</a>`)
+		fmt.Fprintf(&b, `<div class="filters"><span style="color:var(--muted);font-size:0.82rem">Filter target:</span><a class="pill" href="%s">all</a>`, html.EscapeString(uiFilterHref("", tenantFilter)))
 		for _, t := range targets {
 			esc := html.EscapeString(t)
-			fmt.Fprintf(&b, `<a class="pill" href="/?target=%s">%s</a>`, url.QueryEscape(t), esc)
+			fmt.Fprintf(&b, `<a class="pill" href="%s">%s</a>`, html.EscapeString(uiFilterHref(t, tenantFilter)), esc)
 		}
 		b.WriteString(`</div>`)
 	}
 	if len(tenants) > 0 {
-		b.WriteString(`<div class="filters"><span style="color:var(--muted);font-size:0.82rem">Filter tenant:</span><a class="pill" href="/">all</a>`)
+		fmt.Fprintf(&b, `<div class="filters"><span style="color:var(--muted);font-size:0.82rem">Filter tenant:</span><a class="pill" href="%s">all</a>`, html.EscapeString(uiFilterHref(targetFilter, "")))
 		for _, tn := range tenants {
 			esc := html.EscapeString(tn)
-			fmt.Fprintf(&b, `<a class="pill" href="/?tenant=%s">%s</a>`, url.QueryEscape(tn), esc)
+			fmt.Fprintf(&b, `<a class="pill" href="%s">%s</a>`, html.EscapeString(uiFilterHref(targetFilter, tn)), esc)
 		}
 		b.WriteString(`</div>`)
 	}
@@ -285,6 +285,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 			attStr = fmt.Sprintf("ed25519 (%s)", html.EscapeString(shortFP(e.KeyID)))
 		}
 		escID := html.EscapeString(e.ID)
+		hrefID := html.EscapeString(url.PathEscape(e.ID))
 		fmt.Fprintf(&b, `<tr>
         <td class="mono"><a href="/api/v1/runs/%s">%s</a></td>
         <td class="mono">%s</td>
@@ -299,7 +300,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
         <td class="mono">%s · <a href="/api/v1/runs/%s/dossier?format=html">dossier</a></td>
         <td class="mono">%s</td>
       </tr>`,
-			escID,
+			hrefID,
 			escID,
 			html.EscapeString(normalizeTenant(e.Tenant)),
 			html.EscapeString(e.Kind),
@@ -313,7 +314,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 			html.EscapeString(deltaStr),
 			html.EscapeString(shortFP(e.Fingerprint)),
 			attStr,
-			escID,
+			hrefID,
 			html.EscapeString(e.Timestamp),
 		)
 	}
@@ -332,4 +333,18 @@ curl -sS -X POST http://`)
 </body>
 </html>`)
 	_, _ = w.Write([]byte(b.String()))
+}
+
+func uiFilterHref(target, tenant string) string {
+	q := url.Values{}
+	if target != "" {
+		q.Set("target", target)
+	}
+	if tenant != "" {
+		q.Set("tenant", tenant)
+	}
+	if len(q) == 0 {
+		return "/"
+	}
+	return "/?" + q.Encode()
 }

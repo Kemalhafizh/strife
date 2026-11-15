@@ -113,3 +113,46 @@ func TestReadOTelTransactions(t *testing.T) {
 		t.Fatalf("unexpected micro-ops: %+v", micro)
 	}
 }
+
+func TestReadOTelProcessPIDExpectedAndDepthLimit(t *testing.T) {
+	deep := `{"stringValue":"leaf"}`
+	for i := 0; i < maxOTelAnyValueDepth+20; i++ {
+		deep = `{"arrayValue":{"values":[` + deep + `]}}`
+	}
+	otlpJSON := `{
+  "resourceSpans": [{
+    "resource": {
+      "attributes": [
+        { "key": "process.pid", "value": { "intValue": "17" } },
+        { "key": "deep.nested", "value": ` + deep + ` }
+      ]
+    },
+    "scopeSpans": [{
+      "spans": [{
+        "name": "CAS",
+        "startTimeUnixNano": "1000",
+        "endTimeUnixNano": "2000",
+        "attributes": [
+          { "key": "strife.key", "value": { "stringValue": "k1" } },
+          { "key": "strife.expected", "value": { "intValue": "5" } },
+          { "key": "strife.value", "value": { "intValue": "9" } }
+        ],
+        "status": { "code": "STATUS_CODE_OK" }
+      }]
+    }]
+  }]
+}`
+	ops, err := ReadOTel(strings.NewReader(otlpJSON))
+	if err != nil {
+		t.Fatalf("ReadOTel failed on deep nested attr: %v", err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 ops, got %d", len(ops))
+	}
+	if ops[0].Process != 17 {
+		t.Fatalf("expected process from process.pid = 17, got %d", ops[0].Process)
+	}
+	if ops[0].Old == nil || *ops[0].Old != 5 || ops[0].Value == nil || *ops[0].Value != 9 {
+		t.Fatalf("expected strife.expected=5 value=9, got old=%v value=%v", ops[0].Old, ops[0].Value)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/kemalhafizh/strife/internal/rng"
 	"github.com/kemalhafizh/strife/internal/secret"
+	"github.com/kemalhafizh/strife/internal/stats"
 	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
@@ -218,6 +220,7 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
 	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the outcome matches (for CI)")
 	shrinkIt := fs.Bool("shrink", false, "minimise the (first) violating scenario and report it")
+	push := pushFlags(fs)
 	slo := sloFlags(fs)
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -227,16 +230,25 @@ func cmdSim(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitUsage, err
 	}
+	if err := validateSLOGate(*slo); err != nil {
+		return exitUsage, err
+	}
+	if err := push.resolve(); err != nil {
+		return exitUsage, err
+	}
 	if *expect != "" && *expect != string(checker.Linearizable) && *expect != string(checker.Violation) {
 		return exitUsage, fmt.Errorf("--expect must be linearizable or violation")
 	}
 
-	o := simOptions{out: *out, keep: *keep, workers: *workers, determinism: *determinism, expect: *expect, slo: *slo, ci: *ci}
+	o := simOptions{out: *out, keep: *keep, workers: *workers, determinism: *determinism, expect: *expect, slo: *slo, ci: *ci, push: *push}
 	if *shrinkIt {
 		o.shrink = &shrink.Options{Workers: *workers}
 	}
 	if *seeds == "" {
 		return simOne(cfg, o, stdout)
+	}
+	if push.url != "" {
+		return exitUsage, fmt.Errorf("--push cannot be combined with --seeds (use \"strife campaign --push\" for multi-seed campaigns)")
 	}
 	list, err := explore.ParseSeeds(*seeds)
 	if err != nil {
@@ -255,6 +267,68 @@ type simOptions struct {
 	shrink      *shrink.Options
 	slo         report.SLOGate
 	ci          report.Outputs
+	push        pushOptions
+}
+
+type pushOptions struct {
+	url    string
+	token  string
+	tenant string
+}
+
+func pushFlags(fs *flag.FlagSet) *pushOptions {
+	p := &pushOptions{}
+	fs.StringVar(&p.url, "push", "", "optional strife serve registry URL to push the resulting artifact to")
+	fs.StringVar(&p.token, "push-token", "", "optional Bearer token for --push (supports env:VAR or file:PATH)")
+	fs.StringVar(&p.tenant, "tenant", "", "optional tenant namespace for --push")
+	return p
+}
+
+func (p *pushOptions) resolve() error {
+	if p.url == "" || p.token == "" {
+		return nil
+	}
+	tok, err := secret.Resolve(p.token)
+	if err != nil {
+		return fmt.Errorf("--push-token: %w", err)
+	}
+	p.token = tok
+	return nil
+}
+
+func (p pushOptions) send(ctx context.Context, artifact any, commit, branch string, stdout io.Writer) error {
+	if p.url == "" {
+		return nil
+	}
+	ing, err := serve.Push(ctx, p.url, p.token, p.tenant, commit, branch, artifact)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "pushed:  %s (tenant %s)\n", ing.Entry.ID, ing.Entry.Tenant)
+	return nil
+}
+
+func joinErr(base, extra error) error {
+	if extra == nil {
+		return base
+	}
+	if base == nil {
+		return extra
+	}
+	return errors.Join(base, extra)
+}
+
+func suiteDefaultClass(r *report.Report, suite report.Suite) string {
+	if len(suite.Cases) > 0 && suite.Cases[0].Class != "" {
+		return suite.Cases[0].Class
+	}
+	if r != nil {
+		if r.Kind == report.KindSimulation || r.Kind == report.KindLive {
+			return fmt.Sprintf("%s.seed%d", r.Target, r.Seed)
+		}
+		return r.Target
+	}
+	return ""
 }
 
 // sloFlags binds --max-mttr and --min-availability for resilience SLO gates.
@@ -265,15 +339,22 @@ func sloFlags(fs *flag.FlagSet) *report.SLOGate {
 	return g
 }
 
+func validateSLOGate(g report.SLOGate) error {
+	if g.MaxMTTR < 0 {
+		return fmt.Errorf("--max-mttr %v must be non-negative", g.MaxMTTR)
+	}
+	if math.IsNaN(g.MinAvailability) || math.IsInf(g.MinAvailability, 0) || g.MinAvailability < 0 || g.MinAvailability > 100 {
+		return fmt.Errorf("--min-availability %v must be within [0, 100]", g.MinAvailability)
+	}
+	return nil
+}
+
 func applySLOGate(stdout io.Writer, rep *report.Report, gate report.SLOGate, suite *report.Suite, code int, err error) (int, error) {
 	if !gate.Enabled() {
 		return code, err
 	}
 	res := report.EvaluateSLO(rep.Resilience, gate)
-	class := rep.Target
-	if len(suite.Cases) > 0 {
-		class = suite.Cases[0].Class
-	}
+	class := suiteDefaultClass(rep, *suite)
 	suite.Cases = append(suite.Cases, report.SLOCase(res, class))
 	if res.Passed {
 		fmt.Fprintf(stdout, "slo-gate: PASS (availability %.2f%%, max MTTR %v)\n", 100*res.ObservedAvailability, res.ObservedMaxMTTR.Round(time.Millisecond))
@@ -426,7 +507,7 @@ func simOne(cfg explore.Config, o simOptions, stdout io.Writer) (int, error) {
 	code, verr := verdictCode(res.Check.Verdict), error(nil)
 	if o.expect != "" {
 		// The expectation is the test: a violation that was expected passes.
-		c := report.Case{Name: "expect " + o.expect, Class: suite.Cases[0].Class, Time: time.Since(start), Status: report.Passed}
+		c := report.Case{Name: "expect " + o.expect, Class: suiteDefaultClass(rep, suite), Time: time.Since(start), Status: report.Passed}
 		if string(res.Check.Verdict) == o.expect {
 			code = exitOK
 		} else {
@@ -437,6 +518,12 @@ func simOne(cfg explore.Config, o simOptions, stdout io.Writer) (int, error) {
 		suite.Cases = []report.Case{c}
 	}
 	code, verr = applySLOGate(stdout, rep, o.slo, &suite, code, verr)
+	if perr := o.push.send(context.Background(), rep, "", "", stdout); perr != nil {
+		verr = joinErr(verr, fmt.Errorf("push: %w", perr))
+		if code == exitOK {
+			code = exitError
+		}
+	}
 	return emitCI(o.ci, code, verr, suite)
 }
 
@@ -471,8 +558,31 @@ func simMany(base explore.Config, seeds []uint64, o simOptions, stdout io.Writer
 	faults := faultList(base)
 	suiteName := fmt.Sprintf("simulation · %s", base.System)
 	fmt.Fprintf(stdout, "exploring %d seeds of %s (%s) with faults %s\n", len(seeds), base.System, sys.Description, faults)
-	var kept []string
+	var (
+		kept        []string
+		sloSeeds    int
+		availSum    float64
+		mttrSamples []time.Duration
+		unrecovered int
+		maxMTTR     time.Duration
+	)
 	sums := explore.Explore(base, seeds, o.workers, func(res *explore.Result) {
+		if o.slo.Enabled() {
+			if rm := report.ComputeResilience(res.Schedule, nil, res.History); rm != nil {
+				sr := report.EvaluateSLO(rm, o.slo)
+				sloSeeds++
+				availSum += sr.ObservedAvailability
+				unrecovered += sr.UnrecoveredFaults
+				if sr.ObservedMaxMTTR > maxMTTR {
+					maxMTTR = sr.ObservedMaxMTTR
+				}
+				for _, fr := range rm.Recoveries {
+					if fr.RecoveredOK {
+						mttrSamples = append(mttrSamples, fr.MTTR)
+					}
+				}
+			}
+		}
 		if res.Check.Verdict == checker.Linearizable || o.out == "" || len(kept) >= o.keep {
 			return
 		}
@@ -561,6 +671,35 @@ func simMany(base explore.Config, seeds []uint64, o simOptions, stdout io.Writer
 		code = exitViolation
 	case counts[checker.Unknown] > 0:
 		code = exitUnknown
+	}
+	if o.slo.Enabled() {
+		var agg *report.ResilienceMetrics
+		if sloSeeds > 0 {
+			mttrSummary := stats.Summarize(mttrSamples)
+			if maxMTTR > mttrSummary.Max {
+				mttrSummary.Max = maxMTTR
+				if mttrSummary.Count == 0 {
+					mttrSummary.Count = 1
+				}
+			}
+			agg = &report.ResilienceMetrics{
+				OverallAvailability: availSum / float64(sloSeeds),
+				MTTR:                mttrSummary,
+				Recoveries:          make([]report.FaultRecovery, unrecovered),
+			}
+		}
+		sloRes := report.EvaluateSLO(agg, o.slo)
+		suite.Cases = append(suite.Cases, report.SLOCase(sloRes, base.System))
+		if sloRes.Passed {
+			fmt.Fprintf(stdout, "slo-gate: PASS (availability %.2f%%, max MTTR %v)\n",
+				100*sloRes.ObservedAvailability, sloRes.ObservedMaxMTTR.Round(time.Millisecond))
+		} else {
+			msg := strings.Join(sloRes.Violations, "; ")
+			fmt.Fprintf(stdout, "slo-gate: FAIL (%s)\n", msg)
+			if code == exitOK {
+				code, err = exitViolation, fmt.Errorf("SLO gate failed: %s", msg)
+			}
+		}
 	}
 	return emitCI(o.ci, code, err, suite)
 }
@@ -950,14 +1089,18 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn and append): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
 	out := fs.String("out", "", "write a report directory here")
 	exportEDN := fs.String("export-edn", "", "optional path to export the parsed history in canonical Jepsen EDN format")
-	pushURL := fs.String("push", "", "optional strife serve registry URL to push the checked report to")
-	pushToken := fs.String("push-token", "", "optional Bearer token for --push")
-	tenant := fs.String("tenant", "", "optional tenant namespace for --push")
+	push := pushFlags(fs)
 	maxSteps := fs.Uint64("max-steps", 0, "search budget per key (0 = default)")
 	timeout := fs.Duration("check-timeout", 0, "wall-clock budget per key (0 = none)")
 	slo := sloFlags(fs)
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if err := validateSLOGate(*slo); err != nil {
+		return exitUsage, err
+	}
+	if err := push.resolve(); err != nil {
 		return exitUsage, err
 	}
 	if *path == "" && fs.NArg() > 0 {
@@ -1044,15 +1187,14 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 		}
 		fmt.Fprintf(stdout, "report:  %s\n", filepath.Join(*out, "report.html"))
 	}
-	if *pushURL != "" {
-		ing, err := serve.Push(context.Background(), *pushURL, *pushToken, *tenant, "", "", rr)
-		if err != nil {
-			return exitError, err
-		}
-		fmt.Fprintf(stdout, "pushed:  %s (tenant %s)\n", ing.Entry.ID, ing.Entry.Tenant)
-	}
 	suite := report.SuiteFromReport(rr, time.Since(start))
 	code, verr := applySLOGate(stdout, rr, *slo, &suite, verdictCode(rep.Verdict), nil)
+	if perr := push.send(context.Background(), rr, "", "", stdout); perr != nil {
+		verr = joinErr(verr, fmt.Errorf("push: %w", perr))
+		if code == exitOK {
+			code = exitError
+		}
+	}
 	return emitCI(*ci, code, verr, suite)
 }
 
@@ -1161,9 +1303,16 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	expect := fs.String("expect", "", "\"linearizable\" or \"violation\": exit 0 iff the verdict matches (for CI)")
 	faults := fs.String("faults", "", "override the config's fault kinds (comma separated, \"none\" for a baseline)")
 	schedPath := fs.String("schedule", "", "replay this fault schedule (JSON, e.g. from strife shrink --live) instead of the seeded one")
+	push := pushFlags(fs)
 	slo := sloFlags(fs)
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if err := validateSLOGate(*slo); err != nil {
+		return exitUsage, err
+	}
+	if err := push.resolve(); err != nil {
 		return exitUsage, err
 	}
 	cfg, err := runner.Load(*cfgPath)
@@ -1261,7 +1410,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 	code, rerr := verdictCode(c.Verdict), error(nil)
 	if *expect != "" {
 		// The expectation is the verdict test case; fault injection stays.
-		vc := report.Case{Name: "expect " + *expect, Class: suite.Cases[0].Class, Time: time.Since(start), Status: report.Passed,
+		vc := report.Case{Name: "expect " + *expect, Class: suiteDefaultClass(rep, suite), Time: time.Since(start), Status: report.Passed,
 			Output: fmt.Sprintf("verdict: %s", c.Verdict)}
 		if string(c.Verdict) == *expect {
 			code = exitOK
@@ -1269,13 +1418,23 @@ func cmdRun(args []string, stdout, stderr io.Writer) (int, error) {
 			code, rerr = exitViolation, fmt.Errorf("expected %s, got %s", *expect, c.Verdict)
 			vc.Status, vc.Message = report.Failed, rerr.Error()
 		}
-		suite.Cases = append([]report.Case{vc}, suite.Cases[len(suite.Cases)-1])
+		if n := len(suite.Cases); n > 0 && suite.Cases[n-1].Name == "fault injection" {
+			suite.Cases = []report.Case{vc, suite.Cases[n-1]}
+		} else {
+			suite.Cases = []report.Case{vc}
+		}
 	}
 	if failed := injectionErrors(res.Applied); failed > 0 && code == exitOK {
 		// A clean outcome means little if the planned faults never happened.
 		code, rerr = exitError, fmt.Errorf("%d fault commands failed: the cluster did not see the planned schedule (see report)", failed)
 	}
 	code, rerr = applySLOGate(stdout, rep, *slo, &suite, code, rerr)
+	if perr := push.send(context.Background(), rep, "", "", stdout); perr != nil {
+		rerr = joinErr(rerr, fmt.Errorf("push: %w", perr))
+		if code == exitOK {
+			code = exitError
+		}
+	}
 	return emitCI(*ci, code, rerr, suite)
 }
 
@@ -1447,8 +1606,12 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 	shrinkCount := fs.Int("shrink", 0, "minimise up to this many violating seeds")
 	determinism := fs.Bool("determinism", false, "run every seed twice and fail on any divergence")
 	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-regression\"")
+	push := pushFlags(fs)
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if err := push.resolve(); err != nil {
 		return exitUsage, err
 	}
 	cfg, err := scenario()
@@ -1537,6 +1700,12 @@ func cmdCampaign(args []string, stdout, stderr io.Writer) (int, error) {
 	case m.Unknown > 0:
 		code = exitUnknown
 	}
+	if perr := push.send(context.Background(), m, *commit, *branch, stdout); perr != nil {
+		verr = joinErr(verr, fmt.Errorf("push: %w", perr))
+		if code == exitOK {
+			code = exitError
+		}
+	}
 	return emitCI(*ci, code, verr, suite)
 }
 
@@ -1551,9 +1720,12 @@ func cmdCompliance(args []string, stdout, stderr io.Writer) (int, error) {
 	out := fs.String("out", "strife-compliance", "directory to write dossier.json, dossier.md, and dossier.html (\"\" to disable)")
 	strict := fs.Bool("strict", false, "exit with non-zero status if any control is PARTIAL (not just FAIL)")
 	maxMTTR := fs.Duration("max-mttr", 0, "optional SLA gate: fail recovery controls when P95 MTTR exceeds this duration")
-	minAvail := fs.Float64("min-availability", 0, "optional SLA gate: fail recovery controls when availability is below this ratio [0..1]")
+	minAvail := fs.Float64("min-availability", 0, "optional SLA gate: fail recovery controls when availability is below this ratio or percentage (e.g. 0.99 or 99)")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if err := validateSLOGate(report.SLOGate{MaxMTTR: *maxMTTR, MinAvailability: *minAvail}); err != nil {
 		return exitUsage, err
 	}
 	if *reportPath == "" && *campaignPath == "" {
@@ -1725,8 +1897,11 @@ func cmdServe(args []string, stdout, stderr io.Writer) (int, error) {
 	signer := fs.String("signer", "strife-serve", "signer identity recorded in automatic in-toto attestations")
 	webhook := fs.String("webhook", "", "comma-separated webhook URLs (Slack, Discord, or generic JSON) notified on violations, regressions, and SLA breaches")
 	maxMTTR := fs.Duration("max-mttr", 0, "optional post-heal MTTR P95 threshold (e.g. 500ms) that triggers report.sla_breach webhook alerts")
-	minAvail := fs.Float64("min-availability", 0, "optional minimum availability ratio in [0,1] (e.g. 0.99) that triggers report.sla_breach webhook alerts")
+	minAvail := fs.Float64("min-availability", 0, "optional minimum availability ratio or percentage (e.g. 0.99 or 99) that triggers report.sla_breach webhook alerts")
 	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if err := validateSLOGate(report.SLOGate{MaxMTTR: *maxMTTR, MinAvailability: *minAvail}); err != nil {
 		return exitUsage, err
 	}
 	resolvedToken, err := secret.Resolve(*token)
@@ -1784,11 +1959,19 @@ func cmdWorker(args []string, stdout, stderr io.Writer) (int, error) {
 	fs.SetOutput(stderr)
 	serverURL := fs.String("server", "http://127.0.0.1:8080", "strife serve registry URL")
 	token := fs.String("token", "", "optional Bearer token (supports env:VAR or file:PATH)")
-	workerID := fs.String("id", "", "worker identifier (default: worker-<hostname>-<pid>)")
-	pollInterval := fs.Duration("poll-interval", 2*time.Second, "polling interval when job queue is empty")
+	var workerID string
+	fs.StringVar(&workerID, "id", "", "worker identifier (default: worker-<hostname>-<pid>)")
+	fs.StringVar(&workerID, "worker-id", "", "alias for --id")
+	pollInterval := 2 * time.Second
+	fs.DurationVar(&pollInterval, "poll-interval", 2*time.Second, "polling interval when job queue is empty")
+	fs.DurationVar(&pollInterval, "poll", 2*time.Second, "alias for --poll-interval")
+	tenant := fs.String("tenant", "", "optional tenant namespace filter when claiming jobs")
 	once := fs.Bool("once", false, "claim and execute at most one pending job then exit")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
+	}
+	if pollInterval < 0 {
+		return exitUsage, fmt.Errorf("--poll-interval %v must be non-negative", pollInterval)
 	}
 	resolvedToken, err := secret.Resolve(*token)
 	if err != nil {
@@ -1801,8 +1984,9 @@ func cmdWorker(args []string, stdout, stderr io.Writer) (int, error) {
 	n, err := serve.RunWorker(ctx, serve.WorkerConfig{
 		ServerURL:    *serverURL,
 		Token:        resolvedToken,
-		WorkerID:     *workerID,
-		PollInterval: *pollInterval,
+		WorkerID:     workerID,
+		Tenant:       *tenant,
+		PollInterval: pollInterval,
 		Once:         *once,
 		Logf:         func(format string, a ...any) { fmt.Fprintf(stdout, format+"\n", a...) },
 	})
@@ -1813,20 +1997,58 @@ func cmdWorker(args []string, stdout, stderr io.Writer) (int, error) {
 	return exitOK, nil
 }
 
+type ciReportJSON struct {
+	Tool             string                    `json:"tool"`
+	Version          string                    `json:"version"`
+	Target           string                    `json:"target"`
+	Passed           bool                      `json:"passed"`
+	Verdict          checker.Verdict           `json:"verdict,omitempty"`
+	SLO              *report.SLOResult         `json:"slo,omitempty"`
+	Campaign         *report.PRCampaignSummary `json:"campaign,omitempty"`
+	CompliancePassed *bool                     `json:"compliance_passed,omitempty"`
+	ComplianceNote   string                    `json:"compliance_note,omitempty"`
+	DossierHash      string                    `json:"dossier_hash,omitempty"`
+	Attested         *bool                     `json:"attested,omitempty"`
+}
+
 func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("ci-report", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	reportPath := fs.String("report", "", "path to report.json")
 	campaignPath := fs.String("campaign", "", "path to campaign.json")
 	baselinePath := fs.String("baseline", "", "optional baseline report.json or campaign.json for delta comparison")
+	baselineReportPath := fs.String("baseline-report", "", "optional baseline report.json for delta comparison")
+	baselineCampaignPath := fs.String("baseline-campaign", "", "optional baseline campaign.json for regression diff")
+	dossierPath := fs.String("dossier", "", "optional verified compliance dossier.json")
 	frameworksStr := fs.String("frameworks", "", "optional compliance frameworks to evaluate (e.g. dora,soc2,iso27001,bi-ojk,pci-dss,bi-sp,all)")
 	outPath := fs.String("out", "", "optional file path to write the Markdown PR digest")
+	jsonPath := fs.String("json", "", "optional file path (or - for stdout) to write structured JSON verdict")
 	slo := sloFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage, err
 	}
-	if *reportPath == "" && *campaignPath == "" {
-		return exitUsage, fmt.Errorf("either --report or --campaign is required")
+	if err := validateSLOGate(*slo); err != nil {
+		return exitUsage, err
+	}
+	if *reportPath == "" && *campaignPath == "" && *dossierPath == "" {
+		return exitUsage, fmt.Errorf("at least one of --report, --campaign, or --dossier is required")
+	}
+	if *baselineReportPath != "" && *reportPath == "" {
+		return exitUsage, fmt.Errorf("--baseline-report requires --report")
+	}
+	if *baselineCampaignPath != "" && *campaignPath == "" {
+		return exitUsage, fmt.Errorf("--baseline-campaign requires --campaign")
+	}
+	if *baselinePath != "" && *reportPath == "" && *campaignPath == "" {
+		return exitUsage, fmt.Errorf("--baseline requires --report or --campaign")
+	}
+	var fws []compliance.FrameworkID
+	if *frameworksStr != "" {
+		var err error
+		fws, err = compliance.ParseFrameworks(*frameworksStr)
+		if err != nil {
+			return exitUsage, err
+		}
 	}
 
 	var opts report.PRDigestOptions
@@ -1854,28 +2076,74 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 		camp = m
 	}
 
-	if *baselinePath != "" {
-		if camp != nil && camp.Comparison == nil {
-			if baseCamp, err := campaign.LoadManifest(*baselinePath); err == nil {
-				camp.Comparison = campaign.Compare(baseCamp, camp)
-			}
-		} else if opts.Report != nil {
-			if data, err := os.ReadFile(*baselinePath); err == nil {
-				var baseRep report.Report
-				if err := json.Unmarshal(data, &baseRep); err == nil {
-					opts.BaselineReport = &baseRep
-				}
-			}
+	var loadedDossier *compliance.Dossier
+	if *dossierPath != "" {
+		data, err := os.ReadFile(*dossierPath)
+		if err != nil {
+			return exitError, err
 		}
+		var d compliance.Dossier
+		if err := json.Unmarshal(data, &d); err != nil {
+			return exitError, fmt.Errorf("%s: %w", *dossierPath, err)
+		}
+		if d.DossierHash == "" || d.DossierHash != compliance.HashDossier(&d) {
+			return exitViolation, fmt.Errorf("%s: dossier integrity check failed", *dossierPath)
+		}
+		loadedDossier = &d
+		if opts.Target == "" {
+			opts.Target = d.Summary.Target
+		}
+	}
+
+	baseRepPath := *baselineReportPath
+	baseCampPath := *baselineCampaignPath
+	if *baselinePath != "" {
+		switch {
+		case baseCampPath == "" && camp != nil && (camp.Comparison == nil || (opts.Report == nil && baseRepPath == "")):
+			baseCampPath = *baselinePath
+		case baseRepPath == "" && opts.Report != nil:
+			baseRepPath = *baselinePath
+		case baseCampPath == "" && camp != nil:
+			baseCampPath = *baselinePath
+		default:
+			return exitUsage, fmt.Errorf("--baseline requires --report or --campaign")
+		}
+	}
+	if baseCampPath != "" {
+		if camp == nil {
+			return exitUsage, fmt.Errorf("--baseline-campaign requires --campaign")
+		}
+		baseCamp, err := campaign.LoadManifest(baseCampPath)
+		if err != nil {
+			return exitError, err
+		}
+		camp.Comparison = campaign.Compare(baseCamp, camp)
+	}
+	if baseRepPath != "" {
+		if opts.Report == nil {
+			return exitUsage, fmt.Errorf("--baseline-report requires --report")
+		}
+		data, err := os.ReadFile(baseRepPath)
+		if err != nil {
+			return exitError, err
+		}
+		var baseRep report.Report
+		if err := json.Unmarshal(data, &baseRep); err != nil {
+			return exitError, fmt.Errorf("%s: %w", baseRepPath, err)
+		}
+		opts.BaselineReport = &baseRep
 	}
 
 	if camp != nil {
 		cs := &report.PRCampaignSummary{
-			CampaignID: camp.CampaignID,
-			System:     camp.System,
-			TotalSeeds: camp.TotalSeeds,
-			Passed:     camp.Passed,
-			Violations: camp.Violations,
+			CampaignID:  camp.CampaignID,
+			System:      camp.System,
+			TotalSeeds:  camp.TotalSeeds,
+			Passed:      camp.Passed,
+			Violations:  camp.Violations,
+			Unknown:     camp.Unknown,
+			Errors:      camp.Errors,
+			HasBaseline: camp.Comparison != nil,
 		}
 		if comp := camp.Comparison; comp != nil {
 			for _, d := range comp.Regressed {
@@ -1895,25 +2163,135 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 			}
 			cs.TraceDrifts = len(comp.TraceDrifts)
 		}
+		if cs.Reproduce == "" && (camp.Violations > 0 || camp.Unknown > 0) {
+			for _, sr := range camp.Seeds {
+				if sr.Verdict != checker.Linearizable && sr.Reproduce != "" {
+					cs.Reproduce = sr.Reproduce
+					break
+				}
+			}
+		}
 		opts.Campaign = cs
 	}
 
-	if *frameworksStr != "" {
-		fws, err := compliance.ParseFrameworks(*frameworksStr)
-		if err != nil {
-			return exitUsage, err
+	if opts.SLO == nil && slo.Enabled() {
+		if camp != nil {
+			var campRM *report.ResilienceMetrics
+			if camp.TotalOps > 0 || camp.AvgAvailability > 0 || camp.MTTRMaxMs > 0 || camp.MTTRP95Ms > 0 {
+				p50 := time.Duration(camp.MTTRP50Ms) * time.Millisecond
+				p95 := time.Duration(camp.MTTRP95Ms) * time.Millisecond
+				mx := time.Duration(camp.MTTRMaxMs) * time.Millisecond
+				if mx == 0 {
+					mx = p95
+				}
+				cnt := 0
+				if mx > 0 || p95 > 0 || p50 > 0 {
+					cnt = 1
+				}
+				campRM = &report.ResilienceMetrics{
+					OverallAvailability: camp.AvgAvailability,
+					MTTR: stats.Summary{
+						Count: cnt,
+						P50:   p50,
+						P95:   p95,
+						Max:   mx,
+					},
+				}
+			}
+			opts.SLO = report.EvaluateSLO(campRM, *slo)
+		} else if loadedDossier != nil {
+			sum := loadedDossier.Summary
+			var dosRM *report.ResilienceMetrics
+			if sum.TotalOperations > 0 || sum.OverallAvailability > 0 || sum.MTTRMax > 0 || sum.MTTRP95 > 0 {
+				mx := sum.MTTRMax
+				if mx == 0 {
+					mx = sum.MTTRP95
+				}
+				cnt := 0
+				if mx > 0 || sum.MTTRP95 > 0 || sum.MTTRP50 > 0 {
+					cnt = 1
+				}
+				dosRM = &report.ResilienceMetrics{
+					OverallAvailability: sum.OverallAvailability,
+					MTTR: stats.Summary{
+						Count: cnt,
+						P50:   sum.MTTRP50,
+						P95:   sum.MTTRP95,
+						Max:   mx,
+					},
+				}
+			}
+			opts.SLO = report.EvaluateSLO(dosRM, *slo)
 		}
+	}
+
+	var dossierHash string
+	var dossierAttested *bool
+	if loadedDossier != nil {
+		controls := loadedDossier.Controls
+		if len(fws) > 0 {
+			allowed := make(map[compliance.FrameworkID]bool, len(fws))
+			for _, fw := range fws {
+				allowed[fw] = true
+			}
+			var filtered []compliance.ControlResult
+			for _, c := range loadedDossier.Controls {
+				if allowed[c.Framework] {
+					filtered = append(filtered, c)
+				}
+			}
+			if len(filtered) == 0 {
+				return exitError, fmt.Errorf("%s contains no controls matching --frameworks %q", *dossierPath, *frameworksStr)
+			}
+			controls = filtered
+		}
+		overall := compliance.StatusPass
+		for _, c := range controls {
+			if c.Status == compliance.StatusFail {
+				overall = compliance.StatusFail
+				break
+			}
+			if c.Status == compliance.StatusPartial && overall == compliance.StatusPass {
+				overall = compliance.StatusPartial
+			}
+		}
+		if loadedDossier.Summary.SLABreached {
+			overall = compliance.StatusFail
+		}
+		pass := overall != compliance.StatusFail
+		opts.CompliancePass = &pass
+		note := fmt.Sprintf("overall %s (%d controls evaluated)", strings.ToUpper(string(overall)), len(controls))
+		if loadedDossier.Summary.Attested {
+			note += fmt.Sprintf(" · attested (%s)", loadedDossier.Summary.Signer)
+		}
+		if loadedDossier.Summary.SLABreached && loadedDossier.Summary.SLABreachReason != "" {
+			note += " · SLA breach: " + loadedDossier.Summary.SLABreachReason
+		}
+		opts.ComplianceNote = note
+		dossierHash = loadedDossier.DossierHash
+		att := loadedDossier.Summary.Attested
+		dossierAttested = &att
+	} else if len(fws) > 0 {
 		dossier, err := compliance.Evaluate(compliance.Options{
-			Report:     opts.Report,
-			Campaign:   camp,
-			Frameworks: fws,
+			Report:          opts.Report,
+			Campaign:        camp,
+			Frameworks:      fws,
+			MaxMTTR:         slo.MaxMTTR,
+			MinAvailability: slo.NormalizedMinAvailability(),
 		})
 		if err != nil {
 			return exitError, err
 		}
-		pass := dossier.Overall != compliance.StatusFail
+		pass := dossier.Overall != compliance.StatusFail && !dossier.Summary.SLABreached
 		opts.CompliancePass = &pass
-		opts.ComplianceNote = fmt.Sprintf("overall %s (%d controls evaluated)", strings.ToUpper(string(dossier.Overall)), len(dossier.Controls))
+		note := fmt.Sprintf("overall %s (%d controls evaluated)", strings.ToUpper(string(dossier.Overall)), len(dossier.Controls))
+		if dossier.Summary.SLABreached && dossier.Summary.SLABreachReason != "" {
+			note += " · SLA breach: " + dossier.Summary.SLABreachReason
+		}
+		opts.ComplianceNote = note
+		dossierHash = dossier.DossierHash
+		att := dossier.Summary.Attested
+		dossierAttested = &att
 	}
 
 	var buf bytes.Buffer
@@ -1921,13 +2299,57 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitError, err
 	}
-	_, _ = io.WriteString(stdout, buf.String())
+	if *jsonPath != "-" {
+		_, _ = io.WriteString(stdout, buf.String())
+	}
 	if *outPath != "" {
 		if err := os.MkdirAll(filepath.Dir(*outPath), 0o755); err != nil {
 			return exitError, err
 		}
 		if err := os.WriteFile(*outPath, buf.Bytes(), 0o644); err != nil {
 			return exitError, err
+		}
+	}
+	if *jsonPath != "" {
+		target := "verification"
+		var verdict checker.Verdict
+		if opts.Report != nil {
+			if opts.Report.Target != "" {
+				target = opts.Report.Target
+			}
+			verdict = opts.Report.Verdict
+		} else if opts.Campaign != nil && opts.Campaign.System != "" {
+			target = opts.Campaign.System
+		} else if opts.Target != "" {
+			target = opts.Target
+		}
+		payload := ciReportJSON{
+			Tool:             "strife",
+			Version:          report.Version,
+			Target:           target,
+			Passed:           passed,
+			Verdict:          verdict,
+			SLO:              opts.SLO,
+			Campaign:         opts.Campaign,
+			CompliancePassed: opts.CompliancePass,
+			ComplianceNote:   opts.ComplianceNote,
+			DossierHash:      dossierHash,
+			Attested:         dossierAttested,
+		}
+		jsonBytes, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return exitError, err
+		}
+		jsonBytes = append(jsonBytes, '\n')
+		if *jsonPath == "-" {
+			_, _ = stdout.Write(jsonBytes)
+		} else {
+			if err := os.MkdirAll(filepath.Dir(*jsonPath), 0o755); err != nil {
+				return exitError, err
+			}
+			if err := os.WriteFile(*jsonPath, jsonBytes, 0o644); err != nil {
+				return exitError, err
+			}
 		}
 	}
 	if !passed {
