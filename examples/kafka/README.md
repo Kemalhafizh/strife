@@ -1,5 +1,7 @@
 # Example: Kafka (KRaft) under Strife
 
+> **Language:** English · [Bahasa Indonesia](../../docs/id/examples/kafka/README.md)
+
 Three Kafka brokers in KRaft mode (combined broker and controller), built from
 the Apache release tarball (`KAFKA_VERSION`, default 3.9.1; CI also runs
 4.1.0). Strife's client speaks the Kafka protocol directly: ApiVersions,

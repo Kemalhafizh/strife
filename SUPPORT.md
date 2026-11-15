@@ -1,5 +1,7 @@
 # Support & Community
 
+> **Language:** English · [Bahasa Indonesia](docs/id/SUPPORT.md)
+
 **Strife** is an open-source distributed systems testing and verification project created and maintained by [Muhammad Kemal Hafizh](https://github.com/Kemalhafizh) under the [Apache License 2.0](LICENSE).
 
 ## Documentation & Interactive Tools

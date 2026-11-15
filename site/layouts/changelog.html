@@ -1,9 +1,18 @@
 {{ define "main" }}
+{{- $res := resources.Get "repo/CHANGELOG.md" }}
+{{- $docLang := "en" }}
+{{- if eq site.Language.Lang "id" }}
+  {{- with resources.Get "repo/docs/id/CHANGELOG.md" }}
+    {{- $res = . }}
+    {{- $docLang = "id" }}
+  {{- end }}
+{{- end }}
 <article class="page">
   {{ partial "page-hero.html" . }}
-  <div class="wrap narrow prose" lang="en">
-    {{- with resources.Get "repo/CHANGELOG.md" }}
+  <div class="wrap narrow prose" lang="{{ $docLang }}">
+    {{- with $res }}
     {{- $text := replaceRE `\A# .+\n` "" .Content 1 }}
+    {{- $text = replaceRE `\A\n*> \*\*(?:Language|Bahasa):\*\* [^\n]+\n+` "" $text 1 }}
     {{ $.RenderString (dict "display" "block") $text }}
     {{- end }}
   </div>

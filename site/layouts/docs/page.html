@@ -5,7 +5,8 @@
     <header class="docs-head">
       <p class="eyebrow"><a href="{{ .Parent.RelPermalink }}">{{ .Parent.Title }}</a></p>
       <h1 id="{{ anchorize .Title }}">{{ .Title | markdownify }}</h1>
-      {{- if eq site.Language.Lang "id" }}<p class="docs-note" lang="id">{{ i18n "docs_lang_note" }}</p>{{ end }}
+      {{- $docsLang := .Params.docsLang | default site.Language.Lang }}
+      {{- if ne $docsLang site.Language.Lang }}<p class="docs-note" lang="{{ site.Language.Lang }}">{{ i18n "docs_lang_note" }}</p>{{ end }}
     </header>
     <div class="prose">
       {{ .Content }}

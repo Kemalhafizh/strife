@@ -1,5 +1,7 @@
 # strife-agent: per-node fault daemon
 
+> **Language:** English · [Bahasa Indonesia](../../docs/id/examples/agent/README.md)
+
 `strife-agent` is a small, lightweight daemon that runs directly inside target
 nodes (containers, VMs, or bare-metal machines) to apply faults with direct
 syscalls instead of a shell per command.

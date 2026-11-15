@@ -1,5 +1,7 @@
 # Example: TiDB 8.5 under Strife
 
+> **Language:** English · [Bahasa Indonesia](../../docs/id/examples/tidb/README.md)
+
 A single TiDB server with its embedded `unistore` storage: enough to check
 TiDB's transaction layer (the SQL front end, its timestamp ordering and its
 two transaction modes) without a full PD/TiKV deployment. TiDB speaks the

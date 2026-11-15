@@ -14,4 +14,4 @@ Butuh Go 1.23 atau lebih baru. Perintah di atas mengambil kode langsung dari rep
 
 - **Simulasi, pemeriksaan riwayat, shrink, dan verifikasi** berjalan di Linux, macOS, dan Windows (amd64 dan arm64).
 - **Uji cluster sungguhan.** CLI menyuntikkan gangguan lewat Docker, SSH, Kubernetes (`kubectl exec`), `strife-agent`, atau transport L4 TCP `proxy` tanpa hak istimewa (Linux, macOS, Windows). `strife-agent` dan target container/host jarak jauh memerlukan Linux (`AF_NETLINK` FIB rule / `iptables`, `tc netem`, serta `cgroup v2`).
-- Langkah selanjutnya ada di [Quick Start](/docs/quick-start), dan contoh konfigurasi untuk etcd, PostgreSQL, MySQL/TiDB, Valkey, Kafka, dan Kubernetes ada di [dokumentasi](/docs).
+- Langkah selanjutnya ada di [Mulai Cepat](/docs/quick-start), dan contoh konfigurasi untuk etcd, PostgreSQL, MySQL/TiDB, Valkey, Kafka, dan Kubernetes ada di [dokumentasi](/docs).

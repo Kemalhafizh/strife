@@ -63,13 +63,26 @@ source = "../README.md"
 target = "assets/repo/README.md"
 
 [[module.mounts]]
+source = "../README.id.md"
+target = "assets/repo/README.id.md"
+
+[[module.mounts]]
 source = "../CHANGELOG.md"
 target = "assets/repo/CHANGELOG.md"
 
 [[module.mounts]]
 source = "../docs"
 target = "assets/repo/docs"
-includeFiles = ["BENCHMARKS.md", "github-action.md", "server.md"]
+includeFiles = [
+  "BENCHMARKS.md",
+  "github-action.md",
+  "server.md",
+  "id/BENCHMARKS.md",
+  "id/github-action.md",
+  "id/server.md",
+  "id/CHANGELOG.md",
+  "id/examples/*/README.md",
+]
 
 [[module.mounts]]
 source = "../examples"

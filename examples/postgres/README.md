@@ -1,5 +1,7 @@
 # Example: PostgreSQL 17 under Strife
 
+> **Language:** English · [Bahasa Indonesia](../../docs/id/examples/postgres/README.md)
+
 A primary (`n1`) and two asynchronous hot standbys (`n2`, `n3`), with
 SCRAM-SHA-256 authentication and TLS. Strife's client speaks the v3 wire
 protocol itself (no libpq), runs list-append, double-entry ledger, or

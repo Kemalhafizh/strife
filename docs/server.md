@@ -1,5 +1,7 @@
 # Run Registry (`strife serve`)
 
+> **Language:** English · [Bahasa Indonesia](id/server.md)
+
 `strife serve` runs a self-hosted HTTP daemon that stores single-seed reports (`report.json`) and multi-seed campaigns (`campaign.json`) in an append-only directory on your own network. On arrival, every report or campaign has its SHA-256 fingerprint recomputed, campaigns are automatically compared against the previous baseline for the same `(tenant, target)` pair, and reports can be signed automatically into Ed25519 `in-toto` v0.1 bundles.
 
 The daemon is built into the `strife` binary with zero external dependencies and serves both a JSON REST API and an embedded dark-theme web dashboard.

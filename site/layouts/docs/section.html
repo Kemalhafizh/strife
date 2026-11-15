@@ -9,7 +9,7 @@
       </p>
       <h1>{{ .Title }}</h1>
       {{- with .Params.lead }}<p class="lead">{{ . }}</p>{{ end }}
-      {{- if eq site.Language.Lang "id" }}<p class="docs-note">{{ i18n "docs_lang_note" }}</p>{{ end }}
+      {{- if where .RegularPages "Params.docsLang" "ne" site.Language.Lang }}<p class="docs-note">{{ i18n "docs_lang_note" }}</p>{{ end }}
     </header>
     {{- $pages := sort .RegularPages "Params.order" }}
     {{- range $g := slice (slice "guides" "docs_guides") (slice "reference" "docs_reference") (slice "examples" "docs_examples") }}
