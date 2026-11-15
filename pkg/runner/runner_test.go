@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kemalhafizh/strife/internal/rng"
 	"github.com/kemalhafizh/strife/internal/stats"
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/client"
@@ -491,4 +492,22 @@ func TestInjectorBoundsAndTeardownErrors(t *testing.T) {
 	if errs := in.Teardown(context.Background(), nil); len(errs) != 1 || fa.teardownCalls != 1 {
 		t.Fatalf("expected 1 teardown error and 1 TeardownNode call, got errs=%v calls=%d", errs, fa.teardownCalls)
 	}
+}
+
+func TestZeroNodesBoundsSafety(t *testing.T) {
+	store := client.NewMemoryStore()
+	factory := func(int) (client.Client, error) { return store.Client(), nil }
+
+	cfg := testConfig()
+	cfg.Nodes = nil
+	rec := history.NewRecorder(func() int64 { return time.Now().UnixNano() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	worker(ctx, cfg, 0, rng.New(1), nil, nil, factory, rec, time.Now().Add(30*time.Millisecond), func(string, ...any) {})
+
+	auditCtx, auditCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer auditCancel()
+	cfg.Workload.Timeout = Duration(5 * time.Millisecond)
+	finalSettlementAudit(auditCtx, cfg, factory, rec, func(string, ...any) {})
 }

@@ -285,7 +285,9 @@ JUnit and job-summary output with a GitHub Action, strife-agent, server
 probes, Wasm workloads, campaigns with regression tracking, in-toto report
 attestation and compliance dossiers.
 
-[Unreleased]: https://github.com/Kemalhafizh/strife/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Kemalhafizh/strife/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Kemalhafizh/strife/compare/0d20bac...v1.0.0
+[0.8.0]: https://github.com/Kemalhafizh/strife/compare/v0.7.0...0d20bac
 [0.7.0]: https://github.com/Kemalhafizh/strife/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Kemalhafizh/strife/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Kemalhafizh/strife/compare/v0.4.0...v0.5.0

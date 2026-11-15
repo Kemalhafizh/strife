@@ -265,7 +265,7 @@ func convertOTelSpan(resAttrs map[string]string, sp rawOTelSpan) (parsedSpan, bo
 
 	var proc int
 	var hasProc bool
-	if pStr := firstAttr(attrs, "strife.process", "process.id", "thread.id"); pStr != "" {
+	if pStr := firstAttr(attrs, "strife.process", "process.id", "thread.id", "process.pid"); pStr != "" {
 		if n, err := strconv.Atoi(pStr); err == nil {
 			proc = n
 			hasProc = true
@@ -287,7 +287,7 @@ func convertOTelSpan(resAttrs map[string]string, sp rawOTelSpan) (parsedSpan, bo
 	if f == FRead || f == FDequeue || f == FGenerate {
 		inVal = nil
 	}
-	if oStr := firstAttr(attrs, "strife.old", "db.old_value"); oStr != "" {
+	if oStr := firstAttr(attrs, "strife.old", "db.old_value", "strife.expected"); oStr != "" {
 		if v, err := strconv.ParseInt(oStr, 10, 64); err == nil {
 			oldVal = Int(v)
 		}
@@ -367,18 +367,23 @@ func resolveOTelStatus(attrs map[string]string, rawCode json.RawMessage, statusM
 	return Fail, errMsg
 }
 
+const maxOTelAnyValueDepth = 64
+
 func parseOTelAttrs(kvs []otelKeyValue) map[string]string {
 	out := make(map[string]string, len(kvs))
 	for _, kv := range kvs {
 		if kv.Key == "" || len(kv.Value) == 0 {
 			continue
 		}
-		out[kv.Key] = decodeOTelAnyValue(kv.Value)
+		out[kv.Key] = decodeOTelAnyValue(kv.Value, 0)
 	}
 	return out
 }
 
-func decodeOTelAnyValue(raw json.RawMessage) string {
+func decodeOTelAnyValue(raw json.RawMessage, depth int) string {
+	if depth > maxOTelAnyValueDepth {
+		return ""
+	}
 	var wrapper struct {
 		StringValue *string         `json:"stringValue"`
 		IntValue    json.RawMessage `json:"intValue"`
@@ -400,7 +405,7 @@ func decodeOTelAnyValue(raw json.RawMessage) string {
 		if wrapper.ArrayValue != nil {
 			parts := make([]string, 0, len(wrapper.ArrayValue.Values))
 			for _, elem := range wrapper.ArrayValue.Values {
-				parts = append(parts, decodeOTelAnyValue(elem))
+				parts = append(parts, decodeOTelAnyValue(elem, depth+1))
 			}
 			return "[" + strings.Join(parts, ",") + "]"
 		}

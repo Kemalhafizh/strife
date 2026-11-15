@@ -76,7 +76,7 @@ type sarifLogicalLocation struct {
 
 func classifySARIFRule(c Case) (id, name, desc string) {
 	switch c.Class {
-	case "dora", "soc2", "iso27001", "bi-ojk":
+	case "dora", "soc2", "iso27001", "bi-ojk", "pci-dss", "bi-sp":
 		ctrlID := c.Class
 		title := c.Name
 		if rest := strings.TrimSpace(strings.TrimPrefix(c.Name, "["+strings.ToUpper(c.Class)+"]")); rest != c.Name {
@@ -87,6 +87,9 @@ func classifySARIFRule(c Case) (id, name, desc string) {
 		}
 		ruleID := "STRIFE-COMPLIANCE-" + strings.ToUpper(strings.NewReplacer(".", "-", "_", "-").Replace(ctrlID))
 		return ruleID, "ComplianceControlGap", title
+	}
+	if c.Name == "resilience SLO gate" {
+		return "STRIFE-RESILIENCE-SLO", "ResilienceSLOBreach", "Service availability or post-fault recovery latency (MTTR) breached configured SLO gate."
 	}
 	combined := c.Message + "\n" + c.Detail
 	switch {

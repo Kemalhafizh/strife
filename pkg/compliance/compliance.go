@@ -224,15 +224,20 @@ func Evaluate(opts Options) (*Dossier, error) {
 		now = time.Now().UTC()
 	}
 
+	minAvail := opts.MinAvailability
+	if minAvail > 1.0 {
+		minAvail /= 100.0
+	}
 	sum := extractEvidence(opts.Report, opts.Campaign, opts.Verification)
 	sum.MaxMTTR = opts.MaxMTTR
-	sum.MinAvailability = opts.MinAvailability
+	sum.MinAvailability = minAvail
+	hasAvail := (opts.Report != nil && opts.Report.Resilience != nil) || (opts.Campaign != nil && (opts.Campaign.TotalOps > 0 || opts.Campaign.AvgAvailability > 0))
 	var breachReasons []string
 	if opts.MaxMTTR > 0 && sum.MTTRP95 > opts.MaxMTTR {
 		breachReasons = append(breachReasons, fmt.Sprintf("P95 MTTR %v exceeds SLA threshold %v", sum.MTTRP95.Round(time.Millisecond), opts.MaxMTTR))
 	}
-	if opts.MinAvailability > 0 && sum.OverallAvailability > 0 && sum.OverallAvailability < opts.MinAvailability {
-		breachReasons = append(breachReasons, fmt.Sprintf("availability %.1f%% is below minimum SLA %.1f%%", sum.OverallAvailability*100, opts.MinAvailability*100))
+	if minAvail > 0 && hasAvail && sum.OverallAvailability+1e-9 < minAvail {
+		breachReasons = append(breachReasons, fmt.Sprintf("availability %.1f%% is below minimum SLA %.1f%%", sum.OverallAvailability*100, minAvail*100))
 	}
 	if len(breachReasons) > 0 {
 		sum.SLABreached = true
@@ -393,7 +398,7 @@ func formatFaultList(kinds []nemesis.Kind) string {
 }
 
 func applySLAGate(cr ControlResult, sum EvidenceSummary) ControlResult {
-	if sum.OverallAvailability > 0 || sum.MTTRP95 > 0 {
+	if sum.OverallAvailability > 0 || sum.MTTRP95 > 0 || sum.SLABreached {
 		cr.Evidence += fmt.Sprintf(" Empirical availability=%.1f%%, post-fault MTTR p95=%v (max=%v).",
 			sum.OverallAvailability*100, sum.MTTRP95.Round(time.Millisecond), sum.MTTRMax.Round(time.Millisecond))
 	}
@@ -799,7 +804,7 @@ func Markdown(w io.Writer, d *Dossier) error {
 	fmt.Fprintf(&b, "| Cluster Nodes | %d |\n", d.Summary.Nodes)
 	fmt.Fprintf(&b, "| Seeds Tested | %d (%d linearizable, %d violating) |\n", d.Summary.SeedsTested, d.Summary.SeedsLinearizable, d.Summary.SeedsViolating)
 	fmt.Fprintf(&b, "| Client Operations | %d |\n", d.Summary.TotalOperations)
-	if d.Summary.OverallAvailability > 0 {
+	if d.Summary.OverallAvailability > 0 || d.Summary.SLABreached {
 		fmt.Fprintf(&b, "| Service Availability (Goodput) | %.1f%% |\n", 100*d.Summary.OverallAvailability)
 	}
 	if d.Summary.MTTRMax > 0 || d.Summary.MTTRP50 > 0 {

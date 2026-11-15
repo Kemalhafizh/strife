@@ -131,7 +131,7 @@ footer{margin-top:28px;padding-top:14px;border-top:1px solid var(--border);color
 	fmt.Fprintf(&b, "%d pass · %d partial · %d fail", passCount, partialCount, failCount)
 	b.WriteString(`</div>
   </div>`)
-	if d.Summary.OverallAvailability > 0 || d.Summary.MTTRP95 > 0 {
+	if d.Summary.OverallAvailability > 0 || d.Summary.MTTRP95 > 0 || d.Summary.SLABreached {
 		b.WriteString(`
   <div class="card">
     <div class="k">Availability &amp; Post-Fault MTTR</div>

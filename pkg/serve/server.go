@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -37,6 +38,20 @@ type Config struct {
 	WebhookTimeout  time.Duration
 	MaxMTTR         time.Duration
 	MinAvailability float64
+}
+
+func normalizeAvailability(v float64) float64 {
+	if v > 1.0 {
+		return v / 100.0
+	}
+	return v
+}
+
+func validateAvailability(v float64) (float64, error) {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 100 {
+		return 0, fmt.Errorf("min_availability %v must be within [0, 100]", v)
+	}
+	return normalizeAvailability(v), nil
 }
 
 // PublicKeyInfo describes an active Ed25519 verification key exposed by the server.
@@ -75,6 +90,15 @@ type IngestPayload struct {
 
 // NewServer initializes a Server backed by StoreDir.
 func NewServer(cfg Config) (*Server, error) {
+	if cfg.MaxMTTR < 0 {
+		return nil, fmt.Errorf("serve: max_mttr %v must be non-negative", cfg.MaxMTTR)
+	}
+	normAvail, err := validateAvailability(cfg.MinAvailability)
+	if err != nil {
+		return nil, fmt.Errorf("serve: %w", err)
+	}
+	cfg.MinAvailability = normAvail
+
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:8080"
 	}
@@ -115,7 +139,9 @@ func NewServer(cfg Config) (*Server, error) {
 		tenantKeys: tenantKeys,
 		startTime:  time.Now().UTC(),
 	}
-	_ = s.loadJobs()
+	if err := s.loadJobs(); err != nil {
+		return nil, fmt.Errorf("serve: load jobs: %w", err)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleUI)
@@ -338,7 +364,7 @@ func (s *Server) handleRunDossier(w http.ResponseWriter, r *http.Request, id str
 	}
 	rep, camp, bundle, err := s.store.LoadDossierInputs(id)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	fws, err := compliance.ParseFrameworks(r.URL.Query().Get("frameworks"))
@@ -366,15 +392,26 @@ func (s *Server) handleRunDossier(w http.ResponseWriter, r *http.Request, id str
 	}
 	maxMTTR := s.cfg.MaxMTTR
 	if q := strings.TrimSpace(r.URL.Query().Get("max_mttr")); q != "" {
-		if d, derr := time.ParseDuration(q); derr == nil {
-			maxMTTR = d
+		d, derr := time.ParseDuration(q)
+		if derr != nil || d < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid max_mttr %q", q)})
+			return
 		}
+		maxMTTR = d
 	}
 	minAvail := s.cfg.MinAvailability
 	if q := strings.TrimSpace(r.URL.Query().Get("min_availability")); q != "" {
-		if v, ferr := strconv.ParseFloat(q, 64); ferr == nil {
-			minAvail = v
+		v, ferr := strconv.ParseFloat(q, 64)
+		if ferr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid min_availability %q", q)})
+			return
 		}
+		norm, verr := validateAvailability(v)
+		if verr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": verr.Error()})
+			return
+		}
+		minAvail = norm
 	}
 	dossier, err := compliance.Evaluate(compliance.Options{
 		Report:          rep,

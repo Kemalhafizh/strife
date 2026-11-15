@@ -421,8 +421,11 @@ func (s *Store) appendEntry(e RunEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	if _, err := f.Write(append(line, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	s.entries = append(s.entries, e)
@@ -491,11 +494,15 @@ func (s *Store) LoadDossierInputs(id string) (*report.Report, *campaign.Manifest
 		}
 		rep = &r
 	}
-	if bData, err := os.ReadFile(filepath.Join(runDir, "bundle.json")); err == nil {
+	bData, err := os.ReadFile(filepath.Join(runDir, "bundle.json"))
+	if err == nil {
 		var b attest.Bundle
-		if err := json.Unmarshal(bData, &b); err == nil {
-			bundle = &b
+		if err := json.Unmarshal(bData, &b); err != nil {
+			return nil, nil, nil, fmt.Errorf("serve: decode attestation bundle: %w", err)
 		}
+		bundle = &b
+	} else if !os.IsNotExist(err) {
+		return nil, nil, nil, err
 	}
 	return rep, camp, bundle, nil
 }

@@ -2,14 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kemalhafizh/strife/pkg/report"
+	"github.com/kemalhafizh/strife/pkg/serve"
 )
 
 func runCLI(t *testing.T, args ...string) (int, string) {
@@ -535,9 +539,256 @@ func TestOTelCheckSLOGatesAndCIReport(t *testing.T) {
 		t.Fatalf("ci-report expected pass (%d):\n%s", code, out)
 	}
 
-	// Failing CI report when impossible availability threshold is required (if any op timed out/failed) or strict MTTR=1ns
+	// Failing CI report when strict MTTR=1ns
 	code, out = runCLI(t, "ci-report", "--report", repFile, "--max-mttr", "1ns")
 	if code != exitViolation || !strings.Contains(out, "FAIL") {
 		t.Fatalf("ci-report with 1ns max-mttr expected exitViolation (%d):\n%s", code, out)
+	}
+}
+
+func startTestServe(t *testing.T, token string) (*serve.Server, string) {
+	t.Helper()
+	srv, err := serve.NewServer(serve.Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   filepath.Join(t.TempDir(), "registry"),
+		Token:      token,
+	})
+	if err != nil {
+		t.Fatalf("serve.NewServer: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	})
+	return srv, "http://" + ln.Addr().String()
+}
+
+func TestSimMultiSeedSLOGateAndPushRejection(t *testing.T) {
+	dir := t.TempDir()
+	jPath := filepath.Join(dir, "sim-slo.xml")
+
+	code, out := runCLI(t, "sim", "--system", "raft", "--seeds", "1..3", "--duration", "4s", "--out", "", "--max-mttr", "1ns", "--junit", jPath)
+	if code != exitViolation || !strings.Contains(out, "slo-gate: FAIL") {
+		t.Fatalf("expected multi-seed sim --max-mttr 1ns to fail SLO gate (code=%d):\n%s", code, out)
+	}
+	d := readJUnit(t, jPath)
+	foundSLO := false
+	for _, c := range d.Cases {
+		if c.Name == "resilience SLO gate" && c.Failure != nil {
+			foundSLO = true
+			break
+		}
+	}
+	if !foundSLO {
+		t.Fatalf("expected failing resilience SLO gate JUnit testcase, got %+v", d.Cases)
+	}
+
+	code, out = runCLI(t, "sim", "--system", "raft", "--seeds", "1..2", "--duration", "1s", "--out", "", "--push", "http://127.0.0.1:8080")
+	if code != exitUsage || !strings.Contains(out, "--push cannot be combined with --seeds") {
+		t.Fatalf("expected exitUsage when combining --push with --seeds, got code=%d:\n%s", code, out)
+	}
+}
+
+func TestPushAcrossSimCampaignRunCheckAndWorkerCLI(t *testing.T) {
+	srv, baseURL := startTestServe(t, "secret-push-tok")
+	t.Setenv("STRIFE_TEST_PUSH_TOK", "secret-push-tok")
+	dir := t.TempDir()
+
+	// 1. sim single-seed push
+	code, out := runCLI(t, "sim", "--system", "raft", "--seed", "1", "--duration", "2s", "--out", "", "--push", baseURL, "--push-token", "env:STRIFE_TEST_PUSH_TOK", "--tenant", "t1")
+	if code != exitOK || !strings.Contains(out, "pushed:") {
+		t.Fatalf("sim --push failed (code=%d):\n%s", code, out)
+	}
+
+	// 2. campaign push
+	code, out = runCLI(t, "campaign", "--system", "raft", "--seeds", "1..2", "--duration", "2s", "--commit", "c123", "--branch", "main", "--out", "", "--push", baseURL, "--push-token", "env:STRIFE_TEST_PUSH_TOK", "--tenant", "t1")
+	if code != exitOK || !strings.Contains(out, "pushed:") {
+		t.Fatalf("campaign --push failed (code=%d):\n%s", code, out)
+	}
+
+	// 3. live dry-run push
+	code, out = runCLI(t, "run", "--config", "../../testdata/memory.json", "--duration", "1s", "--dry-run", "--quiet", "--out", filepath.Join(dir, "live"), "--push", baseURL, "--push-token", "env:STRIFE_TEST_PUSH_TOK", "--tenant", "t1")
+	if code != exitOK || !strings.Contains(out, "pushed:") {
+		t.Fatalf("run --push failed (code=%d):\n%s", code, out)
+	}
+
+	// 4. check push + failing push preserves JUnit
+	histPath := filepath.Join(dir, "hist.jsonl")
+	histData := strings.Join([]string{
+		`{"id":0,"process":1,"type":"invoke","f":"write","key":"k0","value":1,"time":1000000}`,
+		`{"id":1,"process":1,"type":"ok","f":"write","key":"k0","value":1,"time":2000000}`,
+		`{"id":2,"process":2,"type":"invoke","f":"read","key":"k0","time":3000000}`,
+		`{"id":3,"process":2,"type":"ok","f":"read","key":"k0","value":1,"time":4000000}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(histPath, []byte(histData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jOK := filepath.Join(dir, "check-ok.xml")
+	code, out = runCLI(t, "check", "--history", histPath, "--push", baseURL, "--push-token", "env:STRIFE_TEST_PUSH_TOK", "--tenant", "t1", "--junit", jOK)
+	if code != exitOK || !strings.Contains(out, "pushed:") {
+		t.Fatalf("check --push failed (code=%d):\n%s", code, out)
+	}
+
+	runs := srv.Store().List("", "", "t1")
+	if len(runs) != 4 {
+		t.Fatalf("expected 4 pushed artifacts for tenant t1, got %d", len(runs))
+	}
+	camps := srv.Store().List("", "campaign", "t1")
+	if len(camps) != 1 || camps[0].Commit != "c123" || camps[0].Branch != "main" {
+		t.Fatalf("expected pushed campaign metadata commit=c123 branch=main, got %+v", camps)
+	}
+
+	jFail := filepath.Join(dir, "check-fail-push.xml")
+	code, out = runCLI(t, "check", "--history", histPath, "--push", baseURL, "--push-token", "wrong-tok", "--junit", jFail)
+	if code != exitError || !strings.Contains(out, "push:") {
+		t.Fatalf("expected exitError on bad --push-token, got code=%d:\n%s", code, out)
+	}
+	if d := readJUnit(t, jFail); d.Tests == 0 || d.Failures != 0 {
+		t.Fatalf("expected JUnit report still written on push failure, got %+v", d)
+	}
+
+	// 5. Queue a job and run strife worker --tenant --once
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/jobs", strings.NewReader(`{"tenant":"pay","kind":"sim","system":"raft","seed":1,"duration":"1s"}`))
+	req.Header.Set("Authorization", "Bearer secret-push-tok")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("enqueue status=%d", resp.StatusCode)
+	}
+
+	code, out = runCLI(t, "worker", "--server", baseURL, "--token", "env:STRIFE_TEST_PUSH_TOK", "--worker-id", "cli-w1", "--poll", "10ms", "--tenant", "pay", "--once")
+	if code != exitOK || !strings.Contains(out, "processed 1 job(s)") {
+		t.Fatalf("worker --once failed (code=%d):\n%s", code, out)
+	}
+	if payRuns := srv.Store().List("", "", "pay"); len(payRuns) != 1 {
+		t.Fatalf("expected 1 completed run for tenant pay, got %d", len(payRuns))
+	}
+}
+
+func TestCIReportModesAndDossierIntegrity(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build candidate/baseline report, passing/failing campaigns, and compliance dossier.
+	simDir := filepath.Join(dir, "sim")
+	if code, out := runCLI(t, "sim", "--system", "raft", "--seed", "1", "--duration", "2s", "--out", simDir); code != exitOK {
+		t.Fatalf("sim failed (%d):\n%s", code, out)
+	}
+	repFile := filepath.Join(simDir, "raft-seed1", "report.json")
+
+	passCampDir := filepath.Join(dir, "camp-pass")
+	if code, out := runCLI(t, "campaign", "--system", "raft", "--seeds", "1..2", "--duration", "2s", "--out", passCampDir); code != exitOK {
+		t.Fatalf("passing campaign failed (%d):\n%s", code, out)
+	}
+	passCampFile := filepath.Join(passCampDir, "campaign.json")
+
+	violCampDir := filepath.Join(dir, "camp-viol")
+	if code, out := runCLI(t, "campaign", "--system", "raft-stale-reads", "--faults", "partition", "--seeds", "1..4", "--duration", "4s", "--out", violCampDir); code != exitViolation {
+		t.Fatalf("violating campaign expected exitViolation (%d):\n%s", code, out)
+	}
+	violCampFile := filepath.Join(violCampDir, "campaign.json")
+
+	dossierDir := filepath.Join(dir, "dossier")
+	if code, out := runCLI(t, "compliance", "--report", repFile, "--frameworks", "dora,bi-ojk", "--out", dossierDir); code != exitOK {
+		t.Fatalf("compliance failed (%d):\n%s", code, out)
+	}
+	dossierFile := filepath.Join(dossierDir, "dossier.json")
+
+	// 1. --json - emits only JSON to stdout while still writing --out Markdown file.
+	mdOut := filepath.Join(dir, "pr-digest.md")
+	var outBuf, errBuf bytes.Buffer
+	code := run([]string{"ci-report", "--report", repFile, "--baseline-report", repFile, "--out", mdOut, "--json", "-"}, &outBuf, &errBuf)
+	if code != exitOK {
+		t.Fatalf("ci-report --json - failed (%d): %s\n%s", code, errBuf.String(), outBuf.String())
+	}
+	var parsed ciReportJSON
+	if err := json.Unmarshal(outBuf.Bytes(), &parsed); err != nil {
+		t.Fatalf("expected stdout to be pure JSON with --json -, got parse error %v:\n%s", err, outBuf.String())
+	}
+	if !parsed.Passed || parsed.Target != "raft" {
+		t.Fatalf("unexpected ci-report JSON payload: %+v", parsed)
+	}
+	if mdBytes, err := os.ReadFile(mdOut); err != nil || !strings.Contains(string(mdBytes), "## Strife CI Gate") {
+		t.Fatalf("expected Markdown digest at %s, err=%v", mdOut, err)
+	}
+
+	// 2. --campaign + --baseline-campaign regression failure, plus standalone violating campaign.
+	code, out := runCLI(t, "ci-report", "--campaign", violCampFile, "--baseline-campaign", passCampFile)
+	if code != exitViolation || !strings.Contains(out, "Campaign Summary") || !strings.Contains(out, "Regressed seeds") {
+		t.Fatalf("expected regression failure from ci-report (code=%d):\n%s", code, out)
+	}
+	code, _ = runCLI(t, "ci-report", "--campaign", violCampFile)
+	if code != exitViolation {
+		t.Fatalf("expected standalone violating campaign to fail ci-report, got %d", code)
+	}
+
+	// 3. --campaign + SLO gate without --report.
+	code, out = runCLI(t, "ci-report", "--campaign", passCampFile, "--max-mttr", "1ns")
+	if code != exitViolation || !strings.Contains(out, "Resilience SLO Gate") {
+		t.Fatalf("expected campaign SLO gate failure (code=%d):\n%s", code, out)
+	}
+
+	// 4. --dossier verification + framework filter + --json file.
+	jsonOut := filepath.Join(dir, "ci-verdict.json")
+	code, out = runCLI(t, "ci-report", "--dossier", dossierFile, "--frameworks", "dora", "--json", jsonOut)
+	if code != exitOK || !strings.Contains(out, "Regulatory Compliance") || !strings.Contains(out, "3 controls evaluated") {
+		t.Fatalf("ci-report --dossier failed (code=%d):\n%s", code, out)
+	}
+	jb, err := os.ReadFile(jsonOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dPayload ciReportJSON
+	if err := json.Unmarshal(jb, &dPayload); err != nil || !dPayload.Passed || dPayload.DossierHash == "" || dPayload.CompliancePassed == nil || !*dPayload.CompliancePassed {
+		t.Fatalf("unexpected dossier JSON output: %s (err=%v)", string(jb), err)
+	}
+
+	// 5. Tampered dossier rejected with exitViolation.
+	origDossier, err := os.ReadFile(dossierFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedPath := filepath.Join(dir, "tampered-dossier.json")
+	tamperedData := strings.Replace(string(origDossier), `"raft"`, `"tampered"`, 1)
+	if err := os.WriteFile(tamperedPath, []byte(tamperedData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCLI(t, "ci-report", "--dossier", tamperedPath)
+	if code != exitViolation || !strings.Contains(out, "integrity check failed") {
+		t.Fatalf("expected exitViolation on tampered dossier (code=%d):\n%s", code, out)
+	}
+
+	// 6. Missing baseline file returns explicit error instead of being ignored.
+	code, _ = runCLI(t, "ci-report", "--report", repFile, "--baseline-report", filepath.Join(dir, "missing.json"))
+	if code != exitError {
+		t.Fatalf("expected exitError on missing --baseline-report, got %d", code)
+	}
+}
+
+func TestCLIUsageValidationAcrossSubcommands(t *testing.T) {
+	cases := [][]string{
+		{"sim", "--max-mttr", "-1s"},
+		{"sim", "--min-availability", "101"},
+		{"check", "--min-availability", "-0.5", "--history", "h.jsonl"},
+		{"run", "--max-mttr", "-1ms", "--config", "../../testdata/memory.json"},
+		{"compliance", "--min-availability", "150", "--report", "r.json"},
+		{"serve", "--min-availability", "-1"},
+		{"worker", "--poll", "-1s"},
+		{"ci-report"},
+		{"ci-report", "--report", "r.json", "--max-mttr", "-5ms"},
+		{"ci-report", "--dossier", "d.json", "--baseline-report", "b.json"},
+	}
+	for _, args := range cases {
+		if code, out := runCLI(t, args...); code != exitUsage {
+			t.Errorf("%v: want exitUsage (%d), got %d:\n%s", args, exitUsage, code, out)
+		}
 	}
 }

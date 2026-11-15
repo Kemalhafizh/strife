@@ -62,7 +62,7 @@ sim | campaign | shrink | check | run | compliance)
 esac
 
 case $sub in
-sim | campaign | run)
+sim | campaign | run | check)
   if [ -n "$push_url" ]; then
     extra+=(--push "$push_url")
     if [ -n "$push_token" ]; then
