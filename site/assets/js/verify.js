@@ -9,9 +9,13 @@
   const result = document.getElementById("result");
   const officialKey = root.dataset.releaseKey ? new TextEncoder().encode(root.dataset.releaseKey) : null;
   const files = {}; // slot id -> [{name, data}]
-  const forms = {
+  const panes = {
     attest: document.getElementById("pane-attest"),
     release: document.getElementById("pane-release"),
+  };
+  const forms = {
+    attest: document.getElementById("form-attest") || panes.attest,
+    release: document.getElementById("form-release") || panes.release,
   };
 
   const s = bindStatus(document.getElementById("status"), t("try_loading"));
@@ -21,26 +25,43 @@
     onFailed: s.onFailed,
   });
 
-  // Tabs
+  // Tabs (focusgroup="tablist nomemory", hidden="until-found", beforematch sync)
   const tabs = [...document.querySelectorAll("[role=tab]")];
-  function select(tab) {
+  function select(tab, moveFocus = false) {
     for (const x of tabs) {
       const on = x === tab;
       x.setAttribute("aria-selected", String(on));
+      x.toggleAttribute("focusgroupstart", on);
       x.tabIndex = on ? 0 : -1;
-      document.getElementById(x.getAttribute("aria-controls")).hidden = !on;
+      const paneId = x.dataset.pane || (x.id === "tab-attest" ? "pane-attest" : "pane-release");
+      const pane = document.getElementById(paneId);
+      if (pane) {
+        if (on) pane.hidden = false;
+        else pane.setAttribute("hidden", "until-found");
+      }
+      if (on) {
+        if (moveFocus) x.focus();
+        try {
+          x.scrollIntoView({ block: "nearest", inline: "nearest", container: "nearest" });
+        } catch {
+          x.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      }
     }
   }
   tabs.forEach((tab, i) => {
-    tab.addEventListener("click", () => select(tab));
+    tab.addEventListener("click", () => select(tab, false));
     tab.addEventListener("keydown", (e) => {
       const d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
       if (!d) return;
+      e.preventDefault();
       const next = tabs[(i + d + tabs.length) % tabs.length];
-      select(next);
-      next.focus();
+      select(next, true);
     });
   });
+
+  if (panes.attest) panes.attest.addEventListener("beforematch", () => select(tabs[0], false));
+  if (panes.release) panes.release.addEventListener("beforematch", () => select(tabs[1], false));
 
   for (const zone of document.querySelectorAll("[data-slot]")) {
     const slot = zone.dataset.slot;
@@ -149,7 +170,7 @@
     ]));
     if (r.files && r.files.length) {
       const label = { match: t("verify_file_match"), mismatch: t("verify_file_mismatch"), "not-in-release": t("verify_file_unknown") };
-      out.push(h("ul", { class: "files" }, r.files.map((f) =>
+      out.push(h("ul", { class: "files", role: "list" }, r.files.map((f) =>
         h("li", {},
           h("span", { class: `check${f.status === "match" ? "" : " bad"}` }, `${f.name}: ${label[f.status] || f.status}`),
           h("code", {}, `sha256 ${f.sha256}`)))));

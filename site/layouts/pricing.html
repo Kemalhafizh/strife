@@ -5,13 +5,24 @@
     <div class="plans">
       {{- range $plan := .Params.plans }}
       <section class="plan{{ if $plan.featured }} featured{{ end }}" aria-labelledby="plan-{{ anchorize $plan.name }}">
-        <h2 id="plan-{{ anchorize $plan.name }}">{{ $plan.name }}</h2>
-        <p class="price">{{ $plan.price }}</p>
-        <p class="muted small">{{ $plan.note }}</p>
-        <ul>{{ range $plan.features }}<li>{{ . | markdownify }}</li>{{ end }}</ul>
-        {{- with site.GetPage $plan.link }}
-        <a class="btn {{ if $plan.featured }}btn-primary{{ else }}btn-secondary{{ end }}" href="{{ .RelPermalink }}">{{ $plan.cta }}</a>
-        {{- end }}
+        <div class="plan-header">
+          <h2 id="plan-{{ anchorize $plan.name }}">{{ $plan.name }}</h2>
+          <p class="price">{{ $plan.price }}</p>
+          <p class="muted small">{{ $plan.note }}</p>
+        </div>
+        <ul role="list">
+          {{- range $plan.features }}
+          <li>
+            {{ partial "icon.html" "check" }}
+            <span>{{ . | markdownify }}</span>
+          </li>
+          {{- end }}
+        </ul>
+        <div class="plan-footer">
+          {{- with site.GetPage $plan.link }}
+          <a class="btn {{ if $plan.featured }}btn-primary{{ else }}btn-secondary{{ end }}" href="{{ .RelPermalink }}">{{ $plan.cta }}</a>
+          {{- end }}
+        </div>
       </section>
       {{- end }}
     </div>

@@ -1,13 +1,30 @@
 {{- /* Renders a preset from data/presets.json as the CLI prints it.
        Context: dict "p" preset. */ -}}
 {{- $p := .p -}}
-<div class="terminal" role="img" aria-label="strife sim output">
-  <div class="terminal-bar" aria-hidden="true"><span></span><span></span><span></span><em>strife</em></div>
+{{- $cmdId := printf "preset-cmd-%s" ($p.id | default "hero") -}}
+<div class="terminal" role="region" aria-label="strife sim {{ $p.system }}">
+  <div class="terminal-bar">
+    <div class="terminal-bar-left" aria-hidden="true">
+      <span class="term-dots"><span></span><span></span><span></span></span>
+      <em>strife sim · {{ $p.system }}</em>
+    </div>
+    <div class="terminal-bar-right">
+      <code id="{{ $cmdId }}" class="visually-hidden">{{ $p.command }}</code>
+      <span class="copy">
+        <button type="button" class="copy-button" command="--copy" commandfor="{{ $cmdId }}" aria-label="{{ i18n "copy" }} {{ $p.command }}">
+          {{ partial "icon.html" "copy" }}
+          {{ partial "icon.html" "check" }}
+          <span class="copy-label">{{ i18n "copy" }}</span>
+        </button>
+        <span class="tip" role="status"></span>
+      </span>
+    </div>
+  </div>
 <pre class="terminal-body"><span class="t-dim">$</span> <span class="t-teal">{{ $p.command }}</span>
 system:  {{ $p.system }}   seed: {{ $p.seed }}   simulated: {{ $p.simulated }}   events: {{ $p.events }}
 faults:  {{ len $p.schedule }} scheduled
 {{- range $p.schedule }}
-  {{ printf "%9s" .start }} → {{ printf "%-9s" .end }} <span class="{{ if in (slice "kill" "pause" "freeze") .kind }}t-red{{ else }}t-amber{{ end }}">{{ .kind }} {{ delimit .nodes " " | printf "[%s]" }}</span>
+  {{ printf "%9s" .start }} → {{ printf "%-9s" .end }} <span class="{{ if in (slice "kill" "pause" "freeze") .kind }}t-red{{ else }}t-amber{{ end }}">{{ $p.system | default "" | printf "%.0s" }}{{ .kind }} {{ delimit .nodes " " | printf "[%s]" }}</span>
 {{- end }}
 ops:     {{ $p.ops.invocations }} ({{ $p.ops.ok }} ok, {{ $p.ops.fail }} fail, {{ $p.ops.info }} info)
 history: {{ substr $p.history_hash 0 16 }}   trace: {{ substr $p.trace_hash 0 16 }}

@@ -1,12 +1,3 @@
-{{- /*
-Compliance controls. IDs and citations come from the engine
-(data/compliance.json, written from pkg/compliance), so they cannot drift.
-The Indonesian controls also get a plain description of what is checked and
-how it is graded, mirroring pkg/compliance.
-
-  {{< controls framework="bi-ojk" >}}   the OJK controls, described
-  {{< controls framework="other" >}}    every other framework, cited
-*/ -}}
 {{- $fw := .Get "framework" }}
 {{- $L := .Page.Language.Lang }}
 {{- $about := dict
@@ -28,26 +19,33 @@ how it is graded, mirroring pkg/compliance.
   "en" (slice "Control" "What is checked" "Grading" "Provision it supports" "Framework") }}
 {{- $h := index $head $L | default (index $head "en") }}
 {{- $names := dict "dora" "EU DORA" "soc2" "AICPA SOC 2" "iso27001" "ISO/IEC 27001:2022" "bi-ojk" "OJK (Indonesia)" }}
-<div class="table-wrap"><table>
+<div tabindex="0" role="region" aria-label="{{ index $names $fw | default "Compliance controls" }}" class="table-wrap table-wrapper" data-stackable>
+<table>
+  <caption class="visually-hidden">{{ index $names $fw | default "Compliance controls" }}</caption>
 {{- if eq $fw "bi-ojk" }}
-  <thead><tr><th>{{ index $h 0 }}</th><th>{{ index $h 1 }}</th><th>{{ index $h 2 }}</th><th>{{ index $h 3 }}</th></tr></thead>
+  <thead><tr><th scope="col">{{ index $h 0 }}</th><th scope="col">{{ index $h 1 }}</th><th scope="col">{{ index $h 2 }}</th><th scope="col">{{ index $h 3 }}</th></tr></thead>
   <tbody>
   {{- range where site.Data.compliance "framework" "bi-ojk" }}
     {{- $a := index (index $about .id | default dict) $L }}
     <tr>
-      <td><code>{{ .id }}</code>{{ with $a }}<br><strong>{{ index . 0 }}</strong>{{ end }}</td>
-      <td>{{ with $a }}{{ index . 1 }}{{ end }}</td>
-      <td>{{ with $a }}{{ index . 2 }}{{ end }}</td>
-      <td>{{ .citation }}</td>
+      <th scope="row"><code>{{ .id }}</code>{{ with $a }}<br><strong>{{ index . 0 }}</strong>{{ end }}</th>
+      <td data-label="{{ index $h 1 }}">{{ with $a }}{{ index . 1 }}{{ end }}</td>
+      <td data-label="{{ index $h 2 }}">{{ with $a }}{{ index . 2 }}{{ end }}</td>
+      <td data-label="{{ index $h 3 }}">{{ .citation }}</td>
     </tr>
   {{- end }}
   </tbody>
 {{- else }}
-  <thead><tr><th>{{ index $h 4 }}</th><th>{{ index $h 0 }}</th><th>{{ index $h 3 }}</th></tr></thead>
+  <thead><tr><th scope="col">{{ index $h 4 }}</th><th scope="col">{{ index $h 0 }}</th><th scope="col">{{ index $h 3 }}</th></tr></thead>
   <tbody>
   {{- range where site.Data.compliance "framework" "!=" "bi-ojk" }}
-    <tr><td>{{ index $names .framework | default .framework }}</td><td><code>{{ .id }}</code></td><td>{{ .citation }}</td></tr>
+    <tr>
+      <th scope="row">{{ index $names .framework | default .framework }}</th>
+      <td data-label="{{ index $h 0 }}"><code>{{ .id }}</code></td>
+      <td data-label="{{ index $h 3 }}">{{ .citation }}</td>
+    </tr>
   {{- end }}
   </tbody>
 {{- end }}
-</table></div>
+</table>
+</div>

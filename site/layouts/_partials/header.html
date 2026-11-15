@@ -1,15 +1,31 @@
 {{- $contact := site.GetPage (cond (eq site.Language.Lang "id") "/kontak" "/contact") }}
 <header class="site-header">
-  <div class="wrap header-row">
-    <a class="brand" href="{{ site.Home.RelPermalink }}" aria-label="Strife">
-      <span class="brand-mark" aria-hidden="true">S</span>
-      <span class="brand-name">STRIFE</span>
+  <div class="wrap header-inner">
+    <a class="brand" href="{{ site.Home.RelPermalink }}">
+      <svg class="brand-glyph" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect width="24" height="24" rx="5" fill="#13161d"/>
+        <rect x="0.5" y="0.5" width="23" height="23" rx="4.5" stroke="#eef0f5" stroke-opacity="0.16"/>
+        <path d="M5 8.5H13.5M10.5 15.5H19" stroke="#eef0f5" stroke-width="1.75" stroke-linecap="round"/>
+        <path d="M13.5 8.5L10.5 15.5" stroke="#f59e0b" stroke-width="1.75" stroke-linecap="round"/>
+        <circle cx="13.5" cy="8.5" r="2" fill="#13161d" stroke="#eef0f5" stroke-width="1.5"/>
+        <circle cx="10.5" cy="15.5" r="2" fill="#13161d" stroke="#f59e0b" stroke-width="1.5"/>
+      </svg>
+      <span class="brand-name">Strife</span>
     </a>
-    <nav class="nav" aria-label="{{ i18n "menu" }}">
-      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-list">
-        <span class="nav-burger" aria-hidden="true"></span><span class="sr-only">{{ i18n "menu" }}</span>
+
+    <nav class="site-nav" aria-label="{{ i18n "nav_primary" }}">
+      <button
+        class="menu-button"
+        type="button"
+        popovertarget="site-menu"
+        popovertargetaction="toggle"
+        aria-controls="site-menu"
+      >
+        {{ partial "icon.html" "menu" }}
+        <span>{{ i18n "menu" }}</span>
       </button>
-      <ul class="nav-list" id="nav-list">
+
+      <ul class="site-menu nav-list" id="site-menu" popover="auto" role="list">
         {{- $current := . }}
         {{- range site.Menus.main }}
         {{- $active := or ($current.IsMenuCurrent "main" .) ($current.HasMenuCurrent "main" .) (and .Page (eq .Page.Kind "section") (eq .Page.Section $current.Section)) }}
@@ -20,7 +36,8 @@
         {{- end }}
       </ul>
     </nav>
-    <div class="lang" aria-label="{{ i18n "language" }}">
+
+    <div class="lang" role="group" aria-label="{{ i18n "language" }}">
       {{- $page := . }}
       {{- range site.Languages }}
         {{- $lang := .Lang }}

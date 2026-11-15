@@ -1,26 +1,43 @@
 {{ define "main" }}
 {{- $d := site.Data.presets }}
 {{- $a := partial "engine-assets.html" . }}
+{{- $hero := index (where $d.presets "id" "unsafe-fsync") 0 }}
+{{- $isID := eq site.Language.Lang "id" }}
 <article class="page">
   {{ partial "page-hero.html" (dict "Title" .Title "Params" (merge .Params (dict "wide" true))) }}
   <div class="wrap">
     <div class="tool" id="try" data-worker="{{ $a.worker }}" data-wasm="{{ $a.wasm }}" data-wasm-gz="{{ $a.wasmGz }}" data-wasm-exec="{{ $a.wasmExec }}" data-platform="{{ $d.platform }}">
       <div class="panel">
-        <h2>{{ i18n "try_presets" }}</h2>
+        <div class="panel-head">
+          <h2>{{ i18n "try_presets" }}</h2>
+          <span class="mono-tag">{{ len $d.presets }} {{ if $isID }}skenario{{ else }}scenarios{{ end }}</span>
+        </div>
         <div class="presets" role="group" aria-label="{{ i18n "try_presets" }}">
-          {{- range $d.presets }}
-          {{- $k := replace .id "-" "_" }}
-          <button type="button" class="preset" data-preset="{{ .id }}" aria-pressed="false">
-            <strong>{{ i18n (printf "preset_%s" $k) }}</strong>
+          {{- range $idx, $p := $d.presets }}
+          {{- $k := replace $p.id "-" "_" }}
+          <button type="button" class="preset" data-preset="{{ $p.id }}" aria-pressed="{{ if eq $idx 0 }}true{{ else }}false{{ end }}">
+            <div class="preset-top">
+              <strong>{{ i18n (printf "preset_%s" $k) }}</strong>
+              <span class="badge {{ if eq $p.verdict "violation" }}badge-violation{{ else }}badge-linearizable{{ end }}">
+                {{ if eq $p.verdict "violation" }}{{ i18n "verdict_violation" }}{{ else }}{{ i18n "verdict_linearizable" }}{{ end }}
+              </span>
+            </div>
             <span>{{ i18n (printf "preset_%s_body" $k) }}</span>
+            <div class="preset-meta">
+              <code>{{ $p.system }}</code>
+              <code>seed {{ $p.seed }}</code>
+            </div>
           </button>
           {{- end }}
         </div>
-        <h2>{{ i18n "try_custom" }}</h2>
+        <div class="panel-head panel-head-spaced">
+          <h2>{{ i18n "try_custom" }}</h2>
+          <span class="mono-tag">PRNG 64-bit</span>
+        </div>
         <form id="try-form" novalidate>
           <div class="field">
             <label for="f-system">{{ i18n "try_system" }}</label>
-            <select id="f-system" name="system">
+            <select id="f-system" name="system" aria-describedby="f-system-desc">
               {{- range $d.systems }}<option value="{{ .name }}" data-desc="{{ .description }}">{{ .name }}</option>{{ end }}
             </select>
             <small class="muted" id="f-system-desc"></small>
@@ -62,9 +79,47 @@
         </form>
       </div>
       <div class="panel" aria-live="polite">
-        <h2>{{ i18n "try_result" }}</h2>
+        <div class="panel-head">
+          <h2>{{ i18n "try_result" }}</h2>
+          <span class="mono-tag">{{ $d.platform }} · Wasm</span>
+        </div>
         <div id="result" class="result">
-          <div class="empty">{{ .Params.empty }}</div>
+          <div class="result-head">
+            <span class="badge badge-violation">{{ i18n "verdict_violation" }}</span>
+            <span class="muted small">{{ $hero.events }} {{ i18n "try_events" }} · {{ $hero.ops.invocations }} {{ i18n "try_ops" }} ({{ $hero.ops.ok }} {{ i18n "try_ok" }}, {{ $hero.ops.fail }} {{ i18n "try_fail" }}, {{ $hero.ops.info }} {{ i18n "try_info" }}) · {{ if $isID }}Pratinjau referensi build-time{{ else }}Build-time reference preview{{ end }}</span>
+          </div>
+          <h3>{{ i18n "try_explain" }}</h3>
+          <div class="explain">{{ $hero.failure }}</div>
+          <h3>{{ i18n "try_schedule" }}</h3>
+          <ul class="schedule" role="list">
+            {{- range $hero.schedule }}
+            <li>
+              <span>{{ .start }} → {{ .end }}</span>
+              <span class="k{{ if in (slice "kill" "pause" "freeze") .kind }} red{{ end }}">{{ .kind }}</span>
+              <span>[{{ delimit .nodes " " }}]</span>
+            </li>
+            {{- end }}
+          </ul>
+          <h3>{{ i18n "try_hashes" }}</h3>
+          <dl class="kv">
+            <dt>trace</dt><dd>{{ $hero.trace_hash }}</dd>
+            <dt>history</dt><dd>{{ $hero.history_hash }}</dd>
+            {{- with $hero.schedule_hash }}<dt>schedule</dt><dd>{{ . }}</dd>{{ end }}
+          </dl>
+          <p class="check">{{ i18n "try_match" }} ({{ $d.platform }})</p>
+          <h3>{{ i18n "try_command" }}</h3>
+          <div class="code-line">
+            <code id="try-init-cmd">{{ $hero.command }}</code>
+            <span class="copy">
+              <button type="button" class="copy-button" command="--copy" commandfor="try-init-cmd" aria-label="{{ i18n "copy" }} {{ $hero.command }}">
+                {{ partial "icon.html" "copy" }}
+                {{ partial "icon.html" "check" }}
+                <span class="copy-label">{{ i18n "copy" }}</span>
+              </button>
+              <span class="tip" role="status"></span>
+            </span>
+          </div>
+          <p class="muted small">{{ .Params.empty }}</p>
         </div>
       </div>
     </div>
@@ -72,7 +127,7 @@
   </div>
 </article>
 <script type="application/json" id="presets">{{ $d.presets | jsonify | safeJS }}</script>
-{{ partial "strings.html" (slice "try_loading" "try_ready" "try_load_failed" "try_running" "try_run" "try_events" "try_ops" "try_ok" "try_fail" "try_info" "try_schedule" "try_explain" "try_hashes" "try_match" "try_nomatch" "try_same_again" "try_diff_again" "try_command" "try_report" "try_report_hint" "try_download_report" "try_elapsed" "try_again" "verdict_violation" "verdict_linearizable" "verdict_unknown" "copy" "copied") }}
+{{ partial "strings.html" (slice "try_loading" "try_ready" "try_load_failed" "try_running" "try_run" "try_events" "try_ops" "try_ok" "try_fail" "try_info" "try_schedule" "try_explain" "try_hashes" "try_match" "try_nomatch" "try_same_again" "try_diff_again" "try_command" "try_report" "try_report_hint" "try_download_report" "try_elapsed" "try_again" "verdict_violation" "verdict_linearizable" "verdict_unknown" "copy" "copied" "copy_failed") }}
 {{ end }}
 {{ define "scripts" }}
 {{- $engine := (resources.Get "js/engine.js" | minify | fingerprint) }}

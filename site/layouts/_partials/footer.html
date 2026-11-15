@@ -1,27 +1,36 @@
 <footer class="site-footer">
   <div class="wrap footer-grid">
     <div class="footer-brand">
-      <a class="brand" href="{{ site.Home.RelPermalink }}" aria-label="Strife">
-        <span class="brand-mark" aria-hidden="true">S</span>
-        <span class="brand-name">STRIFE</span>
+      <a class="brand" href="{{ site.Home.RelPermalink }}">
+        <svg class="brand-glyph" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect width="24" height="24" rx="5" fill="#13161d"/>
+          <rect x="0.5" y="0.5" width="23" height="23" rx="4.5" stroke="#eef0f5" stroke-opacity="0.16"/>
+          <path d="M5 8.5H13.5M10.5 15.5H19" stroke="#eef0f5" stroke-width="1.75" stroke-linecap="round"/>
+          <path d="M13.5 8.5L10.5 15.5" stroke="#f59e0b" stroke-width="1.75" stroke-linecap="round"/>
+          <circle cx="13.5" cy="8.5" r="2" fill="#13161d" stroke="#eef0f5" stroke-width="1.5"/>
+          <circle cx="10.5" cy="15.5" r="2" fill="#13161d" stroke="#f59e0b" stroke-width="1.5"/>
+        </svg>
+        <span class="brand-name">Strife</span>
       </a>
       <p>{{ i18n "footer_tagline" }}</p>
-      <p class="footer-fine">{{ i18n "footer_license" }}
-        {{- with site.Data.presets }} {{ i18n "footer_built" }} <code>{{ .engine }}</code>.{{ end }}</p>
+      <div class="signature-stamp">
+        <span class="sig-dot" aria-hidden="true"></span>
+        <code>{{ i18n "footer_license" }}{{- with site.Data.presets }} · {{ i18n "footer_built" }} {{ .engine }}{{ end }}</code>
+      </div>
     </div>
     <nav aria-label="{{ i18n "footer_product" }}">
       <h2>{{ i18n "footer_product" }}</h2>
-      <ul>{{ range site.Menus.product }}<li><a href="{{ .URL }}">{{ .Name }}</a></li>{{ end }}</ul>
+      <ul role="list">{{ range site.Menus.product }}<li><a href="{{ .URL }}">{{ .Name }}</a></li>{{ end }}</ul>
     </nav>
     <nav aria-label="{{ i18n "footer_tools" }}">
       <h2>{{ i18n "footer_tools" }}</h2>
-      <ul>{{ range site.Menus.tools }}<li><a href="{{ .URL }}">{{ .Name }}</a></li>{{ end }}</ul>
+      <ul role="list">{{ range site.Menus.tools }}<li><a href="{{ .URL }}">{{ .Name }}</a></li>{{ end }}</ul>
     </nav>
     <nav aria-label="{{ i18n "footer_trust" }}">
       <h2>{{ i18n "footer_trust" }}</h2>
-      <ul>
+      <ul role="list">
         {{- range site.Menus.trust }}<li><a href="{{ .URL }}">{{ .Name }}</a></li>{{ end }}
-        <li><a href="{{ site.Params.repo }}" rel="noopener">{{ i18n "footer_source" }} ↗</a></li>
+        <li><a href="{{ site.Params.repo }}" rel="noopener">{{ i18n "footer_source" }}</a></li>
       </ul>
     </nav>
   </div>

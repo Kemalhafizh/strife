@@ -1,13 +1,22 @@
-<div class="table-wrap">
+<div tabindex="0" role="region" aria-label="{{ .Page.Title }}" class="table-wrap table-wrapper">
 <table>
+  {{- with .Attributes.title }}<caption>{{ . }}</caption>{{ end }}
   <thead>
     {{- range .THead }}
-    <tr>{{ range . }}<th{{ with .Alignment }} class="al-{{ . }}"{{ end }}>{{ .Text }}</th>{{ end }}</tr>
+    <tr>{{ range . }}<th scope="col"{{ with .Alignment }} class="al-{{ . }}"{{ end }}>{{ .Text }}</th>{{ end }}</tr>
     {{- end }}
   </thead>
   <tbody>
     {{- range .TBody }}
-    <tr>{{ range . }}<td{{ with .Alignment }} class="al-{{ . }}"{{ end }}>{{ .Text }}</td>{{ end }}</tr>
+    <tr>
+      {{- range $i, $cell := . }}
+      {{- if eq $i 0 }}
+      <th scope="row"{{ with $cell.Alignment }} class="al-{{ . }}"{{ end }}>{{ $cell.Text }}</th>
+      {{- else }}
+      <td{{ with $cell.Alignment }} class="al-{{ . }}"{{ end }}>{{ $cell.Text }}</td>
+      {{- end }}
+      {{- end }}
+    </tr>
     {{- end }}
   </tbody>
 </table>

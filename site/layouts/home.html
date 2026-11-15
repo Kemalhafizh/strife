@@ -1,6 +1,7 @@
 {{ define "bodyclass" }}home{{ end }}
 {{ define "main" }}
 {{- $L := site.Language.Lang }}
+{{- $isID := eq $L "id" }}
 {{- $paths := dict
   "try" (cond (eq $L "id") "/coba" "/try")
   "download" (cond (eq $L "id") "/unduh" "/download")
@@ -17,24 +18,122 @@
 <section class="hero">
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow">{{ i18n "home_eyebrow" }}</p>
+      <p class="eyebrow">
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        <span>{{ i18n "home_eyebrow" }}</span>
+      </p>
       <h1>{{ i18n "home_h1" }}</h1>
       <p class="lead">{{ i18n "home_lead" }}</p>
       <div class="actions">
-        <a class="btn btn-primary btn-lg" href="{{ $u.try }}">{{ i18n "home_cta_try" }} <small>· {{ i18n "home_cta_try_note" }}</small></a>
-        <a class="btn btn-secondary btn-lg" href="{{ $u.download }}">{{ i18n "home_cta_download" }}</a>
+        <a class="btn btn-primary btn-lg" href="{{ $u.try }}">
+          {{ partial "icon.html" "play" }}
+          <span>{{ i18n "home_cta_try" }}</span>
+          <small>· {{ i18n "home_cta_try_note" }}</small>
+        </a>
+        <a class="btn btn-secondary btn-lg" href="{{ $u.download }}">
+          {{ partial "icon.html" "download" }}
+          <span>{{ i18n "home_cta_download" }}</span>
+        </a>
       </div>
-      <p class="trustline">{{ i18n "home_trust" }}</p>
+      <div class="hero-meta">
+        <div class="signature-stamp">
+          <span class="sig-dot is-warn" aria-hidden="true"></span>
+          <code>seed {{ $preset.seed }} · sha256 {{ substr $preset.trace_hash 0 16 }}</code>
+        </div>
+        <p class="hero-trust">{{ i18n "home_trust" }}</p>
+      </div>
     </div>
-    <div class="hero-visual" aria-hidden="true">
-      <div class="timeline-art">
-        {{- range $i, $f := $preset.schedule }}
-        {{- $start := float (strings.TrimSuffix "s" $f.start) }}{{ $end := float (strings.TrimSuffix "s" $f.end) }}
-        <div class="ta-row"><span class="ta-label">{{ $f.kind }}</span><span class="ta-track"><span class="ta-bar {{ if in (slice "kill" "pause" "freeze") $f.kind }}ta-red{{ end }}" style="left:{{ printf "%.2f" (mul (div $start $dur) 100) }}%;width:{{ printf "%.2f" (mul (div (sub $end $start) $dur) 100) }}%"></span></span></div>
-        {{- end }}
-        <div class="ta-axis"><span>0s</span><span>5s</span><span>10s</span></div>
-        <div class="ta-verdict"><span class="badge badge-violation">{{ i18n "verdict_violation" }}</span> <code>{{ substr $preset.trace_hash 0 16 }}</code></div>
-      </div>
+
+    <div class="hero-visual">
+      <figure class="trace-studio" aria-label="{{ i18n "trace_window_title" }}">
+        <div class="trace-header">
+          <div class="trace-header-left">
+            <span class="trace-dot" aria-hidden="true"></span>
+            <span class="trace-title">{{ i18n "trace_window_title" }}</span>
+          </div>
+          <div class="trace-header-right">
+            <span class="mono-tag">seed {{ $preset.seed }}</span>
+            <span class="mono-tag">5 nodes</span>
+            <span class="badge badge-violation">{{ i18n "verdict_violation" }}</span>
+          </div>
+        </div>
+
+        <div class="trace-body">
+          <div class="trace-subbar">
+            <span class="trace-subbar-label">{{ i18n "trace_lanes_label" }}</span>
+            <div class="trace-ruler" aria-hidden="true">
+              <span>0.0s</span>
+              <span>2.0s</span>
+              <span>4.0s</span>
+              <span>6.0s</span>
+              <span>8.0s</span>
+              <span>10.0s</span>
+            </div>
+          </div>
+
+          <div class="trace-lanes" role="list" aria-label="Fault injection schedule">
+            {{- range $f := $preset.schedule }}
+              {{- $start := float (strings.TrimSuffix "s" $f.start) }}
+              {{- $end := float (strings.TrimSuffix "s" $f.end) }}
+              {{- $left := mul (div $start $dur) 100.0 }}
+              {{- $width := mul (div (sub $end $start) $dur) 100.0 }}
+              {{- $isKill := in (slice "kill" "pause" "freeze") $f.kind }}
+              <div class="trace-lane" role="listitem">
+                <div class="trace-lane-meta">
+                  <span class="trace-kind {{ if $isKill }}is-kill{{ else }}is-stall{{ end }}">{{ $f.kind }}</span>
+                  <code class="trace-targets">[{{ delimit $f.nodes " " }}]</code>
+                </div>
+                <div class="trace-track">
+                  <span class="trace-bar {{ if $isKill }}is-kill{{ else }}is-stall{{ end }}"
+                        style="inset-inline-start: {{ printf "%.2f" $left }}%; inline-size: {{ printf "%.2f" $width }}%"></span>
+                </div>
+                <span class="trace-lane-time">{{ printf "%.2f–%.2fs" $start $end }}</span>
+              </div>
+            {{- end }}
+          </div>
+
+          <div class="trace-witness">
+            <div class="trace-witness-head">
+              <span class="trace-witness-title">
+                {{ partial "icon.html" "alert-triangle" }}
+                <span>{{ i18n "trace_witness_label" }}</span>
+              </span>
+              <code class="trace-witness-model">model: kv · solver: wgl</code>
+            </div>
+
+            <div class="witness-diagram" aria-hidden="true">
+              <div class="witness-op is-ok">
+                <span class="w-client">p7 · 6.410s</span>
+                <code>write(k0, 3) → ok</code>
+              </div>
+              <div class="witness-op is-lost">
+                <span class="w-client">p2 · 7.780s–7.861s</span>
+                <code>write(k0, 2) → ok</code>
+              </div>
+              <div class="witness-op is-bad">
+                <span class="w-client">p22 · 8.940s</span>
+                <code>read(k0) → 3 (stale)</code>
+              </div>
+            </div>
+
+            <p class="trace-witness-desc">{{ i18n "trace_witness_detail" }}</p>
+          </div>
+        </div>
+
+        <figcaption class="trace-footer">
+          <div class="trace-hashes">
+            <span>events <code>{{ $preset.events }}</code></span>
+            <span>ops <code>{{ $preset.ops.invocations }}</code></span>
+            <span>history <code>{{ substr $preset.history_hash 0 12 }}</code></span>
+            <span>trace <code>{{ substr $preset.trace_hash 0 12 }}</code></span>
+          </div>
+          <div class="trace-links">
+            <a href="{{ "demos/timeline.html" | relURL }}">{{ i18n "trace_artifact_timeline" }}</a>
+            <a href="{{ "demos/campaign.html" | relURL }}">{{ i18n "trace_artifact_campaign" }}</a>
+            <a href="{{ "demos/dossier.html" | relURL }}">{{ i18n "trace_artifact_dossier" }}</a>
+          </div>
+        </figcaption>
+      </figure>
     </div>
   </div>
 </section>
@@ -42,11 +141,17 @@
 <section class="section">
   <div class="wrap split">
     <div>
-      <p class="eyebrow">{{ i18n "home_proof_eyebrow" }}</p>
+      <p class="eyebrow">
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        <span>{{ i18n "home_proof_eyebrow" }}</span>
+      </p>
       <h2>{{ i18n "home_proof_h2" }}</h2>
       <p>{{ i18n "home_proof_body" }}</p>
       <p class="muted small">{{ i18n "home_proof_note" }}</p>
-      <a class="btn btn-secondary" href="{{ $u.try }}?preset=unsafe-fsync">{{ i18n "home_proof_cta" }} →</a>
+      <a class="btn btn-secondary" href="{{ $u.try }}?preset=unsafe-fsync">
+        {{ partial "icon.html" "terminal" }}
+        <span>{{ i18n "home_proof_cta" }}</span>
+      </a>
     </div>
     <div>{{ partial "preset-terminal.html" (dict "p" $preset) }}</div>
   </div>
@@ -54,11 +159,24 @@
 
 <section class="section section-alt">
   <div class="wrap">
-    <p class="eyebrow">{{ i18n "home_steps_eyebrow" }}</p>
-    <h2>{{ i18n "home_steps_h2" }}</h2>
-    <ol class="steps">
-      {{- range slice 1 2 3 4 }}
-      <li><h3>{{ i18n (printf "step%d_title" .) }}</h3><p>{{ i18n (printf "step%d_body" .) }}</p></li>
+    <div class="section-head">
+      <p class="eyebrow">
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        <span>{{ i18n "home_steps_eyebrow" }}</span>
+      </p>
+      <h2>{{ i18n "home_steps_h2" }}</h2>
+    </div>
+    <ol class="steps" role="list">
+      {{- $cmds := slice "strife sim / run" "history.jsonl" "strife check" "strife shrink · sign" }}
+      {{- range $idx, $n := slice 1 2 3 4 }}
+      <li class="step-card">
+        <div class="step-top">
+          <span class="step-num">{{ printf "%02d" $n }}</span>
+          <code class="step-cmd">{{ index $cmds $idx }}</code>
+        </div>
+        <h3>{{ i18n (printf "step%d_title" $n) }}</h3>
+        <p>{{ i18n (printf "step%d_body" $n) }}</p>
+      </li>
       {{- end }}
     </ol>
   </div>
@@ -66,54 +184,211 @@
 
 <section class="section">
   <div class="wrap">
-    <p class="eyebrow">{{ i18n "home_paths_eyebrow" }}</p>
-    <h2>{{ i18n "home_paths_h2" }}</h2>
-    <div class="grid grid-3">
-      <a class="card card-link" href="{{ $u.docs }}">
-        <h3>{{ i18n "path_eng_title" }}</h3><p>{{ i18n "path_eng_body" }}</p><span class="card-cta">{{ i18n "path_eng_cta" }} →</span>
-      </a>
-      <a class="card card-link" href="{{ $u.compliance }}">
-        <h3>{{ i18n "path_risk_title" }}</h3><p>{{ i18n "path_risk_body" }}</p><span class="card-cta">{{ i18n "path_risk_cta" }} →</span>
-      </a>
-      <a class="card card-link" href="{{ $u.verify }}">
-        <h3>{{ i18n "path_audit_title" }}</h3><p>{{ i18n "path_audit_body" }}</p><span class="card-cta">{{ i18n "path_audit_cta" }} →</span>
-      </a>
+    <div class="section-head">
+      <p class="eyebrow">
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        <span>{{ i18n "home_numbers_eyebrow" }}</span>
+      </p>
+      <h2>{{ i18n "home_numbers_h2" }}</h2>
+    </div>
+
+    <div class="telemetry-workspace">
+      <figure class="chart-panel" aria-labelledby="chart-heading">
+        <div class="chart-head">
+          <div>
+            <h3 id="chart-heading">{{ i18n "chart_title" }}</h3>
+            <p class="chart-sub">{{ i18n "chart_subtitle" }}</p>
+          </div>
+          <span class="mono-tag">Linux 6.8 · cgroup v2 · netlink</span>
+        </div>
+
+        <div class="chart-canvas">
+          <div class="chart-gridlines" aria-hidden="true">
+            <span>0 ms</span>
+            <span>10 ms</span>
+            <span>20 ms</span>
+            <span>30 ms</span>
+            <span>40 ms</span>
+            <span>50 ms</span>
+          </div>
+
+          <div class="chart-rows">
+            <div class="chart-row">
+              <div class="chart-row-meta">
+                <span class="chart-row-label">strife-agent daemon (cgroup.freeze / netlink)</span>
+                <strong class="chart-row-val is-accent">1.36 ms <small>(p99 2.41 ms)</small></strong>
+              </div>
+              <div class="chart-track">
+                <span class="chart-fill is-accent" style="inline-size: 3.2%"></span>
+              </div>
+            </div>
+
+            <div class="chart-row">
+              <div class="chart-row-meta">
+                <span class="chart-row-label">docker exec / container runtime CLI</span>
+                <strong class="chart-row-val">43.71 ms <small>(p99 68.40 ms)</small></strong>
+              </div>
+              <div class="chart-track">
+                <span class="chart-fill is-muted" style="inline-size: 87.4%"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="chart-divider"></div>
+
+          <div class="chart-subhead">
+            <span>{{ if $isID }}Kecepatan solver linearizability WGL per core (register tunggal){{ else }}Single-register WGL linearizability solver throughput per core{{ end }}</span>
+            <code>go test -bench=BenchmarkWGL</code>
+          </div>
+
+          <div class="chart-rows">
+            <div class="chart-row">
+              <div class="chart-row-meta">
+                <span class="chart-row-label">2 {{ if $isID }}proses klien bersaing{{ else }}concurrent client processes{{ end }}</span>
+                <strong class="chart-row-val">508,400 ops/s</strong>
+              </div>
+              <div class="chart-track">
+                <span class="chart-fill is-ok" style="inline-size: 94%"></span>
+              </div>
+            </div>
+            <div class="chart-row">
+              <div class="chart-row-meta">
+                <span class="chart-row-label">8 {{ if $isID }}proses klien bersaing{{ else }}concurrent client processes{{ end }}</span>
+                <strong class="chart-row-val">95,200 ops/s</strong>
+              </div>
+              <div class="chart-track">
+                <span class="chart-fill is-ok" style="inline-size: 22%"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </figure>
+
+      <div class="stats-ledger">
+        {{- range slice (slice "raft" "4-bug-detection-in-the-simulator") (slice "sound" "3-checker-correctness") (slice "agent" "1-fault-injection-latency") (slice "wgl" "2-checker-throughput") }}
+        <div class="stat">
+          <div class="stat-top">
+            <p class="stat-value">{{ i18n (printf "stat_%s_value" (index . 0)) }}</p>
+            <a class="stat-source" href="{{ $u.bench }}#{{ index . 1 }}">
+              <span>{{ i18n "stat_source" }}</span>
+              {{ partial "icon.html" "arrow-right" }}
+            </a>
+          </div>
+          <p class="stat-label">{{ i18n (printf "stat_%s_label" (index . 0)) }}</p>
+        </div>
+        {{- end }}
+      </div>
     </div>
   </div>
 </section>
 
 <section class="section section-alt">
-  <div class="wrap split">
-    <div>
-      <p class="eyebrow">{{ i18n "home_real_eyebrow" }}</p>
-      <h2>{{ i18n "home_real_h2" }}</h2>
-      <p>{{ i18n "home_real_body" }}</p>
+  <div class="wrap">
+    <div class="section-head split-head">
+      <div>
+        <p class="eyebrow">
+          <span class="eyebrow-dot" aria-hidden="true"></span>
+          <span>{{ i18n "home_real_eyebrow" }}</span>
+        </p>
+        <h2>{{ i18n "home_real_h2" }}</h2>
+      </div>
+      <p class="section-lead">{{ i18n "home_real_body" }}</p>
     </div>
-    <div>
-      <ul class="findings">
-        <li>{{ i18n "real_pg_rr" }}</li>
-        <li>{{ i18n "real_pg_standby" }}</li>
-        <li>{{ i18n "real_mysql" }}</li>
-        <li>{{ i18n "real_tidb" }}</li>
-        <li>{{ i18n "real_valkey" }}</li>
-      </ul>
-      <p class="small"><a href="{{ $u.bench }}#5-live-clusters">{{ i18n "real_source" }} →</a></p>
+
+    <div tabindex="0" role="region" aria-label="{{ i18n "matrix_caption" }}" class="table-wrap table-wrapper" data-stackable>
+      <table class="matrix-table">
+        <caption class="visually-hidden">{{ i18n "matrix_caption" }}</caption>
+        <thead>
+          <tr>
+            <th scope="col">{{ i18n "matrix_col_engine" }}</th>
+            <th scope="col">{{ i18n "matrix_col_config" }}</th>
+            <th scope="col">{{ i18n "matrix_col_fault" }}</th>
+            <th scope="col">{{ i18n "matrix_col_verdict" }}</th>
+            <th scope="col">{{ i18n "matrix_col_finding" }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row"><code>PostgreSQL 17</code></th>
+            <td data-label="{{ i18n "matrix_col_config" }}"><code>REPEATABLE READ</code> · primary</td>
+            <td data-label="{{ i18n "matrix_col_fault" }}"><code>none</code> (concurrent ledger transfers)</td>
+            <td data-label="{{ i18n "matrix_col_verdict" }}"><span class="badge badge-violation">G2 · write skew</span></td>
+            <td data-label="{{ i18n "matrix_col_finding" }}">{{ i18n "real_pg_rr" }}</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>PostgreSQL 17</code></th>
+            <td data-label="{{ i18n "matrix_col_config" }}">Primary + async streaming standby</td>
+            <td data-label="{{ i18n "matrix_col_fault" }}"><code>none</code> / read routing</td>
+            <td data-label="{{ i18n "matrix_col_verdict" }}"><span class="badge badge-unknown">G-realtime</span></td>
+            <td data-label="{{ i18n "matrix_col_finding" }}">{{ i18n "real_pg_standby" }}</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>MySQL 8.4</code></th>
+            <td data-label="{{ i18n "matrix_col_config" }}">InnoDB · <code>REPEATABLE READ</code></td>
+            <td data-label="{{ i18n "matrix_col_fault" }}"><code>none</code> (append / read-write cycles)</td>
+            <td data-label="{{ i18n "matrix_col_verdict" }}"><span class="badge badge-violation">G-single</span></td>
+            <td data-label="{{ i18n "matrix_col_finding" }}">{{ i18n "real_mysql" }}</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>TiDB v8.5</code></th>
+            <td data-label="{{ i18n "matrix_col_config" }}">Pessimistic txn · snapshot check</td>
+            <td data-label="{{ i18n "matrix_col_fault" }}"><code>latency</code> + key contention</td>
+            <td data-label="{{ i18n "matrix_col_verdict" }}"><span class="badge badge-violation">G-single</span></td>
+            <td data-label="{{ i18n "matrix_col_finding" }}">{{ i18n "real_tidb" }}</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>Valkey 8.0</code></th>
+            <td data-label="{{ i18n "matrix_col_config" }}">Primary + async replica</td>
+            <td data-label="{{ i18n "matrix_col_fault" }}"><code>partition</code> + failover</td>
+            <td data-label="{{ i18n "matrix_col_verdict" }}"><span class="badge badge-violation">stale read</span></td>
+            <td data-label="{{ i18n "matrix_col_finding" }}">{{ i18n "real_valkey" }}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
+    <p class="small matrix-foot">
+      <a class="text-link" href="{{ $u.bench }}#5-live-clusters">
+        <span>{{ i18n "real_source" }}</span>
+        {{ partial "icon.html" "arrow-right" }}
+      </a>
+    </p>
   </div>
 </section>
 
 <section class="section">
   <div class="wrap">
-    <p class="eyebrow">{{ i18n "home_numbers_eyebrow" }}</p>
-    <h2>{{ i18n "home_numbers_h2" }}</h2>
-    <div class="grid grid-4 stats">
-      {{- range slice (slice "raft" "4-bug-detection-in-the-simulator") (slice "sound" "3-checker-correctness") (slice "agent" "1-fault-injection-latency") (slice "wgl" "2-checker-throughput") }}
-      <div class="stat">
-        <p class="stat-value">{{ i18n (printf "stat_%s_value" (index . 0)) }}</p>
-        <p class="stat-label">{{ i18n (printf "stat_%s_label" (index . 0)) }}</p>
-        <a class="stat-source" href="{{ $u.bench }}#{{ index . 1 }}">{{ i18n "stat_source" }} →</a>
-      </div>
-      {{- end }}
+    <div class="section-head">
+      <p class="eyebrow">
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        <span>{{ i18n "home_paths_eyebrow" }}</span>
+      </p>
+      <h2>{{ i18n "home_paths_h2" }}</h2>
+    </div>
+    <div class="grid grid-3">
+      <a class="card card-link" href="{{ $u.docs }}">
+        <div class="card-head-row">
+          {{ partial "icon.html" "terminal" }}
+          <h3>{{ i18n "path_eng_title" }}</h3>
+        </div>
+        <p>{{ i18n "path_eng_body" }}</p>
+        <span class="card-cta">{{ i18n "path_eng_cta" }} {{ partial "icon.html" "arrow-right" }}</span>
+      </a>
+      <a class="card card-link" href="{{ $u.compliance }}">
+        <div class="card-head-row">
+          {{ partial "icon.html" "file-text" }}
+          <h3>{{ i18n "path_risk_title" }}</h3>
+        </div>
+        <p>{{ i18n "path_risk_body" }}</p>
+        <span class="card-cta">{{ i18n "path_risk_cta" }} {{ partial "icon.html" "arrow-right" }}</span>
+      </a>
+      <a class="card card-link" href="{{ $u.verify }}">
+        <div class="card-head-row">
+          {{ partial "icon.html" "shield-check" }}
+          <h3>{{ i18n "path_audit_title" }}</h3>
+        </div>
+        <p>{{ i18n "path_audit_body" }}</p>
+        <span class="card-cta">{{ i18n "path_audit_cta" }} {{ partial "icon.html" "arrow-right" }}</span>
+      </a>
     </div>
   </div>
 </section>
@@ -121,13 +396,19 @@
 <section class="section section-alt">
   <div class="wrap split">
     <div>
-      <p class="eyebrow">{{ i18n "home_comp_eyebrow" }}</p>
+      <p class="eyebrow">
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        <span>{{ i18n "home_comp_eyebrow" }}</span>
+      </p>
       <h2>{{ i18n "home_comp_h2" }}</h2>
       <p>{{ i18n "home_comp_body" | markdownify }}</p>
-      <a class="btn btn-secondary" href="{{ $u.compliance }}">{{ i18n "home_comp_cta" }} →</a>
+      <a class="btn btn-secondary" href="{{ $u.compliance }}">
+        {{ partial "icon.html" "book-open" }}
+        <span>{{ i18n "home_comp_cta" }}</span>
+      </a>
     </div>
     <div>
-      <ul class="controls-mini">
+      <ul class="controls-mini" role="list">
         {{- range where site.Data.compliance "framework" "bi-ojk" }}
         <li><code>{{ .id }}</code><span>{{ .citation }}</span></li>
         {{- end }}
@@ -138,25 +419,46 @@
 
 <section class="section">
   <div class="wrap">
-    <p class="eyebrow">{{ i18n "home_data_eyebrow" }}</p>
-    <h2>{{ i18n "home_data_h2" }}</h2>
+    <div class="section-head">
+      <p class="eyebrow">
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        <span>{{ i18n "home_data_eyebrow" }}</span>
+      </p>
+      <h2>{{ i18n "home_data_h2" }}</h2>
+    </div>
     <div class="grid grid-3">
-      <div class="card"><p>{{ i18n "data_local" }}</p></div>
-      <div class="card"><p>{{ i18n "data_browser" }}</p></div>
-      <div class="card"><p>{{ i18n "data_open" }}</p></div>
+      <div class="card">
+        <div class="card-head-row">{{ partial "icon.html" "cpu" }}<h3>CLI &amp; strife-agent</h3></div>
+        <p>{{ i18n "data_local" }}</p>
+      </div>
+      <div class="card">
+        <div class="card-head-row">{{ partial "icon.html" "lock" }}<h3>WebAssembly sandbox</h3></div>
+        <p>{{ i18n "data_browser" }}</p>
+      </div>
+      <div class="card">
+        <div class="card-head-row">{{ partial "icon.html" "layers" }}<h3>Go stdlib · Apache 2.0</h3></div>
+        <p>{{ i18n "data_open" }}</p>
+      </div>
     </div>
   </div>
 </section>
 
-<section class="section cta-band">
-  <div class="wrap cta-inner">
-    <div>
-      <h2>{{ i18n "home_final_h2" }}</h2>
-      <p>{{ i18n "home_final_body" }}</p>
-    </div>
-    <div class="actions">
-      <a class="btn btn-primary btn-lg" href="{{ $u.try }}">{{ i18n "home_cta_try" }}</a>
-      <a class="btn btn-secondary btn-lg" href="{{ $u.contact }}">{{ i18n "nav_demo" }}</a>
+<section class="section">
+  <div class="wrap">
+    <div class="cta-band">
+      <div class="cta-inner">
+        <div>
+          <h2>{{ i18n "home_final_h2" }}</h2>
+          <p>{{ i18n "home_final_body" }}</p>
+        </div>
+        <div class="actions">
+          <a class="btn btn-primary btn-lg" href="{{ $u.try }}">
+            {{ partial "icon.html" "play" }}
+            <span>{{ i18n "home_cta_try" }}</span>
+          </a>
+          <a class="btn btn-secondary btn-lg" href="{{ $u.contact }}">{{ i18n "nav_demo" }}</a>
+        </div>
+      </div>
     </div>
   </div>
 </section>

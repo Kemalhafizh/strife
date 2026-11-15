@@ -6,37 +6,56 @@
   <div class="wrap">
     <div class="tool" id="verify" data-worker="{{ $a.worker }}" data-wasm="{{ $a.wasm }}" data-wasm-gz="{{ $a.wasmGz }}" data-wasm-exec="{{ $a.wasmExec }}"{{ if $key.available }} data-release-key="{{ $key.pem }}" data-release-key-id="{{ $key.key_id }}"{{ end }}>
       <div class="panel">
-        <div class="tabs" role="tablist">
-          <button class="tab" type="button" role="tab" id="tab-attest" aria-selected="true" aria-controls="pane-attest">{{ i18n "verify_tab_attest" }}</button>
-          <button class="tab" type="button" role="tab" id="tab-release" aria-selected="false" aria-controls="pane-release" tabindex="-1">{{ i18n "verify_tab_release" }}</button>
+        <div class="tabs" role="tablist" focusgroup="tablist nomemory" aria-label="{{ i18n "verify_tabs_aria" }}">
+          <button class="tab" type="button" role="tab" id="tab-attest" aria-selected="true" focusgroupstart data-pane="pane-attest">{{ i18n "verify_tab_attest" }}</button>
+          <button class="tab" type="button" role="tab" id="tab-release" aria-selected="false" tabindex="-1" data-pane="pane-release">{{ i18n "verify_tab_release" }}</button>
         </div>
-        <form id="pane-attest" role="tabpanel" aria-labelledby="tab-attest" novalidate>
-          {{ partial "file-slot.html" (dict "id" "a-bundle" "label" (i18n "verify_bundle") "accept" ".json") }}
-          {{ partial "file-slot.html" (dict "id" "a-key" "label" (i18n "verify_key") "accept" ".pub,.pem,.key") }}
-          {{ partial "file-slot.html" (dict "id" "a-history" "label" (i18n "verify_history") "accept" ".jsonl,.json") }}
-          <div class="actions">
-            <button class="btn btn-primary" type="submit" disabled>{{ i18n "verify_run" }}</button>
-            <button class="btn btn-ghost" type="button" id="load-sample" data-base="{{ "demos/" | relURL }}">{{ i18n "verify_sample_btn" }}</button>
+        <div class="tab-panels">
+          <div id="pane-attest" role="tabpanel" aria-labelledby="tab-attest">
+            <form class="tab-pane-inner" id="form-attest" novalidate>
+              {{ partial "file-slot.html" (dict "id" "a-bundle" "label" (i18n "verify_bundle") "accept" ".json") }}
+              {{ partial "file-slot.html" (dict "id" "a-key" "label" (i18n "verify_key") "accept" ".pub,.pem,.key") }}
+              {{ partial "file-slot.html" (dict "id" "a-history" "label" (i18n "verify_history") "accept" ".jsonl,.json") }}
+              <div class="actions">
+                <button class="btn btn-primary" type="submit" disabled>{{ i18n "verify_run" }}</button>
+                <button class="btn btn-secondary" type="button" id="load-sample" data-base="{{ "demos/" | relURL }}">
+                  {{ partial "icon.html" "file-text" }}
+                  <span>{{ i18n "verify_sample_btn" }}</span>
+                </button>
+              </div>
+              <p class="small muted">{{ i18n "verify_sample" }}</p>
+            </form>
           </div>
-          <p class="small muted">{{ i18n "verify_sample" }}</p>
-        </form>
-        <form id="pane-release" role="tabpanel" aria-labelledby="tab-release" hidden novalidate>
-          {{ partial "file-slot.html" (dict "id" "r-bundle" "label" (i18n "verify_release_bundle") "accept" ".json") }}
-          {{- if $key.available }}
-          <p class="small muted">{{ i18n "verify_official_key" }}: <code>{{ $key.key_id }}</code></p>
-          {{- end }}
-          {{ partial "file-slot.html" (dict "id" "r-key" "label" (i18n "verify_key") "accept" ".pub,.pem") }}
-          {{ partial "file-slot.html" (dict "id" "r-files" "label" (i18n "verify_files") "multiple" true) }}
-          <div class="actions"><button class="btn btn-primary" type="submit" disabled>{{ i18n "verify_run" }}</button></div>
-        </form>
+          <div id="pane-release" role="tabpanel" aria-labelledby="tab-release" hidden="until-found">
+            <form class="tab-pane-inner" id="form-release" novalidate>
+              {{ partial "file-slot.html" (dict "id" "r-bundle" "label" (i18n "verify_release_bundle") "accept" ".json") }}
+              {{- if $key.available }}
+              <p class="small muted">{{ i18n "verify_official_key" }}: <code>{{ $key.key_id }}</code></p>
+              {{- end }}
+              {{ partial "file-slot.html" (dict "id" "r-key" "label" (i18n "verify_key") "accept" ".pub,.pem") }}
+              {{ partial "file-slot.html" (dict "id" "r-files" "label" (i18n "verify_files") "multiple" true) }}
+              <div class="actions"><button class="btn btn-primary" type="submit" disabled>{{ i18n "verify_run" }}</button></div>
+            </form>
+          </div>
+        </div>
         <div class="status" id="status" aria-live="polite">
           <span class="spinner" aria-hidden="true"></span><span data-status-text>{{ i18n "try_loading" }}…</span><span class="progress" aria-hidden="true"><span></span></span>
         </div>
-        <p class="privacy">{{ i18n "privacy_local" }}</p>
+        <p class="privacy">{{ partial "icon.html" "lock" }} <span>{{ i18n "privacy_local" }}</span></p>
       </div>
       <div class="panel" aria-live="polite">
-        <h2>{{ i18n "try_result" }}</h2>
-        <div id="result" class="result"><div class="empty">{{ .Params.empty }}</div></div>
+        <div class="panel-head">
+          <h2>{{ i18n "try_result" }}</h2>
+          <span class="mono-tag">Ed25519 · in-toto v1</span>
+        </div>
+        <div id="result" class="result">
+          <dl class="kv">
+            <dt>envelope</dt><dd>application/vnd.in-toto+json (Ed25519)</dd>
+            <dt>statement</dt><dd>https://in-toto.io/Statement/v1</dd>
+            <dt>digest</dt><dd>sha256(canonical report + history.jsonl)</dd>
+          </dl>
+          <div class="empty">{{ .Params.empty }}</div>
+        </div>
       </div>
     </div>
     <div class="prose narrow-prose">{{ .Content }}</div>

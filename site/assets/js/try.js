@@ -143,12 +143,6 @@
   cancelBtn.addEventListener("click", () => engine.cancel());
   form.addEventListener("submit", (e) => { e.preventDefault(); run(); });
 
-  function copyButton(text) {
-    const b = h("button", { type: "button", class: "copy-btn" }, t("copy"));
-    b.addEventListener("click", () => window.StrifeSite.copyText(text, b));
-    return b;
-  }
-
   function render(req, res, ms, same) {
     const ops = res.ops || {};
     const preset = presetFor(req);
@@ -166,7 +160,7 @@
 
     out.push(h("h3", {}, t("try_schedule")));
     if (res.faults.length) {
-      out.push(h("ul", { class: "schedule" }, res.faults.map((f) =>
+      out.push(h("ul", { class: "schedule", role: "list" }, res.faults.map((f) =>
         h("li", {},
           h("span", {}, `${f.start} → ${f.end}`),
           h("span", { class: `k${["kill", "pause", "freeze"].includes(f.kind) ? " red" : ""}` }, f.kind),
@@ -189,7 +183,11 @@
     }
 
     out.push(h("h3", {}, t("try_command")));
-    out.push(h("div", { class: "code-line" }, h("code", {}, res.command), copyButton(res.command)));
+    const cmdCode = h("code", { id: "try-live-cmd" }, res.command);
+    const copyWidget = window.StrifeSite && window.StrifeSite.createCopyWidget
+      ? window.StrifeSite.createCopyWidget("try-live-cmd", `${t("copy")} ${res.command}`)
+      : h("button", { type: "button", class: "copy-button" }, t("copy"));
+    out.push(h("div", { class: "code-line" }, cmdCode, copyWidget));
 
     const again = h("button", { type: "button", class: "btn btn-secondary btn-sm" }, t("try_again"));
     again.addEventListener("click", () => run(true));

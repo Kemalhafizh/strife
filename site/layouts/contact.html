@@ -38,12 +38,12 @@
             {{- end }}
           </div>
           <p class="status" id="contact-status" role="status" aria-live="polite"></p>
-          <p class="privacy">{{ i18n "contact_privacy" }}</p>
+          <p class="privacy">{{ partial "icon.html" "lock" }} <span>{{ i18n "contact_privacy" }}</span></p>
         </form>
         {{- else }}
         <div class="callout callout-note">
           <p>{{ i18n "contact_missing" }}</p>
-          <p><a class="btn btn-secondary" href="{{ site.Params.repo }}/issues/new" rel="noopener">GitHub ↗</a></p>
+          <p><a class="btn btn-secondary" href="{{ site.Params.repo }}/issues/new" rel="noopener">GitHub {{ partial "icon.html" "arrow-up-right" }}</a></p>
         </div>
         {{- end }}
       </div>

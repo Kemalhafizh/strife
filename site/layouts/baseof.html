@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="{{ site.Language.LanguageCode | default site.Language.Lang }}" data-copy="{{ i18n "copy" }}" data-copied="{{ i18n "copied" }}">
+<html lang="{{ site.Language.LanguageCode | default site.Language.Lang }}" data-copy="{{ i18n "copy" }}" data-copied="{{ i18n "copied" }}" data-copy-failed="{{ i18n "copy_failed" }}">
 <head>
 {{ partial "head.html" . }}
 </head>
 <body class="{{ block "bodyclass" . }}{{ end }}">
-<a class="skip" href="#content">{{ i18n "skip" }}</a>
+<a class="skip visually-hidden" href="#content">{{ i18n "skip" }}</a>
 {{ partial "header.html" . }}
-<main id="content" {{ block "mainattrs" . }}{{ end }}>
+<main id="content" tabindex="-1" {{ block "mainattrs" . }}{{ end }}>
 {{ block "main" . }}{{ end }}
 </main>
 {{ partial "footer.html" . }}
