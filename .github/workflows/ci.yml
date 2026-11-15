@@ -36,11 +36,11 @@ jobs:
       - name: correct Raft survives 200 seeds, bit-for-bit deterministic
         run: ./strife sim --system raft --seeds 1..200 --determinism --expect linearizable --out ""
       - name: double-entry Raft ledger survives 50 seeds, bit-for-bit deterministic
-        run: ./strife sim --system raft-ledger --seeds 1..50 --determinism --expect linearizable --out ""
+        run: ./strife sim --system raft-ledger --seeds 1..50 --determinism --expect no-anomaly --out ""
       - name: two-phase commit ledger survives 50 seeds, bit-for-bit deterministic
-        run: ./strife sim --system 2pc-ledger --seeds 1..50 --determinism --expect linearizable --out ""
+        run: ./strife sim --system 2pc-ledger --seeds 1..50 --determinism --expect no-anomaly --out ""
       - name: transactional outbox settlement survives 50 seeds, bit-for-bit deterministic
-        run: ./strife sim --system outbox-settlement --seeds 1..50 --determinism --expect linearizable --out ""
+        run: ./strife sim --system outbox-settlement --seeds 1..50 --determinism --expect no-anomaly --out ""
       - name: stale reads are caught
         run: ./strife sim --system raft-stale-reads --faults partition --seeds 1..50 --expect violation --out ""
       - name: wall-clock leases are caught under clock skew

@@ -37,7 +37,7 @@ jobs:
       - name: etcd transactions stay strictly serializable under faults
         uses: ./
         with:
-          command: run --config examples/etcd/strife-append.json --duration 60s --faults ${{ steps.faults.outputs.faults }} --expect linearizable --quiet
+          command: run --config examples/etcd/strife-append.json --duration 60s --faults ${{ steps.faults.outputs.faults }} --expect no-anomaly --quiet
           out: live-out/etcd-append
           junit: live-out/etcd-append.xml
           artifact-name: live-etcd-append
@@ -246,21 +246,21 @@ jobs:
       - name: the primary is strictly serializable under kill -9 and pauses
         uses: ./
         with:
-          command: run --config examples/postgres/strife.json --duration 60s --expect linearizable --quiet
+          command: run --config examples/postgres/strife.json --duration 60s --expect no-anomaly --quiet
           out: live-out/pg-primary
           junit: live-out/pg-primary.xml
           artifact-name: live-pg-primary
       - name: double-entry ledger transfers conserve money under kill -9 and pauses
         uses: ./
         with:
-          command: run --config examples/postgres/strife-ledger.json --duration 45s --expect linearizable --quiet
+          command: run --config examples/postgres/strife-ledger.json --duration 45s --expect no-anomaly --quiet
           out: live-out/pg-ledger
           junit: live-out/pg-ledger.xml
           artifact-name: live-pg-ledger
       - name: REPEATABLE READ satisfies snapshot isolation
         uses: ./
         with:
-          command: run --config examples/postgres/strife-snapshot.json --duration 45s --expect linearizable --quiet
+          command: run --config examples/postgres/strife-snapshot.json --duration 45s --expect no-anomaly --quiet
           out: live-out/pg-snapshot
           junit: live-out/pg-snapshot.xml
           artifact-name: live-pg-snapshot
@@ -320,7 +320,7 @@ jobs:
       - name: SERIALIZABLE is strictly serializable while the server freezes
         uses: ./
         with:
-          command: run --config examples/mysql/strife.json --duration 60s --expect linearizable --quiet
+          command: run --config examples/mysql/strife.json --duration 60s --expect no-anomaly --quiet
           out: live-out/mysql
           junit: live-out/mysql.xml
           artifact-name: live-mysql
@@ -355,7 +355,7 @@ jobs:
       - name: optimistic transactions satisfy snapshot isolation while frozen
         uses: ./
         with:
-          command: run --config examples/tidb/strife-optimistic.json --duration 45s --expect linearizable --quiet
+          command: run --config examples/tidb/strife-optimistic.json --duration 45s --expect no-anomaly --quiet
           out: live-out/tidb-optimistic
           junit: live-out/tidb-optimistic.xml
           artifact-name: live-tidb-optimistic
