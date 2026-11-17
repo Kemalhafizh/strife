@@ -403,6 +403,7 @@ func (m Ledger) Decide(ops []history.Operation) (DecisionStatus, []int, string, 
 		writeBal := map[string]int64{}
 		var writeOrder []string
 		var readOrder []string
+		var hasInfoWriteMicro bool
 
 		for _, mop := range micro {
 			if isReadMicro(mop.F) && mop.Value != nil {
@@ -428,6 +429,7 @@ func (m Ledger) Decide(ops []history.Operation) (DecisionStatus, []int, string, 
 				writeBal[mop.Key] = *mop.Value
 			} else if isWriteMicro(mop.F) && mop.Value == nil && o.Status() == history.Info {
 				infoWrites[mop.Key]++
+				hasInfoWriteMicro = true
 			}
 		}
 
@@ -441,7 +443,7 @@ func (m Ledger) Decide(ops []history.Operation) (DecisionStatus, []int, string, 
 		}
 
 		// Track idempotency attempts for "tx:<id>" keys.
-		if isTxKey(o.Input.Key) && len(writeOrder) > 0 {
+		if isTxKey(o.Input.Key) && (len(writeOrder) > 0 || (o.Status() == history.Info && hasInfoWriteMicro)) {
 			var fromAcct, toAcct string
 			var amt int64
 			for _, acct := range writeOrder {
@@ -661,8 +663,8 @@ func (m Ledger) Decide(ops []history.Operation) (DecisionStatus, []int, string, 
 	}
 
 	// Check 5: Run Elle/Adya transactional cycle detection for underlying G0/G1/G2 cycles.
-	level := txn.IsolationLevel(m.Level)
-	if level == "" {
+	level, err := txn.ParseIsolationLevel(m.Level)
+	if err != nil {
 		level = txn.LevelSerializable
 	}
 	txns := txn.FromOperations(ops)
@@ -724,11 +726,18 @@ func (m Ledger) Decide(ops []history.Operation) (DecisionStatus, []int, string, 
 	return DecisionViolation, first.witness, diag, kinds
 }
 
+// Validate verifies that Ledger's configured isolation level is valid.
+func (m Ledger) Validate() error {
+	_, err := txn.ParseIsolationLevel(m.Level)
+	return err
+}
+
 // SupportsCompleteSearch implements CompleteSearcher when strict-serializable
 // mode and explicit positive initial balance match Ledger.Step, and ops contains
 // no indeterminate (Info) write attempts whose concrete deltas Step cannot model.
 func (m Ledger) SupportsCompleteSearch(ops []history.Operation) bool {
-	if !strings.EqualFold(m.Level, string(txn.LevelStrictSerializable)) || m.InitialBalance <= 0 {
+	lvl, err := txn.ParseIsolationLevel(m.Level)
+	if err != nil || lvl != txn.LevelStrictSerializable || m.InitialBalance <= 0 {
 		return false
 	}
 	for _, o := range ops {

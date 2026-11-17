@@ -190,11 +190,11 @@ func (c *Config) Validate() error {
 		if c.Workload.TxnLen < 1 || c.Workload.WritesPerKey < 1 {
 			return fmt.Errorf("workload.txn_len and writes_per_key must be positive")
 		}
-		switch txn.IsolationLevel(c.Workload.Isolation) {
-		case txn.LevelReadUncommitted, txn.LevelReadCommitted, txn.LevelSnapshotIsolation, txn.LevelRepeatableRead, txn.LevelSerializable, txn.LevelStrictSerializable:
-		default:
-			return fmt.Errorf("workload.isolation %q is not a known level", c.Workload.Isolation)
+		lvl, err := txn.ParseIsolationLevel(c.Workload.Isolation)
+		if err != nil {
+			return fmt.Errorf("workload.isolation %q is not a known level: %w", c.Workload.Isolation, err)
 		}
+		c.Workload.Isolation = string(lvl)
 	case "ledger":
 		if c.Workload.Plugin != "" {
 			return fmt.Errorf("workload.plugin generates kv operations; it cannot drive the ledger model")
@@ -202,20 +202,20 @@ func (c *Config) Validate() error {
 		if c.Workload.Keys < 2 {
 			return fmt.Errorf("workload.keys must be at least 2 for the ledger model")
 		}
-		switch txn.IsolationLevel(c.Workload.Isolation) {
-		case txn.LevelReadUncommitted, txn.LevelReadCommitted, txn.LevelSnapshotIsolation, txn.LevelRepeatableRead, txn.LevelSerializable, txn.LevelStrictSerializable:
-		default:
-			return fmt.Errorf("workload.isolation %q is not a known level", c.Workload.Isolation)
+		lvl, err := txn.ParseIsolationLevel(c.Workload.Isolation)
+		if err != nil {
+			return fmt.Errorf("workload.isolation %q is not a known level: %w", c.Workload.Isolation, err)
 		}
+		c.Workload.Isolation = string(lvl)
 	case "settlement":
 		if c.Workload.Plugin != "" {
 			return fmt.Errorf("workload.plugin generates kv operations; it cannot drive the settlement model")
 		}
-		switch txn.IsolationLevel(c.Workload.Isolation) {
-		case txn.LevelReadUncommitted, txn.LevelReadCommitted, txn.LevelSnapshotIsolation, txn.LevelRepeatableRead, txn.LevelSerializable, txn.LevelStrictSerializable:
-		default:
-			return fmt.Errorf("workload.isolation %q is not a known level", c.Workload.Isolation)
+		lvl, err := txn.ParseIsolationLevel(c.Workload.Isolation)
+		if err != nil {
+			return fmt.Errorf("workload.isolation %q is not a known level: %w", c.Workload.Isolation, err)
 		}
+		c.Workload.Isolation = string(lvl)
 	default:
 		return fmt.Errorf("workload.model %q not supported for live runs (kv, append, ledger, settlement)", c.Workload.Model)
 	}

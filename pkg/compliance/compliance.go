@@ -25,6 +25,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
+	"github.com/kemalhafizh/strife/pkg/explore"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/report"
 )
@@ -184,6 +185,9 @@ func Evaluate(opts Options) (*Dossier, error) {
 		return nil, fmt.Errorf("compliance: either Report or Campaign is required")
 	}
 	if opts.Report != nil {
+		if err := report.ValidateVerdict(opts.Report); err != nil {
+			return nil, fmt.Errorf("compliance: %w", err)
+		}
 		recomputed := report.Fingerprint(opts.Report)
 		if opts.Report.Fingerprint != "" && opts.Report.Fingerprint != recomputed {
 			return nil, fmt.Errorf("compliance: report fingerprint integrity mismatch: recorded %q vs recomputed %q",
@@ -330,12 +334,7 @@ func extractEvidence(rep *report.Report, camp *campaign.Manifest, ver *attest.Ve
 		for _, s := range camp.Seeds {
 			faultCount += s.Faults
 		}
-		modelName := "kv"
-		if strings.Contains(camp.System, "ledger") {
-			modelName = "ledger"
-		} else if strings.Contains(camp.System, "outbox") || strings.Contains(camp.System, "settlement") {
-			modelName = "settlement"
-		}
+		modelName := explore.InferModel(camp.System)
 		sum = EvidenceSummary{
 			Target:              camp.System,
 			RunKind:             "campaign",

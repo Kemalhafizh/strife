@@ -803,3 +803,16 @@ func TestDeciderSoundIncompleteAndBoundedCompleteSearch(t *testing.T) {
 			repBudget.Verdict, repBudget.Keys[0].Reason, repBudget.IsIncomplete(), repBudget.NoAnomalyFound())
 	}
 }
+
+func TestCheckValidatesModelConfig(t *testing.T) {
+	badModels := []model.Model{
+		model.Append{Level: "bogus"},
+		model.Ledger{Level: "bogus"},
+		model.TxnModel{Level: "bogus"},
+	}
+	for _, m := range badModels {
+		if _, err := Check(m, nil, Options{}); err == nil {
+			t.Errorf("Check(%s) should reject invalid isolation level", m.Name())
+		}
+	}
+}

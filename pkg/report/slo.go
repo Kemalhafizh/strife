@@ -145,6 +145,11 @@ type PRDigestOptions struct {
 // a GitHub/GitLab Pull Request comment or CI step summary. It returns true if
 // all checks (consistency, regressions, SLO gates, compliance) passed.
 func WritePRDigest(w io.Writer, opts PRDigestOptions) (bool, error) {
+	if opts.Report != nil {
+		if err := ValidateVerdict(opts.Report); err != nil {
+			return false, err
+		}
+	}
 	reportIncompletePass := opts.Expect == "no-anomaly" && opts.Report != nil && opts.Report.Verdict == checker.Unknown && opts.Report.Check.IsIncomplete()
 	reportOK := opts.Report == nil || opts.Report.Verdict == checker.Linearizable || reportIncompletePass
 	passed := reportOK
@@ -154,8 +159,21 @@ func WritePRDigest(w io.Writer, opts PRDigestOptions) (bool, error) {
 	if opts.Campaign != nil {
 		if opts.Campaign.Errors > 0 || len(opts.Campaign.RegressedSeeds) > 0 || len(opts.Campaign.NewFailures) > 0 {
 			passed = false
-		} else if !opts.Campaign.HasBaseline && (opts.Campaign.Violations > 0 || (opts.Campaign.Unknown > 0 && !campaignIncompletePass)) {
-			passed = false
+		} else {
+			switch opts.Expect {
+			case string(checker.Linearizable):
+				if opts.Campaign.Violations > 0 || opts.Campaign.Unknown > 0 {
+					passed = false
+				}
+			case "no-anomaly":
+				if opts.Campaign.Violations > 0 || (opts.Campaign.Unknown > 0 && !campaignIncompletePass) {
+					passed = false
+				}
+			default:
+				if !opts.Campaign.HasBaseline && (opts.Campaign.Violations > 0 || opts.Campaign.Unknown > 0) {
+					passed = false
+				}
+			}
 		}
 	}
 	if opts.SLO != nil && !opts.SLO.Passed {

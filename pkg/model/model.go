@@ -1179,6 +1179,12 @@ func (TxnModel) Partition(ops []history.Operation) ([]string, [][]history.Operat
 	return []string{"txns"}, [][]history.Operation{ops}
 }
 
+// Validate verifies that TxnModel's configured isolation level is valid.
+func (m TxnModel) Validate() error {
+	_, err := txn.ParseIsolationLevel(m.Level)
+	return err
+}
+
 // Diagnose implements Diagnoser for TxnModel.
 func (m TxnModel) Diagnose(ops []history.Operation) ([]int, string, bool) {
 	txns := txn.FromOperations(ops)

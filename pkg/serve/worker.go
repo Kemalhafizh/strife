@@ -287,6 +287,7 @@ func executeJob(ctx context.Context, job *Job, workerID string) JobCompleteReque
 			out.Error = fmt.Sprintf("invalid live_config: %v", err)
 			return out
 		}
+		rcfg.Defaults()
 		if job.Seed > 0 {
 			rcfg.Seed = job.Seed
 		}

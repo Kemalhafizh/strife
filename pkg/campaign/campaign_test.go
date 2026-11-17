@@ -303,3 +303,57 @@ func TestCampaignSoundIncompleteAndNoAnomalyExpectation(t *testing.T) {
 		t.Errorf("expected campaign HTML to render Inconclusive KPI and filter pill")
 	}
 }
+
+func TestManifestCloneAndReproduceWorkload(t *testing.T) {
+	orig := &Manifest{
+		CampaignID: "orig",
+		System:     "raft",
+		Faults:     []nemesis.Kind{nemesis.Partition},
+		Config: explore.Config{
+			System:   "raft",
+			Faults:   []nemesis.Kind{nemesis.Partition},
+			Workload: "workloads/my workload.json",
+			Plan: &nemesis.Schedule{
+				Nodes: 3,
+				Faults: []nemesis.Fault{
+					{ID: 1, Kind: nemesis.Kill, Nodes: []int{0, 1}},
+				},
+			},
+		},
+		Seeds: []SeedRecord{{Seed: 1, Verdict: checker.Linearizable}},
+		Comparison: &Comparison{
+			Regressed: []SeedDelta{{Seed: 2}},
+		},
+	}
+
+	cp := orig.Clone()
+	cp.Faults[0] = nemesis.Kill
+	cp.Config.Faults[0] = nemesis.Kill
+	cp.Config.Plan.Nodes = 9
+	cp.Config.Plan.Faults[0].Nodes[0] = 99
+	cp.Seeds[0].Verdict = checker.Violation
+	cp.Comparison.Regressed[0].Seed = 999
+
+	if orig.Faults[0] != nemesis.Partition || orig.Config.Faults[0] != nemesis.Partition {
+		t.Fatal("Clone mutated source Faults slice")
+	}
+	if orig.Config.Plan.Nodes != 3 || orig.Config.Plan.Faults[0].Nodes[0] != 0 {
+		t.Fatal("Clone mutated source nested Plan")
+	}
+	if orig.Seeds[0].Verdict != checker.Linearizable {
+		t.Fatal("Clone mutated source Seeds slice")
+	}
+	if orig.Comparison.Regressed[0].Seed != 2 {
+		t.Fatal("Clone mutated source Comparison")
+	}
+
+	var nilM *Manifest
+	if nilM.Clone() != nil {
+		t.Fatal("nil Manifest.Clone must return nil")
+	}
+
+	cmd := ReproduceCommand(orig.Config, "")
+	if !strings.Contains(cmd, "--workload 'workloads/my workload.json'") {
+		t.Fatalf("ReproduceCommand missing quoted --workload flag: %s", cmd)
+	}
+}

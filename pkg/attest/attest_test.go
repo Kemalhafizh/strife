@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kemalhafizh/strife/pkg/checker"
@@ -207,5 +208,24 @@ func TestHistoryFileVerification(t *testing.T) {
 	ok, err = VerifyHistoryFile(res, histPath)
 	if err == nil || ok {
 		t.Fatalf("expected tampered history file to fail verification")
+	}
+}
+
+func TestNewStatementRejectsVerdictAndFingerprintMismatch(t *testing.T) {
+	_, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	desync := sampleTestReport()
+	desync.Verdict = checker.Linearizable // Check.Verdict is still checker.Violation
+	if _, err := Sign(desync, priv, "sec-ops"); err == nil {
+		t.Fatal("expected Sign to reject Verdict vs Check.Verdict mismatch")
+	}
+
+	tampered := sampleTestReport()
+	tampered.Fingerprint = strings.Repeat("a", 64)
+	if _, err := NewStatement(tampered, "sec-ops"); err == nil {
+		t.Fatal("expected NewStatement to reject mismatched report fingerprint")
 	}
 }

@@ -489,7 +489,15 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(id, "/dossier") {
 		runID := strings.TrimSpace(strings.TrimSuffix(id, "/dossier"))
+		if runID == "" || strings.Contains(runID, "/") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid run id"})
+			return
+		}
 		s.handleRunDossier(w, r, idAuth, runID)
+		return
+	}
+	if strings.Contains(id, "/") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid run id"})
 		return
 	}
 	entry, payload, err := s.store.Lookup(id)
@@ -619,10 +627,34 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024*1024))
+	const maxIngestBodyBytes = 32 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxIngestBodyBytes+1))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+	if len(body) > maxIngestBodyBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "ingest body exceeds 32 MiB limit"})
+		return
+	}
+
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawMap); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid json: %v", err)})
+		return
+	}
+	if len(rawMap) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty json payload"})
+		return
+	}
+
+	hasNonNullKey := func(k string) bool {
+		raw, exists := rawMap[k]
+		if !exists {
+			return false
+		}
+		trimmed := bytes.TrimSpace(raw)
+		return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
 	}
 
 	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
@@ -630,7 +662,15 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	branch := strings.TrimSpace(r.URL.Query().Get("branch"))
 
 	var env IngestPayload
-	if err := json.Unmarshal(body, &env); err == nil && (env.Report != nil || env.Campaign != nil) {
+	if hasNonNullKey("report") || hasNonNullKey("campaign") {
+		if err := json.Unmarshal(body, &env); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid envelope json: %v", err)})
+			return
+		}
+		if env.Report != nil && env.Campaign != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ingest envelope must contain either report or campaign, not both"})
+			return
+		}
 		if env.Tenant != "" {
 			tenant = env.Tenant
 		}
@@ -640,31 +680,20 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		if env.Branch != "" {
 			branch = env.Branch
 		}
+	} else if hasNonNullKey("seeds") {
+		var m campaign.Manifest
+		if err := json.Unmarshal(body, &m); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		env.Campaign = &m
 	} else {
-		var rawMap map[string]json.RawMessage
-		if err := json.Unmarshal(body, &rawMap); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid json: %v", err)})
+		var rep report.Report
+		if err := json.Unmarshal(body, &rep); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if len(rawMap) == 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty json payload"})
-			return
-		}
-		if _, hasSeeds := rawMap["seeds"]; hasSeeds {
-			var m campaign.Manifest
-			if err := json.Unmarshal(body, &m); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-				return
-			}
-			env.Campaign = &m
-		} else {
-			var rep report.Report
-			if err := json.Unmarshal(body, &rep); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-				return
-			}
-			env.Report = &rep
-		}
+		env.Report = &rep
 	}
 
 	idempKey, idempErr := resolveIdempotencyKey(

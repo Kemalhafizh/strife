@@ -390,3 +390,64 @@ func TestGRealtimeViolation(t *testing.T) {
 		t.Fatalf("expected G-realtime anomaly, got: %+v", repStrict.Anomalies)
 	}
 }
+
+func TestParseIsolationLevelAndFallback(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    IsolationLevel
+		wantErr bool
+	}{
+		{"", LevelSerializable, false},
+		{"   ", LevelSerializable, false},
+		{"serializable", LevelSerializable, false},
+		{"  STRICT-SERIALIZABLE\t", LevelStrictSerializable, false},
+		{"Snapshot-Isolation", LevelSnapshotIsolation, false},
+		{"Repeatable-Read", LevelRepeatableRead, false},
+		{"READ-COMMITTED", LevelReadCommitted, false},
+		{"read-uncommitted", LevelReadUncommitted, false},
+		{"bogus-level", "", true},
+	}
+	for _, tc := range cases {
+		got, err := ParseIsolationLevel(tc.in)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("ParseIsolationLevel(%q) err=%v, wantErr=%v", tc.in, err, tc.wantErr)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ParseIsolationLevel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// Non-empty bogus level in Check falls back safely to LevelSerializable and still detects G2.
+	writeSkew := []Txn{
+		{
+			ID: 0, Status: history.OK, Call: 0, Return: 5,
+			Ops: []MicroOp{
+				{Kind: OpWrite, Key: "x", Value: v(1)},
+				{Kind: OpWrite, Key: "y", Value: v(1)},
+			},
+		},
+		{
+			ID: 1, Process: 0, Status: history.OK, Call: 10, Return: 20,
+			Ops: []MicroOp{
+				{Kind: OpRead, Key: "x", Value: v(1)},
+				{Kind: OpRead, Key: "y", Value: v(1)},
+				{Kind: OpWrite, Key: "x", Value: v(0)},
+			},
+		},
+		{
+			ID: 2, Process: 1, Status: history.OK, Call: 10, Return: 20,
+			Ops: []MicroOp{
+				{Kind: OpRead, Key: "x", Value: v(1)},
+				{Kind: OpRead, Key: "y", Value: v(1)},
+				{Kind: OpWrite, Key: "y", Value: v(0)},
+			},
+		},
+	}
+	if rep := Check(writeSkew, IsolationLevel("  STRICT-SERIALIZABLE ")); rep.Level != LevelStrictSerializable || rep.Verdict != Violation {
+		t.Fatalf("normalized strict level unexpected report: %+v", rep)
+	}
+	if rep := Check(writeSkew, IsolationLevel("bogus")); rep.Level != LevelSerializable || rep.Verdict != Violation {
+		t.Fatalf("bogus level should fall back to LevelSerializable and detect G2: %+v", rep)
+	}
+}

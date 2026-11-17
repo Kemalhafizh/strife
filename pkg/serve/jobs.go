@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -129,20 +130,25 @@ func (s *Server) loadJobs() error {
 	if err := json.Unmarshal(data, &list); err != nil {
 		return err
 	}
-	maxSeq := uint64(len(list))
+	filtered := make([]*Job, 0, len(list))
+	maxSeq := uint64(0)
 	for _, j := range list {
 		if j == nil {
 			continue
 		}
+		filtered = append(filtered, j)
 		if rest, ok := strings.CutPrefix(j.ID, "job-"); ok {
 			if n, perr := strconv.ParseUint(rest, 10, 64); perr == nil && n > maxSeq {
 				maxSeq = n
 			}
 		}
 	}
+	if uint64(len(filtered)) > maxSeq {
+		maxSeq = uint64(len(filtered))
+	}
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
-	s.jobs = list
+	s.jobs = filtered
 	s.jobSeq = maxSeq
 	return nil
 }
@@ -182,6 +188,7 @@ func (s *Server) reconcileJobsWithStore() error {
 		j.Verdict = entry.Verdict
 		j.ClaimToken = ""
 		j.LeaseExpiresAt = ""
+		j.Error = ""
 		j.completing = false
 		if j.CompletedAt == "" {
 			if entry.Timestamp != "" {
@@ -371,12 +378,34 @@ func (s *Server) handleJobsSubpath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasSuffix(sub, "/heartbeat") {
-		id := strings.TrimSuffix(sub, "/heartbeat")
+		id := strings.TrimSpace(strings.TrimSuffix(sub, "/heartbeat"))
+		if id == "" || strings.Contains(id, "/") {
+			if r.Method != http.MethodPost {
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
+			if _, ok := s.checkAuthIdentity(w, r); !ok {
+				return
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid job id"})
+			return
+		}
 		s.handleJobHeartbeat(w, r, id)
 		return
 	}
 	if strings.HasSuffix(sub, "/complete") {
-		id := strings.TrimSuffix(sub, "/complete")
+		id := strings.TrimSpace(strings.TrimSuffix(sub, "/complete"))
+		if id == "" || strings.Contains(id, "/") {
+			if r.Method != http.MethodPost {
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
+			if _, ok := s.checkAuthIdentity(w, r); !ok {
+				return
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid job id"})
+			return
+		}
 		s.handleJobComplete(w, r, id)
 		return
 	}
@@ -388,10 +417,14 @@ func (s *Server) handleJobsSubpath(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if strings.Contains(sub, "/") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid job id"})
+		return
+	}
 	s.jobMu.Lock()
 	var found *Job
 	for _, j := range s.jobs {
-		if j.ID == sub {
+		if j != nil && j.ID == sub {
 			c := *j
 			c.ClaimToken = ""
 			found = &c
@@ -462,10 +495,33 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request) {
 	var saveErr error
 	now := time.Now().UTC()
 	for _, j := range s.jobs {
-		if j.Status != JobPending && !s.isJobLeaseExpired(j, now) {
+		if j == nil || (j.Status != JobPending && !s.isJobLeaseExpired(j, now)) {
 			continue
 		}
 		if wantTenant != "" && normalizeTenant(j.Tenant) != wantTenant {
+			continue
+		}
+		if entry, ok := s.store.FindByJobID(j.ID); ok {
+			prev := *j
+			j.Status = JobCompleted
+			j.RunID = entry.ID
+			j.Verdict = entry.Verdict
+			j.ClaimToken = ""
+			j.LeaseExpiresAt = ""
+			j.Error = ""
+			j.completing = false
+			if j.CompletedAt == "" {
+				if entry.Timestamp != "" {
+					j.CompletedAt = entry.Timestamp
+				} else {
+					j.CompletedAt = now.Format(time.RFC3339)
+				}
+			}
+			if err := s.saveJobsLocked(); err != nil {
+				*j = prev
+				saveErr = err
+				break
+			}
 			continue
 		}
 		tok, tokErr := newClaimToken()
@@ -532,7 +588,7 @@ func (s *Server) handleJobHeartbeat(w http.ResponseWriter, r *http.Request, id s
 	s.jobMu.Lock()
 	var targetJob *Job
 	for _, j := range s.jobs {
-		if j.ID == id {
+		if j != nil && j.ID == id {
 			targetJob = j
 			break
 		}
@@ -609,11 +665,15 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid json: %v", err)})
 		return
 	}
+	if (req.Report != nil && req.Campaign != nil) || (req.Error != "" && (req.Report != nil || req.Campaign != nil)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "job completion cannot combine report, campaign, or error"})
+		return
+	}
 
 	s.jobMu.Lock()
 	var targetJob *Job
 	for _, j := range s.jobs {
-		if j.ID == id {
+		if j != nil && j.ID == id {
 			targetJob = j
 			break
 		}
@@ -655,6 +715,40 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q claim lease has expired", id)})
 		return
 	}
+	var preCommitted *RunEntry
+	if req.Report == nil && req.Campaign == nil {
+		if entry, ok := s.store.FindByJobID(targetJob.ID); ok {
+			if req.Error != "" {
+				prevJob := *targetJob
+				prevJob.completing = false
+				targetJob.Status = JobCompleted
+				targetJob.RunID = entry.ID
+				targetJob.Verdict = entry.Verdict
+				targetJob.ClaimToken = ""
+				targetJob.LeaseExpiresAt = ""
+				targetJob.Error = ""
+				targetJob.completing = false
+				if targetJob.CompletedAt == "" {
+					if entry.Timestamp != "" {
+						targetJob.CompletedAt = entry.Timestamp
+					} else {
+						targetJob.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+					}
+				}
+				if err := s.saveJobsLocked(); err != nil {
+					*targetJob = prevJob
+					s.jobMu.Unlock()
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("persist reconciled job completion: %v", err)})
+					return
+				}
+				s.jobMu.Unlock()
+				writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("job %q already has committed run %q", id, entry.ID)})
+				return
+			}
+			eCopy := entry
+			preCommitted = &eCopy
+		}
+	}
 	targetJob.completing = true
 	jobID := targetJob.ID
 	tenant := targetJob.Tenant
@@ -677,7 +771,11 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 			s.jobMu.Lock()
 			targetJob.completing = false
 			s.jobMu.Unlock()
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrIdempotencyConflict) {
+				status = http.StatusConflict
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
 		ingestRes = res
@@ -688,7 +786,11 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 			s.jobMu.Lock()
 			targetJob.completing = false
 			s.jobMu.Unlock()
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrIdempotencyConflict) {
+				status = http.StatusConflict
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
 		ingestRes = res
@@ -703,15 +805,23 @@ func (s *Server) handleJobComplete(w http.ResponseWriter, r *http.Request, id st
 	targetJob.ClaimToken = ""
 	targetJob.LeaseExpiresAt = ""
 	targetJob.completing = false
-	targetJob.Error = req.Error
-	if ingestRes != nil {
+	switch {
+	case ingestRes != nil:
 		targetJob.RunID = ingestRes.Entry.ID
 		targetJob.Verdict = ingestRes.Entry.Verdict
 		targetJob.Status = JobCompleted
-	} else if req.Error != "" {
-		targetJob.Status = JobFailed
-	} else {
+		targetJob.Error = ""
+	case preCommitted != nil:
+		targetJob.RunID = preCommitted.ID
+		targetJob.Verdict = preCommitted.Verdict
 		targetJob.Status = JobCompleted
+		targetJob.Error = ""
+	case req.Error != "":
+		targetJob.Status = JobFailed
+		targetJob.Error = req.Error
+	default:
+		targetJob.Status = JobCompleted
+		targetJob.Error = ""
 	}
 	if err := s.saveJobsLocked(); err != nil {
 		*targetJob = prevJob

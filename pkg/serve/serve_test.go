@@ -2005,3 +2005,249 @@ func TestServeIngestIdempotencyKeyHeaderReplayConflictAndTenantScope(t *testing.
 	}
 	hookMu.Unlock()
 }
+
+func TestServeAuditHardeningEdgeCases(t *testing.T) {
+	storeDir := t.TempDir()
+
+	// Pre-populate jobs.json with a null array entry to ensure reload ignores nil elements safely.
+	nullJobs := `[null, {"id":"job-0001","tenant":"alpha","kind":"sim","system":"raft","seed":1,"status":"pending","created_at":"2026-11-16T00:00:00Z"}]`
+	if err := os.WriteFile(filepath.Join(storeDir, "jobs.json"), []byte(nullJobs), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		StoreDir:   storeDir,
+		Token:      "admin-tok",
+		TenantTokens: map[string]string{
+			"alpha": "alpha-tok",
+		},
+		JobLease: 120 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewServer with nil entry in jobs.json: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseURL := "http://" + ln.Addr().String()
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		_ = srv.Shutdown(context.Background())
+		_ = ln.Close()
+	}()
+
+	doReq := func(method, path, tok string, body io.Reader) (int, []byte) {
+		req, _ := http.NewRequest(method, baseURL+path, body)
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	// 1. Auth checked before invalid multi-segment / empty run or job IDs (401 unauth, 400 auth).
+	for _, tc := range []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/api/v1/runs/a/b"},
+		{http.MethodGet, "/api/v1/runs/a/b/dossier"},
+		{http.MethodGet, "/api/v1/runs/%20/dossier"},
+		{http.MethodGet, "/api/v1/jobs/a/b"},
+		{http.MethodPost, "/api/v1/jobs/a/b/heartbeat"},
+		{http.MethodPost, "/api/v1/jobs/%20/heartbeat"},
+		{http.MethodPost, "/api/v1/jobs/a/b/complete"},
+		{http.MethodPost, "/api/v1/jobs/%20/complete"},
+	} {
+		if c, _ := doReq(tc.method, tc.path, "", nil); c != http.StatusUnauthorized {
+			t.Errorf("%s %s unauthenticated = %d, want 401", tc.method, tc.path, c)
+		}
+		if c, _ := doReq(tc.method, tc.path, "admin-tok", nil); c != http.StatusBadRequest {
+			t.Errorf("%s %s authenticated = %d, want 400", tc.method, tc.path, c)
+		}
+	}
+
+	// 2. Claim skips and reconciles an expired job whose JobID already committed in Store.
+	c, j1Bytes := doReq(http.MethodPost, "/api/v1/jobs/claim", "alpha-tok", strings.NewReader(`{"worker_id":"w1"}`))
+	if c != http.StatusOK {
+		t.Fatalf("claim job-0001 status=%d", c)
+	}
+	var j1 Job
+	_ = json.Unmarshal(j1Bytes, &j1)
+
+	rep1, err := makeTestKVReport("raft", 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res1, err := srv.Store().IngestReportWithOptions(rep1, "", "", nil, "", "alpha", IngestOptions{JobID: j1.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(140 * time.Millisecond)
+
+	c, j2Bytes := doReq(http.MethodPost, "/api/v1/jobs", "alpha-tok", strings.NewReader(`{"kind":"sim","system":"raft","seed":2}`))
+	if c != http.StatusCreated {
+		t.Fatalf("enqueue job-0002 status=%d", c)
+	}
+	var j2 Job
+	_ = json.Unmarshal(j2Bytes, &j2)
+
+	c, claimedBytes := doReq(http.MethodPost, "/api/v1/jobs/claim", "alpha-tok", strings.NewReader(`{"worker_id":"w2"}`))
+	if c != http.StatusOK {
+		t.Fatalf("expected claim to advance to %s, got status=%d body=%s", j2.ID, c, string(claimedBytes))
+	}
+	var claimed2 Job
+	_ = json.Unmarshal(claimedBytes, &claimed2)
+	if claimed2.ID != j2.ID {
+		t.Fatalf("expected claim to skip committed %s and return %s, got %s", j1.ID, j2.ID, claimed2.ID)
+	}
+	c, j1Refreshed := doReq(http.MethodGet, "/api/v1/jobs/"+j1.ID, "alpha-tok", nil)
+	if c != http.StatusOK {
+		t.Fatalf("GET %s status=%d", j1.ID, c)
+	}
+	var gotJ1 Job
+	_ = json.Unmarshal(j1Refreshed, &gotJ1)
+	if gotJ1.Status != JobCompleted || gotJ1.RunID != res1.Entry.ID || gotJ1.Error != "" {
+		t.Fatalf("expected reconciled completed job for %s, got %+v", j1.ID, gotJ1)
+	}
+
+	// 3. Complete rejects contradictory combinations with 400 and committed-error overwrite with 409.
+	rep2, _ := makeTestKVReport("raft", 2, 20)
+	campEmpty := campaign.Manifest{System: "raft"}
+	comboPayload, _ := json.Marshal(JobCompleteRequest{
+		WorkerID:   "w2",
+		ClaimToken: claimed2.ClaimToken,
+		Report:     rep2,
+		Campaign:   &campEmpty,
+	})
+	if c, _ := doReq(http.MethodPost, "/api/v1/jobs/"+j2.ID+"/complete", "alpha-tok", bytes.NewReader(comboPayload)); c != http.StatusBadRequest {
+		t.Fatalf("expected 400 when combining report and campaign in /complete, got %d", c)
+	}
+	errCombo, _ := json.Marshal(JobCompleteRequest{
+		WorkerID:   "w2",
+		ClaimToken: claimed2.ClaimToken,
+		Error:      "worker boom",
+		Report:     rep2,
+	})
+	if c, _ := doReq(http.MethodPost, "/api/v1/jobs/"+j2.ID+"/complete", "alpha-tok", bytes.NewReader(errCombo)); c != http.StatusBadRequest {
+		t.Fatalf("expected 400 when combining error and report in /complete, got %d", c)
+	}
+
+	hbPayload, _ := json.Marshal(JobHeartbeatRequest{WorkerID: "w2", ClaimToken: claimed2.ClaimToken})
+	if c, hbBody := doReq(http.MethodPost, "/api/v1/jobs/"+j2.ID+"/heartbeat", "alpha-tok", bytes.NewReader(hbPayload)); c != http.StatusOK {
+		t.Fatalf("heartbeat %s status=%d body=%s", j2.ID, c, string(hbBody))
+	}
+
+	res2, err := srv.Store().IngestReportWithOptions(rep2, "", "", nil, "", "alpha", IngestOptions{JobID: j2.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Posting a mismatched report via HTTP /complete while claimed maps ErrIdempotencyConflict to 409 and resets completing.
+	conflictComplete, _ := json.Marshal(JobCompleteRequest{
+		WorkerID:   "w2",
+		ClaimToken: claimed2.ClaimToken,
+		Report:     rep1,
+	})
+	if c, body := doReq(http.MethodPost, "/api/v1/jobs/"+j2.ID+"/complete", "alpha-tok", bytes.NewReader(conflictComplete)); c != http.StatusConflict || !strings.Contains(string(body), "conflict") {
+		t.Fatalf("expected 409 idempotency conflict on /complete payload mismatch with committed JobID %s, got %d body=%s", j2.ID, c, string(body))
+	}
+	// Reusing an already-committed JobID with a different payload directly in Store must return ErrIdempotencyConflict.
+	if _, err := srv.Store().IngestReportWithOptions(rep1, "", "", nil, "", "alpha", IngestOptions{JobID: j2.ID}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("expected ErrIdempotencyConflict on JobID payload mismatch, got %v", err)
+	}
+	errComplete, _ := json.Marshal(JobCompleteRequest{
+		WorkerID:   "w2",
+		ClaimToken: claimed2.ClaimToken,
+		Error:      "transient write timeout",
+	})
+	if c, body := doReq(http.MethodPost, "/api/v1/jobs/"+j2.ID+"/complete", "alpha-tok", bytes.NewReader(errComplete)); c != http.StatusConflict || !strings.Contains(string(body), "already has committed run") {
+		t.Fatalf("expected 409 already-committed conflict when failing %s, got %d body=%s", j2.ID, c, string(body))
+	}
+	_, j2Refreshed := doReq(http.MethodGet, "/api/v1/jobs/"+j2.ID, "alpha-tok", nil)
+	var gotJ2 Job
+	_ = json.Unmarshal(j2Refreshed, &gotJ2)
+	if gotJ2.Status != JobCompleted || gotJ2.RunID != res2.Entry.ID || gotJ2.Error != "" {
+		t.Fatalf("expected reconciled completed job with empty Error for %s, got %+v", j2.ID, gotJ2)
+	}
+
+	// 4. Ingest enforces 32 MiB limit (413), strict envelopes (400), Verdict consistency (400), and baseline isolation.
+	oversized := make([]byte, 32*1024*1024+8)
+	copy(oversized, `{"pad":"`)
+	for i := 8; i < len(oversized)-2; i++ {
+		oversized[i] = 'a'
+	}
+	copy(oversized[len(oversized)-2:], `"}`)
+	if c, _ := doReq(http.MethodPost, "/api/v1/ingest", "alpha-tok", bytes.NewReader(oversized)); c != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 Request Entity Too Large for >32MiB ingest, got %d", c)
+	}
+
+	if c, _ := doReq(http.MethodPost, "/api/v1/ingest", "alpha-tok", strings.NewReader(`{"report":"bad","target":"raft"}`)); c != http.StatusBadRequest {
+		t.Fatalf("expected 400 on malformed report envelope, got %d", c)
+	}
+	bothEnv, _ := json.Marshal(IngestPayload{Report: rep1, Campaign: &campEmpty})
+	if c, _ := doReq(http.MethodPost, "/api/v1/ingest", "alpha-tok", bytes.NewReader(bothEnv)); c != http.StatusBadRequest {
+		t.Fatalf("expected 400 on envelope containing both report and campaign, got %d", c)
+	}
+	badVerdictRep, _ := makeTestKVReport("raft", 9, 99)
+	badVerdictRep.Verdict = checker.Linearizable // disagrees with Check.Verdict == Violation
+	badVerdictRep.Fingerprint = ""
+	badVerdictBytes, _ := json.Marshal(badVerdictRep)
+	if c, _ := doReq(http.MethodPost, "/api/v1/ingest", "alpha-tok", bytes.NewReader(badVerdictBytes)); c != http.StatusBadRequest {
+		t.Fatalf("expected 400 on Verdict mismatch during ingest, got %d", c)
+	}
+
+	callerBase := &campaign.Manifest{
+		Tool: "strife", Version: report.Version, CampaignID: "c-base", System: "custom-append-svc",
+		TotalSeeds: 1, Passed: 1,
+		Seeds: []campaign.SeedRecord{{Seed: 1, Verdict: checker.Linearizable, TraceHash: "t1", HistoryHash: "h1", ScheduleHash: "s1"}},
+	}
+	if _, err := srv.Store().IngestCampaignWithOptions(callerBase, "alpha", IngestOptions{}); err != nil {
+		t.Fatalf("IngestCampaignWithOptions baseline: %v", err)
+	}
+	// Mutating callerBase after ingest must NOT alter stored baseline used for next comparison.
+	callerBase.Seeds[0].Verdict = checker.Violation
+
+	nextCamp := &campaign.Manifest{
+		Tool: "strife", Version: report.Version, CampaignID: "c-next", System: "custom-append-svc",
+		TotalSeeds: 1, Violations: 1,
+		Seeds: []campaign.SeedRecord{{Seed: 1, Verdict: checker.Violation, TraceHash: "t1-bad", HistoryHash: "h1-bad", ScheduleHash: "s1"}},
+	}
+	nextRes, err := srv.Store().IngestCampaignWithOptions(nextCamp, "alpha", IngestOptions{})
+	if err != nil {
+		t.Fatalf("IngestCampaignWithOptions next: %v", err)
+	}
+	if nextRes.Entry.Model != "append" || nextRes.Comparison == nil || len(nextRes.Comparison.Regressed) != 1 {
+		t.Fatalf("expected model=append and 1 regression against isolated baseline clone, got entry=%+v comp=%+v",
+			nextRes.Entry, nextRes.Comparison)
+	}
+}
+
+func TestWorkerLiveRunAppliesDefaults(t *testing.T) {
+	liveCfg := json.RawMessage(`{
+		"name": "worker-defaults",
+		"duration": "250ms",
+		"nodes": [{"name": "n1", "ip": "10.0.0.1"}],
+		"transport": {"type": "dry-run"},
+		"db": {"kind": "memory"},
+		"workload": {"concurrency": 2, "think": "5ms"}
+	}`)
+	job := &Job{
+		ID:         "job-run-defaults",
+		Kind:       "run",
+		Seed:       7,
+		LiveConfig: liveCfg,
+	}
+	out := executeJob(context.Background(), job, "test-worker")
+	if out.Error != "" || out.Report == nil || out.Report.Seed != 7 {
+		t.Fatalf("expected live run job to apply Defaults and succeed with Seed=7, got error=%q report=%v", out.Error, out.Report)
+	}
+}

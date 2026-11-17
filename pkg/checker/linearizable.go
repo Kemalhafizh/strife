@@ -154,6 +154,11 @@ func (r Report) NoAnomalyFound() bool {
 
 // Check pairs a raw history and checks it.
 func Check(m model.Model, ops []history.Op, opts Options) (Report, error) {
+	if v, ok := m.(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return Report{}, err
+		}
+	}
 	paired, err := history.Pair(ops)
 	if err != nil {
 		return Report{}, err

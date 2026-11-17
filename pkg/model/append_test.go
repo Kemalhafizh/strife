@@ -74,3 +74,19 @@ func TestAppendModel(t *testing.T) {
 		t.Fatalf("serializability does not forbid this history, expected DecisionInconclusive, got %s", stSer)
 	}
 }
+
+func TestAppendAndTxnModelValidationAndNormalization(t *testing.T) {
+	good := []history.Operation{appendOp(0, 0, 0, 10, history.OK, app("x", 1))}
+	if !(Append{Level: "  STRICT-SERIALIZABLE "}).SupportsCompleteSearch(good) {
+		t.Fatal("normalized strict-serializable append model should support complete search")
+	}
+	if err := (Append{Level: "  STRICT-SERIALIZABLE "}).Validate(); err != nil {
+		t.Fatalf("Append.Validate valid level unexpected error: %v", err)
+	}
+	if err := (Append{Level: "bogus"}).Validate(); err == nil {
+		t.Fatal("expected error for invalid Append isolation level")
+	}
+	if err := (TxnModel{Level: "bogus"}).Validate(); err == nil {
+		t.Fatal("expected error for invalid TxnModel isolation level")
+	}
+}

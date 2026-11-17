@@ -108,11 +108,20 @@ func (Append) Partition(ops []history.Operation) ([]string, [][]history.Operatio
 	return []string{"txns"}, [][]history.Operation{ops}
 }
 
+// Validate verifies that Append's configured isolation level is valid.
+func (m Append) Validate() error {
+	_, err := txn.ParseIsolationLevel(m.Level)
+	return err
+}
+
 // Decide implements Decider. Elle dependency-graph analysis is sound but not
 // complete, so absence of a detected anomaly yields DecisionInconclusive for
 // non-empty histories rather than DecisionVerified.
 func (m Append) Decide(ops []history.Operation) (DecisionStatus, []int, string, []string) {
-	level := txn.IsolationLevel(m.Level)
+	level, err := txn.ParseIsolationLevel(m.Level)
+	if err != nil {
+		level = txn.LevelSerializable
+	}
 	rep := txn.CheckAppend(ops, level)
 	if rep.Verdict != txn.Violation {
 		if len(ops) == 0 {
@@ -165,5 +174,6 @@ func (m Append) Decide(ops []history.Operation) (DecisionStatus, []int, string, 
 // SupportsCompleteSearch implements CompleteSearcher. Append.Step enforces
 // strict-serializable atomic transactions, matching strict-serializable checks.
 func (m Append) SupportsCompleteSearch(ops []history.Operation) bool {
-	return txn.IsolationLevel(m.Level) == txn.LevelStrictSerializable
+	lvl, err := txn.ParseIsolationLevel(m.Level)
+	return err == nil && lvl == txn.LevelStrictSerializable
 }

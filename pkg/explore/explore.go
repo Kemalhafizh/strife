@@ -102,6 +102,27 @@ func LookupSystem(name string) (System, error) {
 	return System{}, fmt.Errorf("unknown system %q (available: %s)", name, strings.Join(names, ", "))
 }
 
+// InferModel resolves the consistency model name for a built-in system or
+// infers one from a custom cluster/system target name.
+func InferModel(system string) string {
+	if sys, err := LookupSystem(system); err == nil {
+		return sys.Model().Name()
+	}
+	low := strings.ToLower(system)
+	switch {
+	case strings.Contains(low, "ledger"):
+		return "ledger"
+	case strings.Contains(low, "outbox") || strings.Contains(low, "settlement"):
+		return "settlement"
+	case strings.Contains(low, "append"):
+		return "append"
+	case strings.Contains(low, "txn"):
+		return "txn"
+	default:
+		return "kv"
+	}
+}
+
 // Config describes one simulated test.
 type Config struct {
 	System        string         `json:"system"`

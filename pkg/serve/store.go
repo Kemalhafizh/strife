@@ -22,6 +22,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/attest"
 	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
+	"github.com/kemalhafizh/strife/pkg/explore"
 	"github.com/kemalhafizh/strife/pkg/report"
 )
 
@@ -273,14 +274,26 @@ func (s *Store) resultForExistingLocked(entry RunEntry) *IngestResult {
 }
 
 func (s *Store) checkDuplicateLocked(tenant, kind, fingerprint string, opts IngestOptions) (*IngestResult, bool, error) {
-	if jobID := strings.TrimSpace(opts.JobID); jobID != "" {
+	tenant = normalizeTenant(tenant)
+	jobID := strings.TrimSpace(opts.JobID)
+	key := strings.TrimSpace(opts.IdempotencyKey)
+	if jobID != "" {
 		if existingID, ok := s.byJobID[jobID]; ok {
 			if existing, exists := s.byID[existingID]; exists {
+				if existing.Kind != kind || existing.Fingerprint != fingerprint || normalizeTenant(existing.Tenant) != tenant ||
+					(key != "" && existing.IdempotencyKey != "" && existing.IdempotencyKey != key) {
+					return nil, false, fmt.Errorf("%w: job %q", ErrIdempotencyConflict, jobID)
+				}
+				if key != "" {
+					if otherID, ok := s.byIdemp[idempotencyMapKey(tenant, key)]; ok && otherID != existing.ID {
+						return nil, false, fmt.Errorf("%w: %q", ErrIdempotencyConflict, key)
+					}
+				}
 				return s.resultForExistingLocked(existing), true, nil
 			}
 		}
 	}
-	if key := strings.TrimSpace(opts.IdempotencyKey); key != "" {
+	if key != "" {
 		if existingID, ok := s.byIdemp[idempotencyMapKey(tenant, key)]; ok {
 			if existing, exists := s.byID[existingID]; exists {
 				if existing.Kind != kind || existing.Fingerprint != fingerprint {
@@ -374,6 +387,9 @@ func (s *Store) IngestReportWithOptions(rep *report.Report, commit, branch strin
 	}
 	if strings.TrimSpace(rep.Target) == "" {
 		return nil, fmt.Errorf("serve: report target is required")
+	}
+	if err := report.ValidateVerdict(rep); err != nil {
+		return nil, fmt.Errorf("serve: %w", err)
 	}
 	recomputed := report.Fingerprint(rep)
 	if rep.Fingerprint != "" && rep.Fingerprint != recomputed {
@@ -562,12 +578,7 @@ func (s *Store) IngestCampaignWithOptions(m *campaign.Manifest, tenant string, o
 		}
 	}()
 
-	modelName := "kv"
-	if strings.Contains(m.System, "ledger") {
-		modelName = "ledger"
-	} else if strings.Contains(m.System, "outbox") || strings.Contains(m.System, "settlement") {
-		modelName = "settlement"
-	}
+	modelName := explore.InferModel(m.System)
 
 	ts := m.Timestamp
 	if ts == "" {
@@ -614,7 +625,7 @@ func (s *Store) IngestCampaignWithOptions(m *campaign.Manifest, tenant string, o
 	}
 	removeRunDir = false
 	s.seq = seq
-	s.baselines[bKey] = m
+	s.baselines[bKey] = m.Clone()
 	return &IngestResult{Entry: entry, Comparison: comp}, nil
 }
 

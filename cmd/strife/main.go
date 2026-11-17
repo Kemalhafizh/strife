@@ -37,6 +37,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/serve"
 	"github.com/kemalhafizh/strife/pkg/shrink"
 	"github.com/kemalhafizh/strife/pkg/transport"
+	"github.com/kemalhafizh/strife/pkg/txn"
 	"github.com/kemalhafizh/strife/pkg/workload"
 )
 
@@ -761,7 +762,7 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	fs.SetOutput(stderr)
 	historyPath := fs.String("history", "", "shrink a recorded history (JSONL) down to minimal conflicting operations")
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
-	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn)")
+	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn, append, ledger): read-uncommitted | read-committed | repeatable-read | snapshot-isolation | serializable | strict-serializable")
 	scenario := scenarioFlags(fs)
 	from := fs.String("report", "", "shrink the scenario recorded in this simulation report.json (overrides scenario flags)")
 	out := fs.String("out", "strife-out", "directory for the minimal report (\"\" to disable)")
@@ -775,6 +776,10 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	dry := fs.Bool("dry-run", false, "log fault commands instead of executing them (with --live)")
 	ci := ciFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	isoLevel, err := txn.ParseIsolationLevel(*isolation)
+	if err != nil {
 		return exitUsage, err
 	}
 	if *live {
@@ -793,7 +798,7 @@ func cmdShrink(args []string, stdout, stderr io.Writer) (int, error) {
 	}
 
 	if *historyPath != "" {
-		return cmdShrinkHistory(*historyPath, *modelName, *isolation, *out, *ci, stdout, stderr)
+		return cmdShrinkHistory(*historyPath, *modelName, string(isoLevel), *out, *ci, stdout, stderr)
 	}
 
 	var cfg explore.Config
@@ -1122,7 +1127,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	probesPath := fs.String("probes", "", "optional server-side probe events file (probes.jsonl) for root-cause correlation")
 	schedPath := fs.String("schedule", "", "optional fault schedule file (schedule.json) for root-cause correlation")
 	modelName := fs.String("model", "kv", "consistency model: "+strings.Join(model.Names(), ", "))
-	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn and append): read-uncommitted | read-committed | snapshot-isolation | serializable | strict-serializable")
+	isolation := fs.String("isolation", "serializable", "transaction isolation level (for --model txn, append, ledger): read-uncommitted | read-committed | repeatable-read | snapshot-isolation | serializable | strict-serializable")
 	out := fs.String("out", "", "write a report directory here")
 	exportEDN := fs.String("export-edn", "", "optional path to export the parsed history in canonical Jepsen EDN format")
 	expect := fs.String("expect", "", "\"linearizable\", \"violation\", or \"no-anomaly\": exit 0 iff the verdict matches (for CI)")
@@ -1145,6 +1150,10 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	default:
 		return exitUsage, fmt.Errorf("--expect must be linearizable, violation, or no-anomaly")
 	}
+	isoLevel, err := txn.ParseIsolationLevel(*isolation)
+	if err != nil {
+		return exitUsage, err
+	}
 	if *path == "" && fs.NArg() > 0 {
 		*path = fs.Arg(0)
 	}
@@ -1155,7 +1164,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) (int, error) {
 	if err != nil {
 		return exitUsage, err
 	}
-	m = withIsolation(m, *isolation)
+	m = withIsolation(m, string(isoLevel))
 	var r io.Reader = os.Stdin
 	if *path != "-" {
 		f, err := os.Open(*path)
@@ -2171,6 +2180,12 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 		if err := json.Unmarshal(data, &rep); err != nil {
 			return exitError, fmt.Errorf("%s: %w", *reportPath, err)
 		}
+		if err := report.ValidateVerdict(&rep); err != nil {
+			return exitViolation, fmt.Errorf("%s: %w", *reportPath, err)
+		}
+		if rep.Fingerprint == "" || rep.Fingerprint != report.Fingerprint(&rep) {
+			return exitViolation, fmt.Errorf("%s: report integrity check failed", *reportPath)
+		}
 		opts.Report = &rep
 		if slo.Enabled() {
 			opts.SLO = report.EvaluateSLO(rep.Resilience, *slo)
@@ -2182,6 +2197,9 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 		m, err := campaign.LoadManifest(*campaignPath)
 		if err != nil {
 			return exitError, err
+		}
+		if m.Fingerprint != "" && m.Fingerprint != m.ComputeFingerprint() {
+			return exitViolation, fmt.Errorf("%s: campaign integrity check failed", *campaignPath)
 		}
 		camp = m
 	}
@@ -2227,6 +2245,9 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 		if err != nil {
 			return exitError, err
 		}
+		if baseCamp.Fingerprint != "" && baseCamp.Fingerprint != baseCamp.ComputeFingerprint() {
+			return exitViolation, fmt.Errorf("%s: baseline campaign integrity check failed", baseCampPath)
+		}
 		camp.Comparison = campaign.Compare(baseCamp, camp)
 	}
 	if baseRepPath != "" {
@@ -2240,6 +2261,12 @@ func cmdCIReport(args []string, stdout, stderr io.Writer) (int, error) {
 		var baseRep report.Report
 		if err := json.Unmarshal(data, &baseRep); err != nil {
 			return exitError, fmt.Errorf("%s: %w", baseRepPath, err)
+		}
+		if err := report.ValidateVerdict(&baseRep); err != nil {
+			return exitViolation, fmt.Errorf("%s: %w", baseRepPath, err)
+		}
+		if baseRep.Fingerprint == "" || baseRep.Fingerprint != report.Fingerprint(&baseRep) {
+			return exitViolation, fmt.Errorf("%s: baseline report integrity check failed", baseRepPath)
 		}
 		opts.BaselineReport = &baseRep
 	}

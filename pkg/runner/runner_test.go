@@ -532,3 +532,30 @@ func TestZeroNodesBoundsSafety(t *testing.T) {
 	cfg.Workload.Timeout = Duration(5 * time.Millisecond)
 	finalSettlementAudit(auditCtx, cfg, factory, rec, func(string, ...any) {})
 }
+
+func TestWorkloadIsolationValidationAndNormalization(t *testing.T) {
+	for _, mdl := range []string{"append", "ledger", "settlement"} {
+		cfg := testConfig()
+		cfg.Workload.Model = mdl
+		cfg.Workload.Keys = 4
+		cfg.Workload.TxnLen = 2
+		cfg.Workload.WritesPerKey = 2
+		cfg.Workload.Isolation = "  STRICT-SERIALIZABLE "
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("model %s valid isolation failed: %v", mdl, err)
+		}
+		if cfg.Workload.Isolation != "strict-serializable" {
+			t.Fatalf("model %s expected normalized isolation, got %q", mdl, cfg.Workload.Isolation)
+		}
+
+		bad := testConfig()
+		bad.Workload.Model = mdl
+		bad.Workload.Keys = 4
+		bad.Workload.TxnLen = 2
+		bad.Workload.WritesPerKey = 2
+		bad.Workload.Isolation = "bogus"
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("model %s should reject bogus isolation level", mdl)
+		}
+	}
+}
