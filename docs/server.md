@@ -163,9 +163,9 @@ For private VPCs and isolated staging networks that cannot expose inbound ports 
 
 - **`POST /api/v1/jobs`** — Enqueue a `sim`, `campaign`, or `run` job (`kind`, `system`, `seed` / `seeds`, `nodes`, `clients`, `duration`, `faults`, or `live_config`, plus optional `tenant`, `commit`, `branch`; capped at 4 MiB). Enforces caller tenant scope (`403 Forbidden` if a tenant token targets another tenant).
 - **`GET /api/v1/jobs`** & **`GET /api/v1/jobs/<id>`** — List or inspect queued, claimed, completed, or failed jobs (filterable by `?tenant=` and `?status=`). Requires Bearer authentication when `--token` or `--tenant-tokens` is enabled, filters results to the caller's tenant (`403 Forbidden` across tenants), and strips secret `claim_token` values from responses.
-- **`POST /api/v1/jobs/claim`** — Atomically claim the oldest `pending` job—or an active `claimed` job whose `lease_expires_at` deadline has elapsed—(optionally filtered by `tenant`) for a remote `worker_id`. Returns an opaque per-claim `claim_token` alongside `lease_expires_at` (`--job-lease`, default `2m`) and increments `attempts`.
+- **`POST /api/v1/jobs/claim`** — Atomically claim the oldest `pending` job—or an active `claimed` job whose `lease_expires_at` deadline has elapsed—(optionally filtered by `tenant`) for a remote `worker_id`, automatically reconciling and skipping any expired job whose `job_id` already committed in `Store`. Returns an opaque per-claim `claim_token` alongside `lease_expires_at` (`--job-lease`, default `2m`) and increments `attempts`.
 - **`POST /api/v1/jobs/<id>/heartbeat`** — Renew a claimed job's lease by sending `{"worker_id":"...","claim_token":"..."}` (`409 Conflict` if the lease already expired, the job is no longer `claimed`, completion is already in progress, or `worker_id`/`claim_token` do not match). `strife worker` automatically sends periodic background heartbeats at ~1/3 of the lease duration (clamped to `[25ms, 30s]`) while executing a job.
-- **`POST /api/v1/jobs/<id>/complete`** — Submit the completed `report` or `campaign` together with `worker_id` and `claim_token` (or record an execution `error`). The server guards concurrent completions (`409 Conflict` while already completing or already finished), validates `worker_id`/`claim_token` (`409 Conflict` on mismatch), verifies fingerprints, ingests into `registry.jsonl`, signs with the tenant's Ed25519 key, checks SLA/regression webhooks, and persists `jobs.json` atomically.
+- **`POST /api/v1/jobs/<id>/complete`** — Submit the completed `report` or `campaign` together with `worker_id` and `claim_token` (or record an execution `error`). The server rejects contradictory combinations (`report`+`campaign` or `error`+artifact) with `400 Bad Request`, guards concurrent completions (`409 Conflict` while already completing or already finished), validates `worker_id`/`claim_token` (`409 Conflict` on mismatch), rejects completions whose lease has already expired (`409 Conflict`, even before another worker reclaims the job), rejects conflicting payloads or late error reports against an already-committed `job_id` (`409 Conflict`), verifies fingerprints and verdict consistency, deduplicates retries by `job_id` in `registry.jsonl` so failed `jobs.json` persists cannot create duplicate runs or webhooks, signs with the tenant's Ed25519 key, persists `jobs.json` atomically before dispatching SLA/regression webhooks, and reconciles any committed `job_id` run from `registry.jsonl` into `jobs.json` on startup.
 
 ```sh
 # 1. Enqueue a simulation or live database chaos job
@@ -182,24 +182,26 @@ strife worker --server http://127.0.0.1:8080 --token "$STRIFE_PAYMENTS_TOKEN" --
 
 Ingests a report or campaign into the registry. If `--token` is set on the server, the request must include `Authorization: Bearer <token>`.
 
-The request body (capped at 32 MiB) can be:
+The request body (capped at 32 MiB; larger bodies return `413 Request Entity Too Large`) can be:
 
-1. **A raw `report.json`** produced by `strife sim`, `strife run`, `strife check`, or `strife shrink`. Optional `tenant`, `commit`, and `branch` metadata can be passed in the query string (`/api/v1/ingest?tenant=payments&commit=abc1234&branch=main`).
+1. **A raw `report.json`** produced by `strife sim`, `strife run`, `strife check`, or `strife shrink`. Optional `tenant`, `commit`, `branch`, and `idempotency_key` metadata can be passed in the query string (`/api/v1/ingest?tenant=payments&commit=abc1234&branch=main`), or via the `Idempotency-Key` HTTP header.
 2. **A raw `campaign.json`** produced by `strife campaign`.
-3. **An envelope object** combining tenant and git metadata with either payload (envelope values take precedence over query parameters):
+3. **An envelope object** combining tenant and git metadata with either `report` or `campaign` (not both; envelope values take precedence over query parameters):
 
    ```json
    {
      "tenant": "payments",
      "commit": "714fbd6",
      "branch": "main",
+     "idempotency_key": "ci-run-42",
      "report": { ... }
    }
    ```
 
 #### What happens on ingest
 
-- **Fingerprint integrity check:** `strife serve` recomputes `report.Fingerprint` or `campaign.ComputeFingerprint()`. If the payload carries a fingerprint that does not match its contents, ingestion is rejected with `400 Bad Request`.
+- **Fingerprint & verdict integrity check:** `strife serve` recomputes `report.Fingerprint` or `campaign.ComputeFingerprint()` and validates report verdict consistency (`Verdict` vs `Check.Verdict`). Any mismatch or invalid verdict is rejected with `400 Bad Request`.
+- **Idempotent replay protection (`Idempotency-Key`):** When `Idempotency-Key` (header, `?idempotency_key=`, or envelope `idempotency_key`) is supplied, deduplication is scoped per normalized tenant across server restarts. Repeating the same artifact returns `200 OK` with `"deduplicated": true` and the original registry entry without duplicating runs or re-firing webhooks; reusing the same key for a different artifact fails with `409 Conflict`.
 - **Automatic Ed25519 signing (reports):** When `--tenant-keys` matches the normalized tenant (or `--key` is configured), `strife serve` signs the verified report into an `in-toto` v0.1 attestation bundle (`bundle.json`), records `signed: true`, `signer`, and `key_id` in the registry entry, and returns the `bundle` in the `201 Created` response.
 - **Automatic baseline regression diffing (campaigns):** When a campaign is ingested for `(tenant, target)`, `strife serve` compares it against the most recent stored campaign for the same tenant and target using `campaign.Compare`, recording `regressions`, `fixes`, and `trace_drifts` on the registry entry and returning the full `comparison` object in the response.
 - **Automatic webhook alerting (`--webhook`):** `strife serve` dispatches HTTP POST notifications to all configured webhook URLs when:

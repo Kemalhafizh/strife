@@ -268,3 +268,44 @@ func TestLedgerIndeterminateWriteDoesNotCauseFalseG2(t *testing.T) {
 		t.Fatal("ledger history with Info write micro-ops must not claim SupportsCompleteSearch")
 	}
 }
+
+func TestLedgerDoubleSpendInfoNilWritesAndValidation(t *testing.T) {
+	// Timed-out Info attempt on idempotency key "tx:dup-1" with nil write values
+	// followed by a second committed attempt on the same key must flag double-spend.
+	ops := []history.Operation{
+		makeTxnOp(0, 0, 10, history.Infinity, history.Info, "tx:dup-1", []history.MicroOp{
+			{F: "r", Key: "acct:0", Value: i64(1000)},
+			{F: "w", Key: "acct:0", Value: nil},
+			{F: "r", Key: "acct:1", Value: i64(1000)},
+			{F: "w", Key: "acct:1", Value: nil},
+		}),
+		makeTxnOp(1, 1, 30, 40, history.OK, "tx:dup-1", []history.MicroOp{
+			{F: "r", Key: "acct:0", Value: i64(800)},
+			{F: "w", Key: "acct:0", Value: i64(600)},
+			{F: "r", Key: "acct:1", Value: i64(1200)},
+			{F: "w", Key: "acct:1", Value: i64(1400)},
+		}),
+	}
+	m := model.Ledger{InitialBalance: 1000, Level: "  STRICT-SERIALIZABLE "}
+	if !m.SupportsCompleteSearch([]history.Operation{ops[1]}) {
+		t.Fatal("normalized strict-serializable Ledger should support complete search when no Info writes exist")
+	}
+	st, witness, _, kinds := m.Decide(ops)
+	if st != model.DecisionViolation || !slices.Contains(kinds, model.AnomalyLedgerDoubleSpend) || len(witness) != 2 {
+		t.Fatalf("expected %s across nil-value Info retry, got st=%s witness=%v kinds=%v",
+			model.AnomalyLedgerDoubleSpend, st, witness, kinds)
+	}
+
+	// Single Info attempt with nil writes without a duplicate retry must NOT false-positive.
+	single := []history.Operation{ops[0]}
+	if stSingle, _, diagSingle, kindsSingle := m.Decide(single); stSingle == model.DecisionViolation {
+		t.Fatalf("single Info attempt must not false-positive double-spend: diag=%s kinds=%v", diagSingle, kindsSingle)
+	}
+
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Ledger.Validate valid level unexpected error: %v", err)
+	}
+	if err := (model.Ledger{Level: "bogus"}).Validate(); err == nil {
+		t.Fatal("expected error for invalid Ledger isolation level")
+	}
+}

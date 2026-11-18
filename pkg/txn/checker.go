@@ -25,6 +25,26 @@ const (
 	LevelStrictSerializable IsolationLevel = "strict-serializable"
 )
 
+// ParseIsolationLevel normalizes and validates a transaction isolation level string.
+// An empty or whitespace-only string defaults to LevelSerializable.
+func ParseIsolationLevel(s string) (IsolationLevel, error) {
+	lvl := IsolationLevel(strings.ToLower(strings.TrimSpace(s)))
+	if lvl == "" {
+		return LevelSerializable, nil
+	}
+	switch lvl {
+	case LevelReadUncommitted,
+		LevelReadCommitted,
+		LevelRepeatableRead,
+		LevelSnapshotIsolation,
+		LevelSerializable,
+		LevelStrictSerializable:
+		return lvl, nil
+	default:
+		return "", fmt.Errorf("txn: unknown isolation level %q (want read-uncommitted, read-committed, repeatable-read, snapshot-isolation, serializable, or strict-serializable)", s)
+	}
+}
+
 // Report contains the results of isolation checking.
 type Report struct {
 	Verdict      Verdict        `json:"verdict"` // Pass or Violation
@@ -79,7 +99,9 @@ func (r *Report) FullReport() string {
 
 // Check evaluates a set of transactions against a desired isolation level.
 func Check(txns []Txn, level IsolationLevel) *Report {
-	if level == "" {
+	if norm, err := ParseIsolationLevel(string(level)); err == nil {
+		level = norm
+	} else {
 		level = LevelSerializable
 	}
 

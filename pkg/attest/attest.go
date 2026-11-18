@@ -163,8 +163,15 @@ func LoadPublicKey(path string) (ed25519.PublicKey, error) {
 
 // NewStatement creates an in-toto v0.1 Statement from a Strife Report.
 func NewStatement(r *report.Report, signer string) (*Statement, error) {
+	if err := report.ValidateVerdict(r); err != nil {
+		return nil, fmt.Errorf("attest: %w", err)
+	}
+	recomputed := report.Fingerprint(r)
+	if r.Fingerprint != "" && r.Fingerprint != recomputed {
+		return nil, fmt.Errorf("attest: report fingerprint integrity mismatch: recorded %q vs recomputed %q", r.Fingerprint, recomputed)
+	}
 	if r.Fingerprint == "" {
-		r.Fingerprint = report.Fingerprint(r)
+		r.Fingerprint = recomputed
 	}
 
 	subjects := []ResourceDescriptor{

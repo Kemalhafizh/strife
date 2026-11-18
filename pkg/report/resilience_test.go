@@ -204,3 +204,67 @@ func TestWritePRDigestCampaignAndDossierModes(t *testing.T) {
 		t.Fatalf("no-anomaly must still fail when report hit step budget:\n%s", budgetOut.String())
 	}
 }
+
+func TestValidateVerdictAndPRDigestBaselineExpect(t *testing.T) {
+	// ValidateVerdict backfills empty r.Verdict from Check.Verdict.
+	backfill := &Report{
+		Target: "raft",
+		Check:  checker.Report{Verdict: checker.Linearizable},
+	}
+	if err := ValidateVerdict(backfill); err != nil || backfill.Verdict != checker.Linearizable {
+		t.Fatalf("expected Verdict backfill, got err=%v verdict=%q", err, backfill.Verdict)
+	}
+
+	// ValidateVerdict rejects desync between Verdict and Check.Verdict.
+	desync := &Report{
+		Target:  "raft",
+		Verdict: checker.Linearizable,
+		Check:   checker.Report{Verdict: checker.Violation},
+	}
+	if err := ValidateVerdict(desync); err == nil {
+		t.Fatal("expected ValidateVerdict to reject Verdict vs Check.Verdict mismatch")
+	}
+	var out bytes.Buffer
+	if _, err := WritePRDigest(&out, PRDigestOptions{Report: desync}); err == nil {
+		t.Fatal("expected WritePRDigest to reject Verdict mismatch")
+	}
+
+	// WritePRDigest must enforce explicit Expect even when HasBaseline is true.
+	incompleteWithBaseline := &PRCampaignSummary{
+		System:      "raft-ledger",
+		HasBaseline: true,
+		TotalSeeds:  2,
+		Unknown:     2,
+		Incomplete:  true,
+	}
+	var strictBuf bytes.Buffer
+	ok, err := WritePRDigest(&strictBuf, PRDigestOptions{
+		Expect:   "linearizable",
+		Campaign: incompleteWithBaseline,
+	})
+	if err != nil {
+		t.Fatalf("WritePRDigest linearizable with baseline: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected Expect=linearizable to fail on incomplete campaign even with HasBaseline:\n%s", strictBuf.String())
+	}
+
+	violWithBaseline := &PRCampaignSummary{
+		System:      "raft",
+		HasBaseline: true,
+		TotalSeeds:  2,
+		Passed:      1,
+		Violations:  1,
+	}
+	var noAnomBuf bytes.Buffer
+	ok, err = WritePRDigest(&noAnomBuf, PRDigestOptions{
+		Expect:   "no-anomaly",
+		Campaign: violWithBaseline,
+	})
+	if err != nil {
+		t.Fatalf("WritePRDigest no-anomaly with baseline: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected Expect=no-anomaly to fail when campaign has persistent violations despite HasBaseline:\n%s", noAnomBuf.String())
+	}
+}

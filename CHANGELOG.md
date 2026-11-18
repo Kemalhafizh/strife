@@ -15,15 +15,20 @@ only gain optional fields.
 - **Honest sound-incomplete transaction verdicts (`pkg/model`, `pkg/checker`, `pkg/compliance`):**
   - Replace the binary `model.Decider` return with a three-state `DecisionStatus` (`DecisionViolation`, `DecisionVerified`, `DecisionInconclusive`).
   - Sound-incomplete models (`append`, `ledger`, `settlement`) now return `DecisionInconclusive` instead of claiming a complete `linearizable` proof when no anomaly is detected (empty histories remain `DecisionVerified`).
-  - Add bounded exhaustive WGL search (`<= 16` operations, `<= 4` `info` operations, `<= 500,000` steps) via `model.CompleteSearcher` for eligible `strict-serializable` histories, falling back to `Verdict: Unknown` with `Reason: "sound incomplete"` when bounds are exceeded.
+  - Add bounded exhaustive WGL search (`<= 16` operations, `<= 4` `info` operations, `<= 500,000` steps) via `model.CompleteSearcher` for eligible `strict-serializable` histories, falling back to `Verdict: Unknown` with `Reason: "sound incomplete"` when bounds are exceeded while preserving `ReasonSteps` / `ReasonTime` if the bounded search exhausts step or time limits.
   - Add `--expect no-anomaly` across `strife sim`, `strife campaign`, `strife check`, `strife run`, reports, CI workflows, and the Wasm bridge, and preserve `ReasonIncomplete` in `schemas/campaign.v1.json`.
   - Grade compliance controls backed by sound-incomplete verdicts as `PARTIAL` (with explicit Methodology & Scope Boundaries disclosure) instead of `PASS` (`FAIL` remains unchanged on violations or budget exhaustion).
 - **WGL optimizer equivalence verification (`pkg/checker`):**
   - Add `TestDifferentialOptimizerEquivalence` comparing the default optimized solver, `SearchOnly`, disabled `eagerRead`, disabled `kvPruner`, and unoptimized WGL against a brute-force oracle across randomized histories.
-- **`strife serve` multi-tenant auth and job lease recovery (`pkg/serve`):**
+- **`strife serve` multi-tenant auth, job lease enforcement, and idempotent persistence (`pkg/serve`):**
   - Enforce fail-closed Bearer authentication (`--token` admin and `--tenant-tokens tenant=secret`) across the embedded dashboard (`/`) and `/api/v1/*` endpoints while keeping `GET /api/v1/keys` public and redacting details on unauthenticated `GET /api/v1/health`.
   - Restrict `GET /api/v1/webhooks` to admin tokens (`403` for tenant-scoped tokens) and enforce strict `403` tenant isolation across runs, dossiers, series, trends, and jobs.
-  - Add worker job `claim_token`, configurable `--job-lease` (default `2m`), `POST /api/v1/jobs/<id>/heartbeat`, automatic background worker heartbeats, expired-lease reclaim on `claim`, `completing` concurrency guards (`409 Conflict`), and atomic persistence for `jobs.json` and `campaign.json`.
+  - Add worker job `claim_token`, configurable `--job-lease` (default `2m`), `POST /api/v1/jobs/<id>/heartbeat`, automatic background worker heartbeats, expired-lease reclaim on `claim`, expired-lease rejection (`409 Conflict`) on `complete` even prior to reclaim, `completing` concurrency guards (`409 Conflict`, cleared cleanly on rollback), and atomic persistence for `jobs.json` and `campaign.json`.
+  - Add per-job (`job_id`) and per-tenant `Idempotency-Key` deduplication in `Store` (`POST /api/v1/ingest` returns `200 OK` with `"deduplicated": true` on exact replay or `409 Conflict` on payload mismatch, without duplicating runs or webhooks), dispatch job completion webhooks only after `jobs.json` persists, reconcile committed `job_id` runs into `jobs.json` on startup and skip reclaiming them, enforce 32 MiB request limits (`413`) and strict envelopes, and isolate stored campaign baselines via `Manifest.Clone()`.
+- **Validation & artifact integrity hardening (`pkg/txn`, `pkg/model`, `pkg/checker`, `pkg/runner`, `pkg/report`, `pkg/attest`, `pkg/compliance`, `pkg/campaign`, `cmd/strife`, `site/wasm`):**
+  - Validate and normalize isolation levels centrally via `txn.ParseIsolationLevel` across `checker.Check`, CLI (`check`, `shrink`), `runner.Config.Validate` (applying `Defaults()` in `strife worker` live runs), and the Wasm bridge.
+  - Detect `LEDGER-DOUBLE-SPEND` retries after indeterminate `Info` attempts with nil write values, and unify custom cluster model inference via `explore.InferModel` and `--workload` reproduction quoting in `campaign.ReproduceCommand`.
+  - Validate report verdict consistency (`report.ValidateVerdict`) and artifact fingerprint integrity across `attest.NewStatement`, `compliance.Evaluate`, `report.WritePRDigest` (enforcing explicit `--expect` even with baselines), `strife serve`, and `strife ci-report`.
 
 ## [1.0.0] - 2026-11-14
 

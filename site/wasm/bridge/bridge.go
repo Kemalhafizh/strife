@@ -20,6 +20,7 @@ import (
 	"github.com/kemalhafizh/strife/pkg/nemesis"
 	"github.com/kemalhafizh/strife/pkg/probe"
 	"github.com/kemalhafizh/strife/pkg/report"
+	"github.com/kemalhafizh/strife/pkg/txn"
 )
 
 // Limits for a simulation in the browser. The CLI has none of these; they
@@ -303,11 +304,11 @@ func Check(jsonl []byte, req CheckRequest) (*CheckResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	level := req.Isolation
-	if level == "" {
-		level = "serializable"
+	lvl, err := txn.ParseIsolationLevel(req.Isolation)
+	if err != nil {
+		return nil, err
 	}
-	m = withIsolation(m, level)
+	m = withIsolation(m, string(lvl))
 	ops, err := history.ReadJSONL(bytes.NewReader(jsonl))
 	if err != nil {
 		return nil, err

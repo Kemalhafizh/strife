@@ -43,6 +43,13 @@ func ReproduceCommand(c explore.Config, planPath string) string {
 		c.System, c.Seed, c.Nodes, c.Clients, c.Keys, c.Values, c.Duration, c.OpTimeout)
 	fmt.Fprintf(&b, " --read-ratio %g --cas-ratio %g --fault-interval %v --fault-length %v",
 		c.ReadRatio, c.CasRatio, c.FaultInterval, c.FaultLength)
+	if c.Workload != "" {
+		wArg := filepath.ToSlash(c.Workload)
+		if strings.ContainsAny(wArg, " \t'\"$`\\;&|<>()*?[]{}!#~") {
+			wArg = transport.Quote(wArg)
+		}
+		fmt.Fprintf(&b, " --workload %s", wArg)
+	}
 	ks := make([]string, len(c.Faults))
 	for i, k := range c.Faults {
 		ks[i] = string(k)

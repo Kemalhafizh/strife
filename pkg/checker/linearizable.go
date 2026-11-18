@@ -154,6 +154,11 @@ func (r Report) NoAnomalyFound() bool {
 
 // Check pairs a raw history and checks it.
 func Check(m model.Model, ops []history.Op, opts Options) (Report, error) {
+	if v, ok := m.(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return Report{}, err
+		}
+	}
 	paired, err := history.Pair(ops)
 	if err != nil {
 		return Report{}, err
@@ -259,7 +264,8 @@ func countInfoOps(ops []history.Operation) int {
 // expensive direction (every order must be refuted), while a diagnosis is a
 // direct certificate found in O(n log n). When a sound-incomplete Decider finds
 // no anomaly, small eligible histories fall back to bounded exhaustive WGL
-// search before reporting Unknown with ReasonIncomplete.
+// search (preserving ReasonSteps or ReasonTime if its search budget runs out)
+// before reporting Unknown with ReasonIncomplete.
 func checkKey(m model.Model, ops []history.Operation, opts Options) KeyResult {
 	if d, ok := m.(model.Decider); ok && !opts.SearchOnly {
 		status, idx, diag, kinds := d.Decide(ops)
@@ -291,10 +297,10 @@ func checkKey(m model.Model, ops []history.Operation, opts Options) KeyResult {
 					budget = completeSearchMaxSteps
 				}
 				res := checkPartitionWithOptions(m, ops, budget, opts.Timeout, opts)
-				if res.Verdict != Unknown {
-					return res
+				if res.Verdict == Unknown && res.Reason == "" {
+					res.Reason = ReasonIncomplete
 				}
-				return KeyResult{Operations: len(ops), Verdict: Unknown, Reason: ReasonIncomplete, Steps: res.Steps}
+				return res
 			}
 			return KeyResult{Operations: len(ops), Verdict: Unknown, Reason: ReasonIncomplete}
 		}

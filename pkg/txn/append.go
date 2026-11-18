@@ -45,7 +45,9 @@ const (
 // complete: anomalies involving appends that no read observed cannot be seen.
 // Only operations with F == "txn" are considered.
 func CheckAppend(ops []history.Operation, level IsolationLevel) *Report {
-	if level == "" {
+	if norm, err := ParseIsolationLevel(string(level)); err == nil {
+		level = norm
+	} else {
 		level = LevelSerializable
 	}
 	a := analyse(ops)

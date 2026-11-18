@@ -283,6 +283,39 @@ func Fingerprint(r *Report) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func isValidVerdict(v checker.Verdict) bool {
+	switch v {
+	case checker.Linearizable, checker.Violation, checker.Unknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateVerdict verifies that r.Verdict and r.Check.Verdict are valid and
+// consistent with each other, backfilling an empty r.Verdict from r.Check.Verdict
+// when present.
+func ValidateVerdict(r *Report) error {
+	if r == nil {
+		return fmt.Errorf("report is nil")
+	}
+	if r.Check.Verdict != "" {
+		if !isValidVerdict(r.Check.Verdict) {
+			return fmt.Errorf("report check.verdict %q is invalid", r.Check.Verdict)
+		}
+		if r.Verdict == "" {
+			r.Verdict = r.Check.Verdict
+		} else if r.Verdict != r.Check.Verdict {
+			return fmt.Errorf("report verdict mismatch: verdict %q disagrees with check.verdict %q", r.Verdict, r.Check.Verdict)
+		}
+		return nil
+	}
+	if !isValidVerdict(r.Verdict) {
+		return fmt.Errorf("report verdict %q is invalid", r.Verdict)
+	}
+	return nil
+}
+
 // WriteDir writes every artifact into dir (created if needed) and returns the
 // paths written.
 func WriteDir(dir string, r *Report, ops []history.Op) ([]string, error) {

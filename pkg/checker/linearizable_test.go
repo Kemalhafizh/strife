@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/kemalhafizh/strife/internal/rng"
 	"github.com/kemalhafizh/strife/pkg/history"
@@ -759,11 +760,59 @@ func TestDeciderSoundIncompleteAndBoundedCompleteSearch(t *testing.T) {
 			repLarge.Verdict, repLarge.Keys[0].Reason, repLarge.IsIncomplete(), repLarge.NoAnomalyFound())
 	}
 
-	// 5. Budget exhaustion Unknown is distinct from sound-incomplete and does NOT satisfy NoAnomalyFound.
+	// 5. Budget exhaustion Unknown in bounded complete search must preserve
+	// ReasonSteps / ReasonTime rather than masking resource limits as ReasonIncomplete.
+	var reverseAppends []history.Operation
+	var revExpected []int64
+	for i := 0; i < 8; i++ {
+		val := int64(i + 1)
+		micro := []history.MicroOp{{F: history.MicroAppend, Key: "k0", Value: v(val)}}
+		reverseAppends = append(reverseAppends, history.Operation{
+			ID: i, Process: i, Call: 10, Return: 20,
+			Input:  history.Op{Index: i * 2, Process: i, Type: history.Invoke, F: history.FTxn, Txn: micro},
+			Output: history.Op{Index: i*2 + 1, Process: i, Type: history.OK, F: history.FTxn, Txn: micro},
+		})
+	}
+	for i := 8; i >= 1; i-- {
+		revExpected = append(revExpected, int64(i))
+	}
+	readMicro := []history.MicroOp{{F: history.MicroRead, Key: "k0", Values: revExpected}}
+	reverseAppends = append(reverseAppends, history.Operation{
+		ID: 8, Process: 8, Call: 30, Return: 40,
+		Input:  history.Op{Index: 16, Process: 8, Type: history.Invoke, F: history.FTxn, Txn: readMicro},
+		Output: history.Op{Index: 17, Process: 8, Type: history.OK, F: history.FTxn, Txn: readMicro},
+	})
+
+	repStrictSteps := CheckOperations(model.Append{Level: "strict-serializable"}, reverseAppends[:2], Options{MaxSteps: 1})
+	if repStrictSteps.Verdict != Unknown || repStrictSteps.Keys[0].Reason != ReasonSteps || repStrictSteps.IsIncomplete() || repStrictSteps.NoAnomalyFound() {
+		t.Fatalf("bounded complete step exhaustion: got verdict=%s reason=%q incomplete=%v noAnomaly=%v",
+			repStrictSteps.Verdict, repStrictSteps.Keys[0].Reason, repStrictSteps.IsIncomplete(), repStrictSteps.NoAnomalyFound())
+	}
+
+	repStrictTime := CheckOperations(model.Append{Level: "strict-serializable"}, reverseAppends, Options{Timeout: time.Nanosecond})
+	if repStrictTime.Verdict != Unknown || repStrictTime.Keys[0].Reason != ReasonTime || repStrictTime.IsIncomplete() || repStrictTime.NoAnomalyFound() {
+		t.Fatalf("bounded complete time exhaustion: got verdict=%s reason=%q incomplete=%v noAnomaly=%v",
+			repStrictTime.Verdict, repStrictTime.Keys[0].Reason, repStrictTime.IsIncomplete(), repStrictTime.NoAnomalyFound())
+	}
+
+	// 6. Standard KV budget exhaustion Unknown is distinct from sound-incomplete and does NOT satisfy NoAnomalyFound.
 	kvOps := generateConcurrentKVHistory(2026, 40, 8, 4)
 	repBudget := CheckOperations(model.KV{}, kvOps, Options{SearchOnly: true, MaxSteps: 1})
 	if repBudget.Verdict != Unknown || repBudget.Keys[0].Reason != ReasonSteps || repBudget.IsIncomplete() || repBudget.NoAnomalyFound() {
 		t.Fatalf("budget exhaustion: got verdict=%s reason=%q incomplete=%v noAnomaly=%v",
 			repBudget.Verdict, repBudget.Keys[0].Reason, repBudget.IsIncomplete(), repBudget.NoAnomalyFound())
+	}
+}
+
+func TestCheckValidatesModelConfig(t *testing.T) {
+	badModels := []model.Model{
+		model.Append{Level: "bogus"},
+		model.Ledger{Level: "bogus"},
+		model.TxnModel{Level: "bogus"},
+	}
+	for _, m := range badModels {
+		if _, err := Check(m, nil, Options{}); err == nil {
+			t.Errorf("Check(%s) should reject invalid isolation level", m.Name())
+		}
 	}
 }

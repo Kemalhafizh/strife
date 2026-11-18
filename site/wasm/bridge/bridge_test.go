@@ -377,3 +377,9 @@ func appendLine(start int64, val int) string {
 	})
 	return string(b1) + "\n" + string(b2) + "\n"
 }
+
+func TestCheckRejectsInvalidIsolation(t *testing.T) {
+	if _, err := Check([]byte(appendLine(10, 1)), CheckRequest{Model: "append", Isolation: "bogus"}); err == nil {
+		t.Fatal("expected Check to reject unknown isolation level")
+	}
+}

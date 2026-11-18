@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kemalhafizh/strife/pkg/attest"
+	"github.com/kemalhafizh/strife/pkg/campaign"
 	"github.com/kemalhafizh/strife/pkg/checker"
 	"github.com/kemalhafizh/strife/pkg/history"
 	"github.com/kemalhafizh/strife/pkg/nemesis"
@@ -562,5 +563,56 @@ func TestEvaluateSoundIncompleteAndBudgetExhausted(t *testing.T) {
 	}
 	if dBudget.Overall != StatusFail {
 		t.Fatalf("expected StatusFail on budget exhaustion, got %s", dBudget.Overall)
+	}
+}
+
+func TestEvaluateVerdictDesyncAndCampaignModelInference(t *testing.T) {
+	v := int64(1)
+	ops := []history.Op{
+		{Index: 0, Process: 0, Type: history.Invoke, F: history.FWrite, Key: "k0", Value: &v, Time: 100},
+		{Index: 1, Process: 0, Type: history.OK, F: history.FWrite, Key: "k0", Value: &v, Time: 200},
+	}
+	rep, err := report.New(
+		report.KindCheck,
+		"raft",
+		1,
+		nil,
+		nemesis.Schedule{Nodes: 3, Duration: time.Second},
+		ops,
+		checker.Report{Model: "kv", Verdict: checker.Linearizable, Operations: 1},
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep.Verdict = checker.Violation // disagrees with Check.Verdict == Linearizable
+	if _, err := Evaluate(Options{Report: rep}); err == nil {
+		t.Fatal("expected compliance.Evaluate to reject verdict desync")
+	}
+
+	for _, tc := range []struct {
+		system string
+		want   string
+	}{
+		{"custom-append-cluster", "append"},
+		{"outbox-payments", "settlement"},
+		{"core-ledger-db", "ledger"},
+	} {
+		camp := &campaign.Manifest{
+			System:     tc.system,
+			CampaignID: "c-" + tc.want,
+			TotalSeeds: 1,
+			Passed:     1,
+			Seeds: []campaign.SeedRecord{
+				{Seed: 1, Verdict: checker.Linearizable, Ops: 10},
+			},
+		}
+		d, err := Evaluate(Options{Campaign: camp, Frameworks: []FrameworkID{FrameworkDORA}})
+		if err != nil {
+			t.Fatalf("Evaluate campaign %s: %v", tc.system, err)
+		}
+		if d.Summary.Model != tc.want {
+			t.Errorf("Evaluate(%s) Summary.Model = %q, want %q", tc.system, d.Summary.Model, tc.want)
+		}
 	}
 }

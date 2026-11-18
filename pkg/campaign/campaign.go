@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"syscall"
 
@@ -68,6 +69,38 @@ type Manifest struct {
 
 	Seeds      []SeedRecord `json:"seeds"`
 	Comparison *Comparison  `json:"comparison,omitempty"`
+}
+
+// Clone returns a deep copy of m with independent slices and nested plan/comparison pointers.
+func (m *Manifest) Clone() *Manifest {
+	if m == nil {
+		return nil
+	}
+	cp := *m
+	cp.Faults = slices.Clone(m.Faults)
+	cp.Config.Faults = slices.Clone(m.Config.Faults)
+	if m.Config.Plan != nil {
+		plan := *m.Config.Plan
+		if m.Config.Plan.Faults != nil {
+			plan.Faults = make([]nemesis.Fault, len(m.Config.Plan.Faults))
+			for i, f := range m.Config.Plan.Faults {
+				plan.Faults[i] = f
+				plan.Faults[i].Nodes = slices.Clone(f.Nodes)
+			}
+		}
+		cp.Config.Plan = &plan
+	}
+	cp.Seeds = slices.Clone(m.Seeds)
+	if m.Comparison != nil {
+		comp := *m.Comparison
+		comp.Regressed = slices.Clone(m.Comparison.Regressed)
+		comp.Fixed = slices.Clone(m.Comparison.Fixed)
+		comp.PersistentFailures = slices.Clone(m.Comparison.PersistentFailures)
+		comp.NewFailures = slices.Clone(m.Comparison.NewFailures)
+		comp.TraceDrifts = slices.Clone(m.Comparison.TraceDrifts)
+		cp.Comparison = &comp
+	}
+	return &cp
 }
 
 // ComputeFingerprint calculates a deterministic SHA-256 digest over the campaign's

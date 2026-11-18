@@ -993,4 +993,78 @@ func TestSystemsAndNoAnomalyExpectation(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("large append check --expect no-anomaly should exit %d, got %d:\n%s", exitOK, code, out)
 	}
+
+	// Small strict-serializable append history hitting --max-steps must report resource exhaustion, not sound-incomplete.
+	smallOps := []history.Op{
+		{Index: 0, Process: 1, Type: history.Invoke, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(1)}}, Time: 1000},
+		{Index: 1, Process: 1, Type: history.OK, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(1)}}, Time: 2000},
+		{Index: 2, Process: 2, Type: history.Invoke, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(2)}}, Time: 3000},
+		{Index: 3, Process: 2, Type: history.OK, F: history.FTxn, Txn: []history.MicroOp{{F: history.MicroAppend, Key: "x", Value: history.Int(2)}}, Time: 4000},
+	}
+	smallAppendPath := filepath.Join(dir, "append-small.jsonl")
+	sf, err := os.Create(smallAppendPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := history.WriteJSONL(sf, smallOps); err != nil {
+		t.Fatal(err)
+	}
+	if err := sf.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out = runCLI(t, "check", "--model", "append", "--isolation", "strict-serializable", "--max-steps", "1", "--history", smallAppendPath)
+	if code != exitUnknown || !strings.Contains(out, "step budget") || strings.Contains(out, "sound incomplete") {
+		t.Fatalf("small strict append --max-steps 1 should exit %d with step budget reason (not sound incomplete), got %d:\n%s", exitUnknown, code, out)
+	}
+	code, out = runCLI(t, "check", "--model", "append", "--isolation", "strict-serializable", "--max-steps", "1", "--expect", "no-anomaly", "--history", smallAppendPath)
+	if code != exitViolation {
+		t.Fatalf("small strict append --max-steps 1 --expect no-anomaly should exit %d, got %d:\n%s", exitViolation, code, out)
+	}
+
+	// Invalid --isolation rejected cleanly across check and shrink.
+	if code, out = runCLI(t, "check", "--model", "txn", "--isolation", "bogus", "--history", smallAppendPath); code != exitUsage {
+		t.Fatalf("check --isolation bogus expected exitUsage (%d), got %d:\n%s", exitUsage, code, out)
+	}
+	if code, out = runCLI(t, "shrink", "--model", "append", "--isolation", "bogus", "--history", smallAppendPath); code != exitUsage {
+		t.Fatalf("shrink --isolation bogus expected exitUsage (%d), got %d:\n%s", exitUsage, code, out)
+	}
+
+	// Case/whitespace normalization works end-to-end in check CLI.
+	if code, out = runCLI(t, "check", "--model", "append", "--isolation", "  STRICT-SERIALIZABLE ", "--history", smallAppendPath); code != exitOK {
+		t.Fatalf("check --isolation uppercase expected exitOK, got %d:\n%s", code, out)
+	}
+
+	// ci-report rejects tampered or verdict-desynced reports and tampered campaigns.
+	simOut := filepath.Join(dir, "ci-sim")
+	if code, out = runCLI(t, "sim", "--system", "raft", "--seed", "1", "--duration", "1s", "--out", simOut); code != exitOK {
+		t.Fatalf("sim failed (%d):\n%s", code, out)
+	}
+	goodRepPath := filepath.Join(simOut, "raft-seed1", "report.json")
+	rawRep, err := os.ReadFile(goodRepPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedRepPath := filepath.Join(dir, "tampered-report.json")
+	if err := os.WriteFile(tamperedRepPath, []byte(strings.Replace(string(rawRep), `"raft"`, `"tampered"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out = runCLI(t, "ci-report", "--report", tamperedRepPath); code != exitViolation {
+		t.Fatalf("ci-report tampered --report expected exitViolation, got %d:\n%s", code, out)
+	}
+	if code, out = runCLI(t, "ci-report", "--report", goodRepPath, "--baseline-report", tamperedRepPath); code != exitViolation {
+		t.Fatalf("ci-report tampered --baseline-report expected exitViolation, got %d:\n%s", code, out)
+	}
+
+	rawCamp, err := os.ReadFile(campPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedCampPath := filepath.Join(dir, "tampered-campaign.json")
+	if err := os.WriteFile(tamperedCampPath, []byte(strings.Replace(string(rawCamp), `"outbox-settlement"`, `"tampered-sys"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out = runCLI(t, "ci-report", "--campaign", tamperedCampPath, "--expect", "no-anomaly"); code != exitViolation {
+		t.Fatalf("ci-report tampered --campaign expected exitViolation, got %d:\n%s", code, out)
+	}
 }

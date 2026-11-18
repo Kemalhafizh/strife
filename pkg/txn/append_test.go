@@ -539,3 +539,17 @@ func BenchmarkCheckAppend(b *testing.B) {
 		})
 	}
 }
+
+func TestCheckAppendIsolationNormalization(t *testing.T) {
+	// G-realtime cycle only rejected under strict-serializable, not serializable.
+	var b ab
+	b.txn(0, 0, 10, history.OK, "a x 1").
+		txn(1, 20, 30, history.OK, "r x ")
+
+	if rep := CheckAppend(b.ops, IsolationLevel("  STRICT-SERIALIZABLE ")); rep.Level != LevelStrictSerializable || rep.Verdict != Violation {
+		t.Fatalf("normalized strict level should detect G-realtime violation, got %+v", rep)
+	}
+	if rep := CheckAppend(b.ops, IsolationLevel("bogus")); rep.Level != LevelSerializable || rep.Verdict != Pass {
+		t.Fatalf("bogus level in CheckAppend should fall back to LevelSerializable, got %+v", rep)
+	}
+}
