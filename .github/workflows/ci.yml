@@ -102,7 +102,7 @@ jobs:
           go test -run '^$' -fuzz "^${name}\$" -fuzztime 45s "$pkg"
       - name: keep the failing input
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crasher-${{ strategy.job-index }}
           path: pkg/*/testdata/fuzz
