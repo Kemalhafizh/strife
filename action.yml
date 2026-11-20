@@ -114,7 +114,7 @@ runs:
 
     - name: Set up Go
       if: steps.download.outputs.ok != 'true'
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: ${{ inputs.go-version }}
         go-version-file: ${{ github.action_path }}/go.mod
