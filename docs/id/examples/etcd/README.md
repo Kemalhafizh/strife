@@ -2,7 +2,7 @@
 
 > **Bahasa:** [English](../../../../examples/etcd/README.md) · Bahasa Indonesia
 
-Prasyarat: host Docker Linux (IP kontainer harus dapat dijangkau langsung dari host), Docker Compose v2, dan biner Strife yang dibangun dari akar repositori. CI menjalankan skenario ini di setiap push (`.github/workflows/live.yml`).
+Prasyarat: host Docker Linux (IP kontainer harus dapat dijangkau langsung dari host), Docker Compose v2, dan biner Strife yang dibangun dari akar repositori. CI menjalankan skenario ini melalui [`.github/workflows/live.yml`](../../../../.github/workflows/live.yml) pada `main`, PR terkait jalur live, dan jadwal mingguan.
 
 ```sh
 cd examples/etcd

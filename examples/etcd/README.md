@@ -3,8 +3,8 @@
 > **Language:** English · [Bahasa Indonesia](../../docs/id/examples/etcd/README.md)
 
 Requirements: Linux docker host (container IPs must be routable from the host),
-Docker Compose v2, and Strife built from the repository root. CI runs these
-scenarios on every push (`.github/workflows/live.yml`).
+Docker Compose v2, and Strife built from the repository root. CI exercises
+these scenarios via `.github/workflows/live.yml` on `main`, live-path PRs, and weekly schedules.
 
 ```sh
 cd examples/etcd

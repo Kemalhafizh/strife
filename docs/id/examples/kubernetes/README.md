@@ -2,7 +2,7 @@
 
 > **Bahasa:** [English](../../../../examples/kubernetes/README.md) · Bahasa Indonesia
 
-Cluster etcd tiga anggota yang sama seperti pada [`examples/etcd`](../etcd/README.md), dideploy sebagai StatefulSet dan dikendalikan melalui `kubectl exec`. Strife hanya memerlukan `kubeconfig`: tanpa SSH, tanpa agen, dan tanpa akses langsung ke node host. CI menjalankan contoh ini di dalam cluster [kind](https://kind.sigs.k8s.io) pada setiap push (job `kubernetes` di `.github/workflows/live.yml`).
+Cluster etcd tiga anggota yang sama seperti pada [`examples/etcd`](../etcd/README.md), dideploy sebagai StatefulSet dan dikendalikan melalui `kubectl exec`. Strife hanya memerlukan `kubeconfig`: tanpa SSH, tanpa agen, dan tanpa akses langsung ke node host. CI menjalankan contoh ini di dalam cluster [kind](https://kind.sigs.k8s.io) melalui job `kubernetes` pada `.github/workflows/live.yml` (pada `main`, PR jalur live, dan jadwal mingguan).
 
 ```sh
 # Siapkan cluster kind, image etcd, StatefulSet, dan rute dari mesin ini ke

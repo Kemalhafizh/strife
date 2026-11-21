@@ -7,7 +7,55 @@ name: live
 
 on:
   push:
+    branches: [main]
+    paths:
+      - "cmd/strife/**"
+      - "cmd/strife-agent/**"
+      - "pkg/agent/**"
+      - "pkg/bench/**"
+      - "pkg/checker/**"
+      - "pkg/client/**"
+      - "pkg/history/**"
+      - "pkg/model/**"
+      - "pkg/nemesis/**"
+      - "pkg/probe/**"
+      - "pkg/runner/**"
+      - "pkg/shrink/**"
+      - "pkg/transport/**"
+      - "pkg/txn/**"
+      - "pkg/workload/**"
+      - "internal/**"
+      - "examples/**"
+      - "scripts/live/**"
+      - "scripts/github-action.sh"
+      - "action.yml"
+      - "go.mod"
+      - ".github/workflows/live.yml"
+      - "!**/*.md"
   pull_request:
+    paths:
+      - "cmd/strife-agent/**"
+      - "pkg/agent/**"
+      - "pkg/bench/**"
+      - "pkg/client/**"
+      - "pkg/nemesis/**"
+      - "pkg/probe/**"
+      - "pkg/runner/**"
+      - "pkg/transport/**"
+      - "examples/**"
+      - "scripts/live/**"
+      - "scripts/github-action.sh"
+      - "action.yml"
+      - "go.mod"
+      - ".github/workflows/live.yml"
+      - "!**/*.md"
+  schedule:
+    - cron: "41 3 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   etcd:
@@ -100,6 +148,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - name: build strife and a static strife-agent
         run: |
           go build -o bin/strife ./cmd/strife
@@ -125,8 +174,10 @@ jobs:
       - name: measure injection latency (docker exec vs strife-agent)
         run: |
           mkdir -p live-out
+          cycles=50
+          if [ "${{ github.event_name }}" = pull_request ]; then cycles=10; fi
           bin/strife bench inject --config examples/etcd/strife-agent.json --transports docker,agent \
-            --faults ${{ steps.faults.outputs.faults }} --cycles 50 --period 300ms \
+            --faults ${{ steps.faults.outputs.faults }} --cycles "$cycles" --period 300ms \
             --json live-out/bench-inject.json --markdown live-out/bench-inject.md
           { echo "### Fault injection latency"; echo; cat live-out/bench-inject.md; } >> "$GITHUB_STEP_SUMMARY"
       - name: etcd stays linearizable with faults delivered by the agent
@@ -157,6 +208,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - run: go build -o bin/strife ./cmd/strife
       - name: start a 3-node etcd cluster
         working-directory: examples/etcd
@@ -228,9 +280,6 @@ jobs:
       STRIFE_PG_PASSWORD: ${{ github.run_id }}-pg
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
       - name: start a primary and two async standbys (SCRAM, TLS)
         working-directory: examples/postgres
         run: docker compose up -d --build
@@ -266,10 +315,9 @@ jobs:
           artifact-name: live-pg-snapshot
       - name: ...but the same history is not serializable (write skew)
         run: |
-          go build -o bin/strife ./cmd/strife
           h=$(ls live-out/pg-snapshot/*/history.jsonl)
           set +e
-          bin/strife check --model append --isolation serializable "$h"
+          strife check --model append --isolation serializable "$h"
           code=$?
           set -e
           test "$code" = 1
@@ -283,7 +331,7 @@ jobs:
       - name: live shrinking finds that the stale reads need no fault at all
         run: |
           set +e
-          bin/strife shrink --live --config examples/postgres/strife-replicas.json --duration 15s --attempts 2 --verify 3 --out live-out/pg-shrink
+          strife shrink --live --config examples/postgres/strife-replicas.json --duration 15s --attempts 2 --verify 3 --out live-out/pg-shrink
           code=$?
           set -e
           test "$code" = 1
@@ -377,7 +425,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ["3.9.1", "4.1.0"]
+        version: ${{ fromJSON(github.event_name == 'pull_request' && '["4.1.0"]' || '["3.9.1", "4.1.0"]') }}
     env:
       KAFKA_VERSION: ${{ matrix.version }}
     steps:

@@ -42,7 +42,7 @@ writes lives only in the page cache. Try `STRIFE_FSYNC=always` in
 
 ## What CI checks
 
-`.github/workflows/live.yml` runs both scenarios on every push, through
+`.github/workflows/live.yml` runs both scenarios on `main`, live-path PRs, and weekly schedules, through
 Strife's own GitHub Action. Scenario 1 must find a violation and scenario 2
 must pass.
 

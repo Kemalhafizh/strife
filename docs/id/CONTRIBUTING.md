@@ -65,7 +65,7 @@ OFFLINE=1 site/build.sh
 
 ### Fuzzing Parser Masukan Tak Tepercaya
 
-Jika Anda menyentuh parser atau pemeriksa ketepatan (*soundness*), jalankan target fuzz terkait secara singkat sebelum membuka PR (`ci.yml` menjalankan kedelapan target selama masing-masing 45 detik):
+Jika Anda menyentuh parser atau pemeriksa ketepatan (*soundness*), jalankan target fuzz terkait secara singkat sebelum membuka PR (CI selalu memutar ulang korpus regresi tersimpan pada setiap job `test`, sementara `ci.yml` menjalankan kesembilan target fuzz selama 45 detik setiap minggu pada `schedule`, lewat `workflow_dispatch`, atau pada PR berlabel `fuzz`):
 
 ```sh
 go test -run '^$' -fuzz '^FuzzParseWasm$' -fuzztime 15s ./pkg/workload
