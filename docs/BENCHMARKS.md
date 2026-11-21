@@ -176,7 +176,7 @@ are sound but incomplete, `model.Decider` distinguishes `DecisionVerified`,
   disabled `kvPruner`, and unoptimized WGL—against the brute-force oracle across
   `kv`, `set`, `counter`, `queue`, `idgen`, and `append` (strict-serializable).
 
-Continuous fuzzing (`ci.yml`, job `fuzz`) runs `FuzzCheckAppendSound`,
+Continuous fuzzing (`ci.yml`, job `fuzz`, scheduled weekly and triggerable via `workflow_dispatch` or the PR `fuzz` label while `test` replays saved corpus cases on every PR and `main` commit) runs `FuzzCheckAppendSound`,
 `FuzzReadJSONL`, `FuzzReadEDN`, `FuzzParseWasm`, and the wire-protocol decoders
 (`FuzzPostgresMessages`, `FuzzMySQLPackets`, `FuzzKafkaRecords`, `FuzzRESP`).
 It found a stack-underflow panic in the Wasm interpreter and an integer
@@ -223,7 +223,7 @@ The first eight sweeps take 17–34 s each on the 4-vCPU host above. The `outbox
 
 ## 5. Live clusters
 
-Every push runs `.github/workflows/live.yml`. Each row is an assertion: a run
+`.github/workflows/live.yml` runs on `main` pushes and PRs touching live clients, transports, harnesses, or examples, as well as weekly on `schedule` and via `workflow_dispatch`. Each row is an assertion: a run
 that does not produce the expected verdict fails the job. Transactional runs
 (`append` and `ledger`) gate on `--expect no-anomaly`, whereas register (`kv`)
 runs gate on `--expect linearizable`.

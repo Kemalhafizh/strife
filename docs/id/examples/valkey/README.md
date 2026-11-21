@@ -30,7 +30,7 @@ Seluruh klien memakai primary yang berulang kali dihentikan paksa dengan SIGKILL
 
 ## Yang Diuji oleh CI
 
-`.github/workflows/live.yml` menjalankan kedua skenario di setiap push melalui GitHub Action milik Strife sendiri. Skenario 1 wajib menemukan pelanggaran dan skenario 2 wajib lulus.
+`.github/workflows/live.yml` menjalankan kedua skenario pada `main`, PR jalur live, serta jadwal mingguan melalui GitHub Action milik Strife sendiri. Skenario 1 wajib menemukan pelanggaran dan skenario 2 wajib lulus.
 
 ```sh
 docker compose down -v

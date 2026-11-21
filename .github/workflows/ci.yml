@@ -2,16 +2,42 @@ name: ci
 
 on:
   push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "site/**"
+      - ".github/CODEOWNERS"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/dependabot.yml"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "site/**"
+      - ".github/CODEOWNERS"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/dependabot.yml"
+  schedule:
+    - cron: "23 2 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
@@ -26,12 +52,14 @@ jobs:
         run: go test ./...
 
   chaos:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - run: go build -o strife ./cmd/strife
       - name: correct Raft survives 200 seeds, bit-for-bit deterministic
         run: ./strife sim --system raft --seeds 1..200 --determinism --expect linearizable --out ""
@@ -73,8 +101,10 @@ jobs:
 
   # Every parser of untrusted bytes, plus the soundness of the list-append
   # checker, under coverage-guided fuzzing (the corpus in testdata/fuzz
-  # replays in the regular test job).
+  # replays in the regular test job; full fuzz sweeps run weekly, manually,
+  # or on PRs labeled "fuzz").
   fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'fuzz'))
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -94,6 +124,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - name: fuzz for 45 seconds
         env:
           TARGET: ${{ matrix.target }}
@@ -109,6 +140,7 @@ jobs:
 
   # Dogfood the GitHub Action exactly as users consume it.
   action:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

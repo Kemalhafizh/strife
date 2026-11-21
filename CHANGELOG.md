@@ -10,6 +10,13 @@ only gain optional fields.
 
 ## [Unreleased]
 
+### Changed
+
+- **GitHub Actions CI efficiency & Dependabot grouping (`.github/workflows/`, `.github/dependabot.yml`, `action.yml`):**
+  - Restrict `push` triggers in `ci.yml` and `live.yml` to `main`, add `paths-ignore` / `paths` filters (adding `paths` to `pages.yml` `main` pushes as well), and enable `concurrency` cancellation on superseded `ci` and `live` runs.
+  - Schedule `ci.yml` continuous fuzzing (`fuzz` matrix) weekly with `workflow_dispatch` and opt-in PR label `fuzz` (while `test` still replays saved `testdata/fuzz` corpora on every run), run `live.yml` on live-path PRs (with Kafka 4.1.0 + 10-cycle `agent bench inject`) while keeping full dual-Kafka/50-cycle sweeps on `main`, weekly schedule, and `workflow_dispatch`, and move `pages.yml` cron from daily to weekly.
+  - Reuse resolved `strife` binaries within the same job via `.build-key` and `$GITHUB_PATH` in `action.yml` (eliminating repeated Go setup/builds in `live / postgres` and `ci / action`), disable unnecessary `go.sum` cache lookups across workflows, and group `github-actions` / `docker` Dependabot updates.
+
 ### Fixed
 
 - **Honest sound-incomplete transaction verdicts (`pkg/model`, `pkg/checker`, `pkg/compliance`):**

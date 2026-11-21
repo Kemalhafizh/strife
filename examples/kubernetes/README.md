@@ -5,8 +5,8 @@
 The same three-member etcd cluster as [`examples/etcd`](../etcd), deployed
 as a StatefulSet and driven through `kubectl exec`. Strife needs only a
 kubeconfig: no SSH, no agent, no access to the nodes. CI runs this example in
-a [kind](https://kind.sigs.k8s.io) cluster on every push (the `kubernetes`
-job in `.github/workflows/live.yml`).
+a [kind](https://kind.sigs.k8s.io) cluster via the `kubernetes` job in
+`.github/workflows/live.yml` (on `main`, live-path PRs, and weekly schedules).
 
 ```sh
 # kind cluster, the etcd image, the StatefulSet, and a route from this

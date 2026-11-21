@@ -6,35 +6,50 @@ name: pages
 # the engine it compiles to WebAssembly), get the same build without the
 # deploy, so a change that breaks the site fails before it merges.
 #
-# The daily run picks up a new release: a release published by release.yml
-# with GITHUB_TOKEN does not trigger other workflows.
+# The weekly run picks up a new release: a release published by release.yml
+# with GITHUB_TOKEN does not trigger other workflows, and the github-pages
+# environment only accepts deployments from main.
 
 on:
   push:
     branches:
       - main
+    paths:
+      - site/**
+      - docs/**
+      - examples/**/README.md
+      - README.md
+      - README.id.md
+      - CHANGELOG.md
+      - release.pub
+      - cmd/strife/**
+      - pkg/**
+      - internal/**
+      - go.mod
+      - .github/workflows/pages.yml
   pull_request:
     paths:
       - site/**
       - docs/**
-      - examples/**
+      - examples/**/README.md
       - README.md
       - README.id.md
       - CHANGELOG.md
-      - cmd/**
+      - release.pub
+      - cmd/strife/**
       - pkg/**
       - internal/**
       - go.mod
       - .github/workflows/pages.yml
   schedule:
-    - cron: "17 1 * * *"
+    - cron: "17 1 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pages-${{ github.event_name == 'pull_request' && github.head_ref || 'main' }}
+  group: pages-${{ github.event.pull_request.number || 'main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

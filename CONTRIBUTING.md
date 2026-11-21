@@ -65,7 +65,7 @@ OFFLINE=1 site/build.sh
 
 ### Fuzzing Parsers of Untrusted Bytes
 
-If you touch a parser or soundness checker, run its fuzz target briefly before opening a PR (`ci.yml` runs all eight targets for 45s each):
+If you touch a parser or soundness checker, run its fuzz target briefly before opening a PR (CI replays saved regression corpus inputs on every `test` run, and `ci.yml` runs all nine fuzz targets for 45s weekly on `schedule`, via `workflow_dispatch`, or on PRs labeled `fuzz`):
 
 ```sh
 go test -run '^$' -fuzz '^FuzzParseWasm$' -fuzztime 15s ./pkg/workload

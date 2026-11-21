@@ -10,6 +10,13 @@ skema hanya boleh bertambah bidang opsional.
 
 ## [Unreleased]
 
+### Diubah
+
+- **Efisiensi CI GitHub Actions & pengelompokan Dependabot (`.github/workflows/`, `.github/dependabot.yml`, `action.yml`):**
+  - Membatasi pemicu `push` di `ci.yml` dan `live.yml` hanya ke `main`, menambahkan filter `paths-ignore` / `paths` (termasuk menyaring `push` ke `main` pada `pages.yml`), serta mengaktifkan `concurrency` untuk membatalkan eksekusi `ci` dan `live` yang telah tergantikan.
+  - Menjadwalkan fuzzing berkelanjutan `ci.yml` (`fuzz` matrix) secara mingguan plus `workflow_dispatch` dan label PR `fuzz` (`test` tetap memutar ulang korpus `testdata/fuzz` di tiap eksekusi), memfokuskan `live.yml` di PR pada jalur live (Kafka 4.1.0 + 10 siklus `agent bench inject`) sambil mempertahankan uji penuh dua versi Kafka dan 50 siklus di `main`, jadwal mingguan, serta `workflow_dispatch`, serta mengubah cron `pages.yml` dari harian menjadi mingguan.
+  - Menggunakan kembali biner `strife` yang sudah dikompilasi/diunduh di job yang sama lewat `.build-key` dan `$GITHUB_PATH` pada `action.yml` (menghapus build Go berulang di `live / postgres` dan `ci / action`), menonaktifkan lookup cache `go.sum` yang tidak relevan di seluruh workflow, dan mengelompokkan pembaruan Dependabot `github-actions` / `docker`.
+
 ### Diperbaiki
 
 - **Verdict jujur untuk checker transaksional *sound-incomplete* (`pkg/model`, `pkg/checker`, `pkg/compliance`):**
