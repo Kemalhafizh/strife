@@ -97,7 +97,7 @@ jobs:
       STRIFE_AGENT_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}-agent
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: build strife and a static strife-agent
@@ -154,7 +154,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go build -o bin/strife ./cmd/strife
@@ -228,7 +228,7 @@ jobs:
       STRIFE_PG_PASSWORD: ${{ github.run_id }}-pg
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: start a primary and two async standbys (SCRAM, TLS)
